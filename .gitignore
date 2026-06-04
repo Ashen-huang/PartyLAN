@@ -2,3 +2,13 @@ build/bin
 node_modules
 frontend/dist
 release
+
+# Local logs and runtime output
+logs/
+QF_logs/
+Wei_logs/
+*.log
+
+# Temporary build/download/check directories
+tmp/
+build/windows/installer/tmp/
