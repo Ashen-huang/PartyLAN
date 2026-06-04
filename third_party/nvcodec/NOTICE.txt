@@ -1,0 +1,8 @@
+This directory contains third-party NVENC interface headers.
+
+Source:
+- https://github.com/FFmpeg/nv-codec-headers
+- File: include/ffnvcodec/nvEncodeAPI.h
+
+License notice:
+- The header file `nvEncodeAPI.h` contains its own permission notice at the top of the file.

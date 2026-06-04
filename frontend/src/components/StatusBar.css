@@ -1,0 +1,18 @@
+.status-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 12px;
+  background: rgba(247, 252, 255, 0.74);
+  border: 1px solid rgba(98, 137, 167, 0.18);
+  border-radius: 18px;
+  box-shadow: var(--panel-shadow);
+  font-size: 11px;
+  color: var(--text-secondary);
+  backdrop-filter: blur(14px);
+}
+
+.status-sep {
+  color: rgba(98, 137, 167, 0.36);
+}

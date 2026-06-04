@@ -1,0 +1,1 @@
+-I"C:/project/PartyLAN/tmp/opus/opus-1.6.1/include" -I"C:/project/PartyLAN/tmp/opus/build-win64" -I"C:/project/PartyLAN/tmp/opus/opus-1.6.1" -I"C:/project/PartyLAN/tmp/opus/opus-1.6.1/dnn" -I"C:/project/PartyLAN/tmp/opus/opus-1.6.1/celt" -I"C:/project/PartyLAN/tmp/opus/opus-1.6.1/silk" -I"C:/project/PartyLAN/tmp/opus/opus-1.6.1/silk/float"

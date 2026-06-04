@@ -1,0 +1,78 @@
+import type { Member } from '../types';
+import type { Translator } from '../i18n';
+import './MemberList.css';
+
+interface MemberListProps {
+  selfMember: Member;
+  otherMembers: Member[];
+  t: Translator;
+  voiceLabel?: string;
+  voiceActive?: boolean;
+  voiceMuted?: boolean;
+  onOpenVoice?: () => void;
+}
+
+function MemberRow({ member, t, isSelf = false }: { member: Member; t: Translator; isSelf?: boolean }) {
+  return (
+    <li className={`member-item ${isSelf ? 'is-self' : ''}`}>
+      <span className={`member-status ${member.online ? 'online' : 'offline'}`}>
+        {member.online ? '●' : '○'}
+      </span>
+      <div className="member-body">
+        <span className="member-name-row">
+          <span className="member-name">{member.name}</span>
+          {isSelf && <span className="member-self-pill">{t('members.self')}</span>}
+        </span>
+        <span className="member-icons">
+          {member.muted ? t('members.muted') : t('members.speaking')}
+          {member.sharing ? ` · ${t('members.sharing')}` : ''}
+        </span>
+      </div>
+    </li>
+  );
+}
+
+export default function MemberList({
+  selfMember,
+  otherMembers,
+  t,
+  voiceLabel,
+  voiceActive = false,
+  voiceMuted = false,
+  onOpenVoice,
+}: MemberListProps) {
+  return (
+    <div className="member-list">
+      <div className="member-list-header">{t('members.header')}</div>
+      <div className="member-group">
+        <div className="member-group-header">{t('members.me')}</div>
+        <ul className="member-list-items">
+          <MemberRow member={selfMember} t={t} isSelf />
+        </ul>
+      </div>
+      <div className="member-group">
+        <div className="member-group-header">{t('members.others')}</div>
+        {otherMembers.length === 0 ? (
+          <div className="member-list-empty">{t('members.empty')}</div>
+        ) : (
+          <ul className="member-list-items">
+            {otherMembers.map((member) => (
+              <MemberRow key={member.id} member={member} t={t} />
+            ))}
+          </ul>
+        )}
+      </div>
+      {onOpenVoice && (
+        <div className="member-actions">
+          <button
+            className={`member-voice-btn ${voiceActive ? 'active' : ''} ${voiceMuted ? 'muted' : ''}`}
+            onClick={onOpenVoice}
+            type="button"
+          >
+            {voiceLabel || t('members.voiceChat')}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}

@@ -1,0 +1,7 @@
+C:/project/PartyLAN/tmp/opus/build-win64/CMakeFiles/opus.dir
+C:/project/PartyLAN/tmp/opus/build-win64/CMakeFiles/edit_cache.dir
+C:/project/PartyLAN/tmp/opus/build-win64/CMakeFiles/rebuild_cache.dir
+C:/project/PartyLAN/tmp/opus/build-win64/CMakeFiles/list_install_components.dir
+C:/project/PartyLAN/tmp/opus/build-win64/CMakeFiles/install.dir
+C:/project/PartyLAN/tmp/opus/build-win64/CMakeFiles/install/local.dir
+C:/project/PartyLAN/tmp/opus/build-win64/CMakeFiles/install/strip.dir

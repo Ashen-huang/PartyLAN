@@ -1,0 +1,374 @@
+2026/05/28 01:48:19.505498 [diag] file logging enabled: C:\Game\PartyLAN\release\PartyLAN-v0.4.6-win64\logs\partylan-20260528.log
+2026/05/28 01:48:19.531600 [WebView2] Environment created successfully
+2026/05/28 01:48:20.085609 tsnet running state path C:\Users\Hw\AppData\Roaming\PartyLAN\tsnet\tailscaled.state
+2026/05/28 01:48:20.098457 tsnet starting with hostname "partylan-wei", varRoot "C:\\Users\\Hw\\AppData\\Roaming\\PartyLAN\\tsnet"
+2026/05/28 01:48:20.109625 Authkey is set; but state is NoState. Ignoring authkey. Re-run with TSNET_FORCE_LOGIN=1 to force use of authkey.
+2026/05/28 01:48:24.780296 AuthLoop: state is Starting; done
+2026/05/28 01:48:25.092432 [network/derp] custom DERP expected but active DERP map is unavailable
+2026/05/28 01:48:25.092432 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:48:25.092432 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:48:25.092432 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:48:25.092432 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:48:25.092953 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:48:25.092953 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:48:25.092953 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:48:25.092953 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:48:25.092953 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:48:35.094973 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:48:35.094973 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:48:35.094973 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:48:35.094973 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:48:35.094973 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:48:38.095235 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:48:38.095235 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:48:38.095235 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:48:38.095235 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:48:38.095235 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:48:40.032789 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:48:40.032789 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:48:40.032789 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:48:40.032789 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:48:40.032789 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:48:45.027431 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:48:45.027431 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:48:45.027431 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:48:45.027431 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:48:45.027431 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:48:50.026534 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:48:50.026534 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:48:50.026534 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:48:50.026534 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:48:50.026534 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:48:50.097267 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:48:50.097267 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:48:50.097267 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:48:50.097267 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:48:50.097267 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:48:55.026285 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:48:55.026285 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:48:55.026285 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:48:55.026285 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:48:55.026285 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:49:00.028872 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:49:00.028872 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:49:00.028872 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:49:00.029403 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:49:00.029403 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:49:00.100201 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:49:00.100201 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:49:00.100201 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:49:00.100201 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:49:00.100201 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:49:05.028361 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:49:05.028361 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:49:05.028361 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:49:05.028361 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:49:05.028361 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:49:10.030236 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:49:10.030783 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:49:10.030783 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:49:10.030783 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:49:10.030783 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:49:10.102702 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:49:10.102702 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:49:10.102702 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:49:10.102702 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:49:10.102702 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:49:15.026229 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:49:15.026229 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:49:15.026229 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:49:15.026229 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:49:15.026229 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:49:20.024057 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:49:20.024640 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:49:20.024640 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:49:20.024640 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:49:20.024640 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:49:20.105863 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:49:20.105863 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:49:20.105863 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:49:20.105863 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:49:20.105863 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:49:25.028187 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:49:25.028187 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:49:25.028187 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:49:25.028187 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:49:25.028187 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:49:30.026282 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:49:30.026282 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:49:30.026282 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:49:30.026282 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:49:30.026282 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:49:30.108837 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:49:30.108837 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:49:30.108837 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:49:30.108837 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:49:30.108837 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:49:35.018578 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:49:35.018578 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:49:35.018578 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:49:35.018578 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:49:35.018578 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:49:40.028698 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:49:40.028698 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:49:40.028698 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:49:40.028698 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:49:40.028698 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:49:40.111827 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:49:40.111827 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:49:40.111827 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:49:40.111827 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:49:40.111827 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:49:45.022176 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:49:45.022176 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:49:45.022176 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:49:45.022176 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:49:45.022176 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:49:50.026824 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:49:50.026824 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:49:50.026824 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:49:50.026824 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:49:50.026824 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:49:50.113620 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:49:50.113620 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:49:50.113620 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:49:50.113620 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:49:50.113620 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:49:55.023655 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:49:55.023655 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:49:55.023655 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:49:55.023655 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:49:55.023655 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:49:57.522855 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:49:57.522855 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:49:57.522855 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:49:57.522855 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:49:57.522855 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:50:00.023386 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:50:00.023386 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:50:00.023386 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:50:00.023386 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:50:00.023386 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:50:00.116294 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:50:00.116294 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:50:00.116294 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:50:00.116294 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:50:00.116294 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:50:05.018892 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:50:05.018892 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:50:05.018892 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:50:05.018892 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:50:05.018892 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:50:10.018846 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:50:10.018846 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:50:10.018846 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:50:10.018846 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:50:10.018846 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:50:10.118434 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:50:10.118434 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:50:10.118434 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:50:10.118434 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:50:10.118434 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:50:15.018428 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:50:15.018428 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:50:15.018428 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:50:15.018428 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:50:15.018428 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:50:20.021254 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:50:20.021254 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:50:20.021254 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:50:20.021254 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:50:20.021254 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:50:20.120444 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:50:20.120444 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:50:20.120444 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:50:20.120444 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:50:20.120444 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:50:25.021958 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:50:25.021958 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:50:25.021958 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:50:25.021958 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:50:25.021958 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:50:30.020733 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:50:30.020733 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:50:30.020733 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:50:30.020733 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:50:30.021257 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:50:30.122661 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:50:30.122661 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:50:30.122661 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:50:30.122661 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:50:30.122661 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:50:35.024305 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:50:35.024305 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:50:35.024305 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:50:35.024305 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:50:35.024305 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:50:40.023875 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:50:40.023875 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:50:40.023875 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:50:40.023875 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:50:40.023875 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:50:40.123988 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:50:40.123988 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:50:40.123988 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:50:40.124689 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:50:40.124689 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:50:45.027539 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:50:45.027539 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:50:45.027539 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:50:45.027539 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:50:45.027539 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:50:50.019798 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:50:50.019798 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:50:50.019798 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:50:50.019798 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:50:50.019798 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:50:50.126566 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:50:50.126566 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:50:50.126566 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:50:50.126566 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:50:50.126566 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:50:55.027660 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:50:55.027660 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:50:55.027660 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:50:55.027660 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:50:55.027660 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:51:00.022400 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:51:00.022400 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:51:00.022400 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:51:00.022400 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:51:00.022400 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:51:00.128279 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:51:00.128279 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:51:00.128279 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:51:00.128279 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:51:00.128279 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:51:05.026420 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:51:05.026420 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:51:05.026420 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:51:05.026420 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:51:05.026420 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:51:10.020398 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:51:10.020398 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:51:10.020398 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:51:10.020398 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:51:10.020398 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:51:10.130382 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:51:10.130382 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:51:10.130382 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:51:10.130382 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:51:10.130382 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:51:15.028077 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:51:15.028077 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:51:15.028077 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:51:15.028077 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:51:15.028077 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:51:20.023095 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:51:20.023095 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:51:20.023095 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:51:20.023095 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:51:20.023095 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:51:20.131805 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:51:20.132491 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:51:20.132491 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:51:20.132491 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:51:20.132491 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:51:25.017504 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:51:25.017504 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:51:25.017504 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:51:25.017504 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:51:25.017504 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:51:30.022611 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:51:30.022611 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:51:30.022611 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:51:30.022611 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:51:30.022611 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:51:30.134390 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:51:30.134390 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:51:30.134390 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:51:30.134390 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:51:30.134390 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:51:35.020039 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:51:35.020039 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:51:35.020039 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:51:35.020039 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:51:35.020039 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:51:40.018964 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:51:40.018964 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:51:40.018964 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:51:40.018964 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:51:40.018964 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:51:40.135931 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:51:40.135931 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:51:40.135931 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:51:40.135931 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:51:40.135931 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:51:45.022558 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:51:45.022558 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:51:45.022558 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:51:45.022558 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:51:45.022558 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:51:50.017771 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:51:50.017771 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:51:50.017771 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:51:50.017771 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:51:50.017771 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:51:50.139033 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:51:50.139033 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:51:50.139033 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:51:50.139033 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:51:50.139033 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:51:55.020879 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:51:55.020879 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:51:55.020879 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:51:55.020879 [network/derp] peer partylan-probe-96590 path=unknown online=false active=false
+2026/05/28 01:51:55.020879 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:52:00.020931 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:52:00.020931 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:52:00.020931 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:52:00.020931 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:52:00.141516 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:52:00.142086 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:52:00.142086 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:52:00.142086 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:52:05.022708 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:52:05.022708 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:52:05.022708 [network/derp] peer partylan-probe-96897 path=unknown online=false active=false
+2026/05/28 01:52:05.022708 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:52:07.643863 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:52:07.643863 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:52:07.643863 [network/derp] peer partylan-room-probe-98428 path=unknown online=false active=false
+2026/05/28 01:52:10.025685 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:52:10.025685 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:52:12.645167 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:52:12.645167 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:52:14.526883 connect to target host failed: dial peer 100.71.233.55: connect tcp 100.71.233.55:9000: operation timed out
+2026/05/28 01:52:15.019814 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:52:15.019814 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:52:15.145400 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:52:15.146054 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:52:20.023849 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:52:20.023849 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:52:20.097259 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:52:20.097259 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:52:25.027838 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:52:25.027838 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:52:25.097236 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:52:25.097236 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:52:30.025981 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:52:30.025981 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:52:30.097219 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:52:30.097219 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:52:35.031211 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:52:35.031211 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:52:35.097450 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:52:35.097450 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:52:40.020605 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:52:40.020605 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:52:40.097256 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:52:40.097256 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:52:45.024513 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:52:45.024513 [network/derp] peer partylan-ashen path=derp relay=cn1
+2026/05/28 01:52:45.097119 [network/derp] custom DERP present: region=901/cn1 host=103.236.92.32 port=443
+2026/05/28 01:52:45.097119 [network/derp] peer partylan-ashen path=derp relay=cn1

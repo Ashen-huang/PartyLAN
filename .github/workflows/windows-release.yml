@@ -1,0 +1,107 @@
+name: windows-release
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-package:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Wails
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+
+      - name: Add Go bin to PATH
+        run: |
+          $goPath = go env GOPATH
+          "$goPath\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Install NSIS
+        run: choco install nsis -y --no-progress
+
+      - name: Install MinGW-w64
+        run: choco install mingw -y --no-progress
+
+      - name: Add NSIS to PATH
+        run: |
+          $nsisPath = 'C:\Program Files (x86)\NSIS'
+          if (-not (Test-Path $nsisPath)) {
+            throw "NSIS not found at $nsisPath"
+          }
+          $nsisPath | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Add MinGW-w64 to PATH
+        run: |
+          $gccCommand = Get-Command gcc.exe -ErrorAction SilentlyContinue
+          if ($gccCommand) {
+            $gccPath = $gccCommand.Source
+          } else {
+            $gccPath = Get-ChildItem -Path 'C:\ProgramData\chocolatey\lib\mingw' -Recurse -Filter gcc.exe |
+              Where-Object { $_.FullName -match 'mingw64' } |
+              Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $gccPath) {
+            throw "gcc.exe not found after MinGW-w64 install"
+          }
+          Split-Path -Parent $gccPath | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Run tests
+        run: go test -count=1 ./...
+
+      - name: Run native media tests
+        run: go test -count=1 -tags partylan_native_media ./...
+
+      - name: Run networked native tests
+        run: go test -count=1 -tags "partylan_tsnet partylan_native_media" ./...
+
+      - name: Build release bundle
+        run: .\scripts\Package-PartyLAN.ps1
+        shell: powershell
+
+      - name: Upload release bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: PartyLAN-release
+          path: |
+            release/PartyLAN-*.zip
+            release/PartyLAN-*-installer.exe
+            release/PartyLAN-*-SHA256SUMS.txt
+
+      - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: PartyLAN ${{ github.ref_name }}
+          files: |
+            release/PartyLAN-*.zip
+            release/PartyLAN-*-installer.exe
+            release/PartyLAN-*-SHA256SUMS.txt

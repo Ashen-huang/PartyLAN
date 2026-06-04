@@ -1,0 +1,19 @@
+PartyLAN bundled Opus runtime
+
+Library: libopus
+Version: 1.6.1
+Source archive: https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz
+Source SHA256: 6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1
+Checksum list: https://downloads.xiph.org/releases/opus/SHA256SUMS.txt
+
+Built locally for Windows x86_64 with CMake and MinGW-w64:
+
+cmake -S tmp/opus/opus-1.6.1 -B tmp/opus/build-win64 -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release -DOPUS_BUILD_SHARED_LIBRARY=ON -DOPUS_BUILD_TESTING=OFF -DOPUS_BUILD_PROGRAMS=OFF -DOPUS_INSTALL_PKG_CONFIG_MODULE=OFF -DOPUS_INSTALL_CMAKE_CONFIG_MODULE=OFF -DCMAKE_SHARED_LINKER_FLAGS="-static-libgcc"
+cmake --build tmp/opus/build-win64 --config Release --parallel
+
+Bundled runtime:
+
+File: opus.dll
+SHA256: 2134411ea3daf238b9fa163917292e8c9cf80593822a338a7938b3685269af1f
+
+License: see COPYING.txt in this directory.

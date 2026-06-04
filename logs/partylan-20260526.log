@@ -1,0 +1,55 @@
+2026/05/26 19:37:22.460138 [diag] file logging enabled: C:\Game\PartyLAN\release\PartyLAN-v0.4.2-win64\logs\partylan-20260526.log
+2026/05/26 19:37:22.499536 [WebView2] Environment created successfully
+2026/05/26 19:45:49.014467 [share/recv] peer=nFZQKKAE5221CNTRL frame=1920x1080
+2026/05/26 19:45:49.014467 [share/recv] peer=nFZQKKAE5221CNTRL codec=software-delta stream_backend=native-capture+software-encoder
+2026/05/26 19:45:49.014467 [share/recv] peer=nFZQKKAE5221CNTRL backend=software-backend/native-capture+software-encoder
+2026/05/26 19:45:56.086644 [stream/recv] backend=software-backend/native-capture+software-encoder frame=1920x1080 decode=0.3fps source=32.3fps bitrate=694kbps peer=100.94.205.69:65232
+2026/05/26 19:45:57.272629 [stream/recv] backend=software-backend/native-capture+software-encoder frame=1920x1080 decode=1.7fps source=0.7fps bitrate=625kbps peer=100.94.205.69:65232
+2026/05/26 19:45:59.269876 [stream/recv] backend=software-backend/native-capture+software-encoder frame=1920x1080 decode=1.5fps source=1.0fps bitrate=604kbps peer=100.94.205.69:65232
+2026/05/26 19:46:00.454250 [stream/recv] backend=software-backend/native-capture+software-encoder frame=1920x1080 decode=0.8fps source=1.1fps bitrate=523kbps peer=100.94.205.69:65232
+2026/05/26 19:46:01.720740 [stream/recv] backend=software-backend/native-capture+software-encoder frame=1920x1080 decode=1.6fps source=0.9fps bitrate=379kbps peer=100.94.205.69:65232
+2026/05/26 19:46:03.035826 [stream/recv] backend=software-backend/native-capture+software-encoder frame=1920x1080 decode=0.8fps source=1.2fps bitrate=227kbps peer=100.94.205.69:65232
+2026/05/26 19:46:05.306782 [stream/recv] backend=software-backend/native-capture+software-encoder frame=1920x1080 decode=1.3fps source=1.1fps bitrate=698kbps peer=100.94.205.69:65232
+2026/05/26 19:46:07.214300 [stream/recv] backend=software-backend/native-capture+software-encoder frame=1920x1080 decode=1.0fps source=1.0fps bitrate=772kbps peer=100.94.205.69:65232
+2026/05/26 19:46:08.906125 [stream/recv] backend=software-backend/native-capture+software-encoder frame=1920x1080 decode=0.6fps source=1.2fps bitrate=707kbps peer=100.94.205.69:65232
+2026/05/26 19:46:10.236689 [stream/recv] backend=software-backend/native-capture+software-encoder frame=1920x1080 decode=0.8fps source=1.3fps bitrate=876kbps peer=100.94.205.69:65232
+2026/05/26 19:46:11.550278 [stream/recv] backend=software-backend/native-capture+software-encoder frame=1920x1080 decode=1.5fps source=0.8fps bitrate=646kbps peer=100.94.205.69:65232
+2026/05/26 19:46:18.529914 [stream/recv] backend=software-backend/native-capture+software-encoder frame=1920x1080 decode=0.1fps source=1.0fps bitrate=693kbps peer=100.94.205.69:65232
+2026/05/26 19:46:20.354498 [stream/recv] backend=software-backend/native-capture+software-encoder frame=1920x1080 decode=1.1fps source=0.4fps bitrate=541kbps peer=100.94.205.69:65232
+2026/05/26 19:46:22.709811 [stream/recv] backend=software-backend/native-capture+software-encoder frame=1920x1080 decode=1.3fps source=0.7fps bitrate=761kbps peer=100.94.205.69:65232
+2026/05/26 19:46:25.918344 [stream/recv] backend=software-backend/native-capture+software-encoder frame=1920x1080 decode=0.3fps source=0.8fps bitrate=392kbps peer=100.94.205.69:65232
+2026/05/26 19:46:27.593148 [stream/recv] backend=software-backend/native-capture+software-encoder frame=1920x1080 decode=0.6fps source=0.9fps bitrate=729kbps peer=100.94.205.69:65232
+2026/05/26 19:46:29.509304 [stream/recv] backend=software-backend/native-capture+software-encoder frame=1920x1080 decode=0.5fps source=0.7fps bitrate=825kbps peer=100.94.205.69:65232
+2026/05/26 19:46:31.198136 [stream/recv] backend=software-backend/native-capture+software-encoder frame=1920x1080 decode=0.6fps source=0.5fps bitrate=785kbps peer=100.94.205.69:65232
+2026/05/26 19:46:33.135734 [stream/recv] backend=software-backend/native-capture+software-encoder frame=1920x1080 decode=0.5fps source=0.5fps bitrate=323kbps peer=100.94.205.69:65232
+2026/05/26 19:46:34.684536 [stream/recv] backend=software-backend/native-capture+software-encoder frame=1920x1080 decode=1.3fps source=0.6fps bitrate=653kbps peer=100.94.205.69:65232
+2026/05/26 19:46:36.975039 [stream/recv] backend=software-backend/native-capture+software-encoder frame=1920x1080 decode=0.9fps source=0.7fps bitrate=461kbps peer=100.94.205.69:65232
+2026/05/26 19:46:41.110862 [stream/recv] backend=software-backend/native-capture+software-encoder frame=1920x1080 decode=0.5fps source=0.7fps bitrate=135kbps peer=100.94.205.69:65232
+2026/05/26 19:46:43.404577 [stream/recv] backend=software-backend/native-capture+software-encoder frame=1920x1080 decode=0.4fps source=0.9fps bitrate=134kbps peer=100.94.205.69:65232
+2026/05/26 19:46:46.146333 [stream/recv] backend=software-backend/native-capture+software-encoder frame=1920x1080 decode=0.4fps source=0.9fps bitrate=143kbps peer=100.94.205.69:65232
+2026/05/26 19:46:48.525004 [stream/recv] backend=software-backend/native-capture+software-encoder frame=1920x1080 decode=0.4fps source=0.6fps bitrate=186kbps peer=100.94.205.69:65232
+2026/05/26 19:47:14.904877 [share/recv] peer=nFZQKKAE5221CNTRL frame=1280x720
+2026/05/26 19:47:14.904877 [share/recv] peer=nFZQKKAE5221CNTRL codec=software-delta stream_backend=native-capture+software-encoder
+2026/05/26 19:47:14.904877 [share/recv] peer=nFZQKKAE5221CNTRL backend=software-backend/native-capture+software-encoder
+2026/05/26 19:47:27.954318 [stream/recv] backend=software-backend/native-capture+software-encoder frame=1280x720 decode=0.2fps source=62.5fps bitrate=197kbps peer=100.94.205.69:53429
+2026/05/26 19:47:29.297099 [stream/recv] backend=software-backend/native-capture+software-encoder frame=1280x720 decode=2.2fps source=0.4fps bitrate=380kbps peer=100.94.205.69:53429
+2026/05/26 19:47:30.583324 [stream/recv] backend=software-backend/native-capture+software-encoder frame=1280x720 decode=3.1fps source=0.8fps bitrate=411kbps peer=100.94.205.69:53429
+2026/05/26 19:47:31.877786 [stream/recv] backend=software-backend/native-capture+software-encoder frame=1280x720 decode=0.8fps source=0.9fps bitrate=491kbps peer=100.94.205.69:53429
+2026/05/26 19:47:33.743876 [stream/recv] backend=software-backend/native-capture+software-encoder frame=1280x720 decode=0.5fps source=1.1fps bitrate=328kbps peer=100.94.205.69:53429
+2026/05/26 19:47:34.828638 [stream/recv] backend=software-backend/native-capture+software-encoder frame=1280x720 decode=1.8fps source=1.3fps bitrate=305kbps peer=100.94.205.69:53429
+2026/05/26 19:47:36.261960 [stream/recv] backend=software-backend/native-capture+software-encoder frame=1280x720 decode=2.1fps source=1.1fps bitrate=309kbps peer=100.94.205.69:53429
+2026/05/26 19:47:38.181563 [stream/recv] backend=software-backend/native-capture+software-encoder frame=1280x720 decode=1.6fps source=2.0fps bitrate=213kbps peer=100.94.205.69:53429
+2026/05/26 19:49:39.348931 [share/send] viewer capability negotiation: peer=nFZQKKAE5221CNTRL native_view=false backend=native status=supported reason="DXGI capture and NVENC encode available"; forcing software viewer compatibility
+2026/05/26 19:49:41.604868 [stream/send] native bridge status=0 supports_host=true supports_view=false adapter="NVIDIA GeForce RTX 3050 Ti Laptop GPU" driver="vendor=0x10de device=0x25a0" reason="DXGI capture and NVENC encode available"
+2026/05/26 19:49:41.604868 [stream/send] native encoder requested but viewer decode backend is unavailable; fallback to software encoder (viewer_backend=software viewer_status=supported reason="DXGI capture and NVENC encode available")
+2026/05/26 19:49:41.745887 [stream/send] startup requested_native_capture=true requested_native_encoder=false backend=native-capture+software-encoder direct_path=false target=960x540@24fps peer=100.94.205.69:9001
+2026/05/26 19:49:41.746601 [share/send] peer=nFZQKKAE5221CNTRL backend=native-capture+software-encoder target=960x540 fps=24
+2026/05/26 19:49:41.746601 [share/start] self=nVtnBQhznJ11CNTRL display=0 target=960x540 fps=24 codec=software-delta backend=native-capture+software-encoder peers=1
+2026/05/26 19:49:44.710298 [stream/send] backend=native-capture+software-encoder target=960x540@24fps actual=7.5fps bitrate=273kbps cap=8.67ms resize=2.00ms enc=3.22ms peer=100.94.205.69:9001
+2026/05/26 19:49:45.926711 [stream/send] backend=native-capture+software-encoder target=960x540@24fps actual=14.8fps bitrate=143kbps cap=10.68ms resize=1.91ms enc=2.98ms peer=100.94.205.69:9001
+2026/05/26 19:49:48.874733 [stream/send] backend=native-capture+software-encoder target=960x540@24fps actual=0.7fps bitrate=117kbps cap=12.42ms resize=1.72ms enc=4.25ms peer=100.94.205.69:9001
+2026/05/26 19:49:50.326369 [stream/send] backend=native-capture+software-encoder target=960x540@24fps actual=2.8fps bitrate=101kbps cap=7.32ms resize=1.63ms enc=3.49ms peer=100.94.205.69:9001
+2026/05/26 19:49:51.841307 [stream/send] backend=native-capture+software-encoder target=960x540@24fps actual=0.7fps bitrate=2175kbps cap=7.00ms resize=1.58ms enc=11.06ms peer=100.94.205.69:9001
+2026/05/26 19:49:53.737335 [stream/send] backend=native-capture+software-encoder target=960x540@24fps actual=0.5fps bitrate=841kbps cap=6.92ms resize=1.06ms enc=6.60ms peer=100.94.205.69:9001
+2026/05/26 19:49:54.803490 [stream/send] backend=native-capture+software-encoder target=960x540@24fps actual=0.9fps bitrate=4330kbps cap=7.66ms resize=1.62ms enc=11.89ms peer=100.94.205.69:9001
+2026/05/26 19:50:35.255202 [stream/send] backend=native-capture+software-encoder target=960x540@24fps actual=0.0fps bitrate=70kbps cap=15.89ms resize=4.11ms enc=18.12ms peer=100.94.205.69:9001
