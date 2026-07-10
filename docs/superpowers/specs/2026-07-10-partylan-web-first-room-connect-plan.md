@@ -63,3 +63,14 @@
 - 部署前生产脚本哈希与诊断版本不一致。
 - 修复需要修改 Screego 基础 bundle 或主题。
 - 自动测试或语法检查失败且无法由本次范围内的改动解决。
+
+## 8. 执行记录
+
+- 状态：实现并部署，等待真实网页端首次点击复测。
+- 失败测试：当前实现会在第二个 pending /stream 创建时立即关闭并替换第一个连接；修复前生命周期测试 2 项失败、非 /stream 对照测试通过。
+- 修复后验证：WebSocket 生命周期 3 项通过，网页控制面 6 项通过，Node 语法检查通过。
+- 生产新脚本 SHA-256：10c636f9fe64196c8aae475a86b572a710e56511b5573fe714ecd58b86eaf2f5。
+- 备份目录：/root/screego/backups/web-first-room-connect-20260710T090505Z。
+- 部署路径偏差：nginx 实际服务 /var/www/screego/inject.js；/root/screego/frontend/inject.js 是维护副本。本次已同时更新两份，并分别备份旧版本。
+- 服务验证：nginx、screego-register.service、gamecast-sfu.service 均为 active，公网实际响应脚本哈希与新版本一致。
+- 未自动执行：真实登录网页端的首次创建/加入操作。自动浏览器被生产自签名证书拦截，需用户刷新页面后完成交互验收。
