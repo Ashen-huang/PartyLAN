@@ -115,3 +115,15 @@ Screego 认证热加载作为固定上游补丁构建新镜像，保留当前生
 - 损坏的账号文件更新不会清空 Screego 内存中最后一份有效账号表。
 - Python 自动测试、Go 认证测试与 race detector、隔离注册登录烟雾测试和线上服务
   健康检查全部通过。
+
+## 执行记录
+
+- Python 注册服务已改为 bcrypt、进程内锁和同目录原子替换，不再调用 `htpasswd`。
+- Screego 固定上游补丁已加入账号文件变化检测、线程安全热加载和最后有效账号表回退。
+- 账号文件已迁移到 `/etc/gamecast-sfu/users/users.htpasswd`；旧路径文件保留用于回滚。
+- 隔离容器从 15 个账号启动，原子新增第 16 个测试账号后未重启即登录成功，日志记录
+  `Reloaded Users amount=16`。
+- 生产镜像为 `gamecast-sfu:registration-hot-reload-v1`，注册服务和 nginx 均正常。
+- 生产备份位于
+  `/root/screego/backups/registration-hot-reload-20260711T063209Z`。
+- 自动 ICE 恢复仍保持关闭，媒体质量策略继续处于影子模式。

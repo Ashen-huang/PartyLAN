@@ -1,6 +1,240 @@
+diff --git a/auth/auth.go b/auth/auth.go
+index c0044fd5199dc18d8c9407c7b8a55df420088090..03a859f957abc4a68e67103c7e1c29a490a11d86 100644
+--- a/auth/auth.go
++++ b/auth/auth.go
+@@ -7,6 +7,7 @@ import (
+ 	"io"
+ 	"net/http"
+ 	"os"
++	"sync"
+ 
+ 	"github.com/gorilla/sessions"
+ 	"github.com/rs/zerolog/log"
+@@ -17,6 +18,10 @@ type Users struct {
+ 	Lookup         map[string]string
+ 	store          sessions.Store
+ 	sessionTimeout int
++	usersFile      string
++	fileSize       int64
++	fileModTime    int64
++	mu             sync.RWMutex
+ }
+ 
+ type UserPW struct {
+@@ -45,32 +50,89 @@ func read(r io.Reader) ([]UserPW, error) {
+ 	return result, nil
+ }
+ 
++func readPasswordsFile(path string) (map[string]string, os.FileInfo, error) {
++	file, err := os.Open(path)
++	if err != nil {
++		return nil, nil, err
++	}
++	defer file.Close()
++
++	fileInfo, err := file.Stat()
++	if err != nil {
++		return nil, nil, err
++	}
++	userPws, err := read(file)
++	if err != nil {
++		return nil, nil, err
++	}
++
++	lookup := map[string]string{}
++	for _, record := range userPws {
++		lookup[record.Name] = record.Pass
++	}
++	return lookup, fileInfo, nil
++}
++
+ func ReadPasswordsFile(path string, secret []byte, sessionTimeout int) (*Users, error) {
+ 	users := &Users{
+ 		Lookup:         map[string]string{},
+ 		sessionTimeout: sessionTimeout,
+ 		store:          sessions.NewCookieStore(secret),
++		usersFile:      path,
+ 	}
+ 	if path == "" {
+ 		log.Info().Msg("Users file not specified")
+ 		return users, nil
+ 	}
+ 
+-	file, err := os.Open(path)
++	lookup, fileInfo, err := readPasswordsFile(path)
+ 	if err != nil {
+ 		return users, err
+ 	}
+-	defer file.Close()
+-	userPws, err := read(file)
++	users.Lookup = lookup
++	users.fileSize = fileInfo.Size()
++	users.fileModTime = fileInfo.ModTime().UnixNano()
++	log.Info().Int("amount", len(users.Lookup)).Msg("Loaded Users")
++	return users, nil
++}
++
++func (u *Users) reloadPasswordsFileIfChanged() {
++	if u.usersFile == "" {
++		return
++	}
++	fileInfo, err := os.Stat(u.usersFile)
+ 	if err != nil {
+-		return users, err
++		log.Error().Err(err).Msg("Could not stat updated users file")
++		return
+ 	}
+ 
+-	for _, record := range userPws {
+-		users.Lookup[record.Name] = record.Pass
++	u.mu.RLock()
++	unchanged := fileInfo.Size() == u.fileSize && fileInfo.ModTime().UnixNano() == u.fileModTime
++	u.mu.RUnlock()
++	if unchanged {
++		return
+ 	}
+-	log.Info().Int("amount", len(users.Lookup)).Msg("Loaded Users")
+-	return users, nil
++
++	u.mu.Lock()
++	defer u.mu.Unlock()
++	fileInfo, err = os.Stat(u.usersFile)
++	if err != nil {
++		log.Error().Err(err).Msg("Could not stat updated users file")
++		return
++	}
++	if fileInfo.Size() == u.fileSize && fileInfo.ModTime().UnixNano() == u.fileModTime {
++		return
++	}
++
++	lookup, loadedFileInfo, err := readPasswordsFile(u.usersFile)
++	if err != nil {
++		log.Error().Err(err).Msg("Could not reload updated users file; keeping last valid users")
++		return
++	}
++	u.Lookup = lookup
++	u.fileSize = loadedFileInfo.Size()
++	u.fileModTime = loadedFileInfo.ModTime().UnixNano()
++	log.Info().Int("amount", len(lookup)).Msg("Reloaded Users")
+ }
+ 
+ type Response struct {
+@@ -128,7 +190,10 @@ func (u *Users) Authenticate(w http.ResponseWriter, r *http.Request) {
+ 	})
+ }
+ 
+-func (u Users) Validate(user, password string) bool {
++func (u *Users) Validate(user, password string) bool {
++	u.reloadPasswordsFileIfChanged()
++	u.mu.RLock()
+ 	realPassword, exists := u.Lookup[user]
++	u.mu.RUnlock()
+ 	return exists && bcrypt.CompareHashAndPassword([]byte(realPassword), []byte(password)) == nil
+ }
+diff --git a/auth/auth_reload_test.go b/auth/auth_reload_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..76311034b86d90c4dbbb745cc6b427606e024376
+--- /dev/null
++++ b/auth/auth_reload_test.go
+@@ -0,0 +1,95 @@
++package auth
++
++import (
++	"fmt"
++	"os"
++	"path/filepath"
++	"sync"
++	"testing"
++
++	"golang.org/x/crypto/bcrypt"
++)
++
++func passwordRecord(t *testing.T, user, password string) string {
++	t.Helper()
++	hash, err := bcrypt.GenerateFromPassword([]byte(password), 4)
++	if err != nil {
++		t.Fatalf("hash password: %v", err)
++	}
++	return fmt.Sprintf("%s:%s\n", user, hash)
++}
++
++func writePasswordFile(t *testing.T, path, content string) {
++	t.Helper()
++	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
++		t.Fatalf("write password file: %v", err)
++	}
++}
++
++func loadTestUsers(t *testing.T, path string) *Users {
++	t.Helper()
++	users, err := ReadPasswordsFile(path, []byte("01234567890123456789012345678901"), 3600)
++	if err != nil {
++		t.Fatalf("read passwords file: %v", err)
++	}
++	return users
++}
++
++func TestValidateReloadsChangedPasswordFile(t *testing.T) {
++	path := filepath.Join(t.TempDir(), "users.htpasswd")
++	oldRecord := passwordRecord(t, "legacy", "legacy-pass")
++	writePasswordFile(t, path, oldRecord)
++	users := loadTestUsers(t, path)
++
++	if !users.Validate("legacy", "legacy-pass") {
++		t.Fatal("legacy user should validate before reload")
++	}
++	writePasswordFile(t, path, oldRecord+passwordRecord(t, "new-user", "new-pass"))
++
++	if !users.Validate("new-user", "new-pass") {
++		t.Fatal("new user should validate without restarting Screego")
++	}
++}
++
++func TestValidateKeepsLastGoodUsersAfterMalformedUpdate(t *testing.T) {
++	path := filepath.Join(t.TempDir(), "users.htpasswd")
++	oldRecord := passwordRecord(t, "legacy", "legacy-pass")
++	writePasswordFile(t, path, oldRecord)
++	users := loadTestUsers(t, path)
++
++	writePasswordFile(t, path, "malformed-record\n")
++	if !users.Validate("legacy", "legacy-pass") {
++		t.Fatal("malformed update must not discard the last valid users")
++	}
++
++	writePasswordFile(t, path, oldRecord+passwordRecord(t, "recovered", "recovered-pass"))
++	if !users.Validate("recovered", "recovered-pass") {
++		t.Fatal("a later valid update should recover hot reload")
++	}
++}
++
++func TestConcurrentValidateDuringPasswordFileChange(t *testing.T) {
++	path := filepath.Join(t.TempDir(), "users.htpasswd")
++	oldRecord := passwordRecord(t, "legacy", "legacy-pass")
++	newRecord := passwordRecord(t, "new-user", "new-pass")
++	writePasswordFile(t, path, oldRecord)
++	users := loadTestUsers(t, path)
++
++	var wait sync.WaitGroup
++	for worker := 0; worker < 8; worker++ {
++		wait.Add(1)
++		go func() {
++			defer wait.Done()
++			for attempt := 0; attempt < 100; attempt++ {
++				users.Validate("legacy", "legacy-pass")
++				users.Validate("new-user", "new-pass")
++			}
++		}()
++	}
++	writePasswordFile(t, path, oldRecord+newRecord)
++	wait.Wait()
++
++	if !users.Validate("new-user", "new-pass") {
++		t.Fatal("new user should validate after concurrent reload")
++	}
++}
 diff --git a/ui/src/Room.fullscreen.test.mjs b/ui/src/Room.fullscreen.test.mjs
 new file mode 100644
-index 0000000..b7e082c
+index 0000000000000000000000000000000000000000..b7e082c335a20de7c3f3a66932ec53179a4f0b41
 --- /dev/null
 +++ b/ui/src/Room.fullscreen.test.mjs
 @@ -0,0 +1,11 @@
@@ -16,7 +250,7 @@ index 0000000..b7e082c
 +  assert.match(roomSource, /enqueueSnackbar\(.*Fullscreen/s);
 +});
 diff --git a/ui/src/Room.tsx b/ui/src/Room.tsx
-index de04cf8..fa96762 100644
+index de04cf8f7e718b18dde257ea48cc14b140ab670e..fa96762e04ec02d203f4fb8950c07c938a4e1a48 100644
 --- a/ui/src/Room.tsx
 +++ b/ui/src/Room.tsx
 @@ -3,6 +3,7 @@ import {Badge, Box, IconButton, Paper, Tooltip, Typography, Slider, Stack} from
@@ -162,7 +396,7 @@ index de04cf8..fa96762 100644
  
 diff --git a/ui/src/iceSession.test.mjs b/ui/src/iceSession.test.mjs
 new file mode 100644
-index 0000000..1d2a793
+index 0000000000000000000000000000000000000000..1d2a793a617a03141e5d2a2166cfb33afe483614
 --- /dev/null
 +++ b/ui/src/iceSession.test.mjs
 @@ -0,0 +1,121 @@
@@ -289,7 +523,7 @@ index 0000000..1d2a793
 +});
 diff --git a/ui/src/iceSession.ts b/ui/src/iceSession.ts
 new file mode 100644
-index 0000000..8d3d2f7
+index 0000000000000000000000000000000000000000..8d3d2f7955eaf99ee7c49d186bd4d4cee80d33be
 --- /dev/null
 +++ b/ui/src/iceSession.ts
 @@ -0,0 +1,223 @@
@@ -517,7 +751,7 @@ index 0000000..8d3d2f7
 +    session.pc.close();
 +};
 diff --git a/ui/src/useRoom.ts b/ui/src/useRoom.ts
-index 5385b9b..dbd15cf 100644
+index 5385b9b1d65dfd1c9ba7fdecae54b4d9f9f4dfff..dbd15cf39596d17a6562eafdda88868152098807 100644
 --- a/ui/src/useRoom.ts
 +++ b/ui/src/useRoom.ts
 @@ -14,6 +14,14 @@ import {loadSettings, resolveCodecPlaceholder} from './settings';

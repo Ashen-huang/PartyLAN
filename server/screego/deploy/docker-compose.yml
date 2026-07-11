@@ -1,14 +1,14 @@
 services:
   screego:
-    image: gamecast-sfu:ice-recovery-shadow-v1
+    image: gamecast-sfu:registration-hot-reload-v1
     container_name: screego
     restart: unless-stopped
     network_mode: "host"
     volumes:
-      - ${SCREEGO_USERS_FILE_HOST:-/etc/gamecast-sfu/users.htpasswd}:/app/users.htpasswd:ro
+      - ${SCREEGO_USERS_DIR_HOST:-/etc/gamecast-sfu/users}:/app/users:ro
     environment:
       SCREEGO_AUTH_MODE: "all"
-      SCREEGO_USERS_FILE: /app/users.htpasswd
+      SCREEGO_USERS_FILE: /app/users/users.htpasswd
       SCREEGO_EXTERNAL_IP: "${SCREEGO_EXTERNAL_IP}"
       SCREEGO_TURN_PORT_RANGE: "50000:50200"
       SCREEGO_SECRET: "${SCREEGO_SECRET}"

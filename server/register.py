@@ -2,10 +2,11 @@
 import http.server
 import hashlib
 import json
-import subprocess
 import os
 import sys
 import re
+import stat
+import tempfile
 import threading
 import time
 from collections import deque
@@ -13,6 +14,8 @@ from datetime import datetime
 from urllib.parse import urlparse, parse_qs
 import urllib.request
 import urllib.error
+
+import bcrypt
 
 from gamecast_control import ControlError, ControlPlane
 
@@ -53,9 +56,14 @@ stats_lock = threading.Lock()
 room_state_lock = threading.Lock()
 viewer_intent_lock = threading.Lock()
 rate_limit_lock = threading.Lock()
+user_store_lock = threading.Lock()
 room_states = {}
 viewer_intents = {}
 rate_buckets = {}
+
+REGISTER_CREATED = 'created'
+REGISTER_EXISTS = 'exists'
+REGISTER_FAILED = 'failed'
 
 
 def log(msg):
@@ -63,31 +71,80 @@ def log(msg):
     sys.stdout.flush()
 
 
-def user_exists(username):
-    if not os.path.exists(HTPASSWD_FILE):
-        return False
-    with open(HTPASSWD_FILE, 'r') as f:
-        for line in f:
-            line = line.strip()
-            if ':' in line and line.split(':')[0] == username:
-                return True
-        return False
-
-
 def is_valid_username(username):
     return bool(USERNAME_RE.match(username or ''))
 
 
-def add_user(username, password):
+def _credential_content_has_user(content, username):
+    username_prefix = username.encode('utf-8') + b':'
+    return any(line.startswith(username_prefix) for line in content.splitlines())
+
+
+def _fsync_directory(directory):
     try:
-        subprocess.run(
-            ['htpasswd', '-B', '-b', HTPASSWD_FILE, username, password],
-            check=True, capture_output=True, text=True
-        )
-        return True
-    except subprocess.CalledProcessError as e:
-        log("错误: %s" % (e.stderr or str(e)))
-        return False
+        directory_fd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(directory_fd)
+    except OSError:
+        pass
+    finally:
+        os.close(directory_fd)
+
+
+def create_user(username, password):
+    temp_path = None
+    with user_store_lock:
+        try:
+            if os.path.exists(HTPASSWD_FILE):
+                with open(HTPASSWD_FILE, 'rb') as users_file:
+                    content = users_file.read()
+                file_mode = stat.S_IMODE(os.stat(HTPASSWD_FILE).st_mode)
+            else:
+                content = b''
+                file_mode = 0o600
+
+            if _credential_content_has_user(content, username):
+                return REGISTER_EXISTS
+
+            password_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt(rounds=12))
+            separator = b'' if not content or content.endswith(b'\n') else b'\n'
+            updated_content = content + separator + username.encode('utf-8') + b':' + password_hash + b'\n'
+
+            directory = os.path.dirname(os.path.abspath(HTPASSWD_FILE))
+            file_descriptor, temp_path = tempfile.mkstemp(
+                dir=directory,
+                prefix='.%s.' % os.path.basename(HTPASSWD_FILE),
+                suffix='.tmp',
+            )
+            try:
+                if hasattr(os, 'fchmod'):
+                    os.fchmod(file_descriptor, file_mode)
+                with os.fdopen(file_descriptor, 'wb') as temp_file:
+                    file_descriptor = None
+                    temp_file.write(updated_content)
+                    temp_file.flush()
+                    os.fsync(temp_file.fileno())
+            finally:
+                if file_descriptor is not None:
+                    os.close(file_descriptor)
+
+            if not hasattr(os, 'fchmod'):
+                os.chmod(temp_path, file_mode)
+            os.replace(temp_path, HTPASSWD_FILE)
+            temp_path = None
+            _fsync_directory(directory)
+            return REGISTER_CREATED
+        except Exception as error:
+            log('注册存储失败: %s' % type(error).__name__)
+            return REGISTER_FAILED
+        finally:
+            if temp_path:
+                try:
+                    os.unlink(temp_path)
+                except OSError:
+                    pass
 
 
 def load_history(username):
@@ -766,11 +823,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_json(400, {'ok': False, 'error': '密码至少4个字符'})
             return
 
-        if user_exists(username):
+        result = create_user(username, password)
+        if result == REGISTER_EXISTS:
             self.send_json(409, {'ok': False, 'error': '用户名已存在'})
             return
 
-        if add_user(username, password):
+        if result == REGISTER_CREATED:
             log("新用户注册: %s" % username)
             self.send_json(200, {
                 'ok': True,

@@ -1,10 +1,17 @@
+import concurrent.futures
 import http.server
 import json
+import os
+from pathlib import Path
+import tempfile
 import threading
 import unittest
 import urllib.error
 import urllib.parse
 import urllib.request
+from unittest import mock
+
+import bcrypt
 
 import register
 from gamecast_control import ControlPlane
@@ -15,6 +22,13 @@ class RegisterControlAPITest(unittest.TestCase):
         register.control_plane = ControlPlane(lease_id_factory=lambda: "lease-api")
         register.resolve_authenticated_user = lambda _headers: "tester"
         register.fetch_sfu_room_states = lambda: []
+        register.rate_buckets.clear()
+        self.original_htpasswd_file = register.HTPASSWD_FILE
+        self.temp_dir = tempfile.TemporaryDirectory()
+        register.HTPASSWD_FILE = os.path.join(self.temp_dir.name, "users.htpasswd")
+        self.legacy_record = b"legacy:" + bcrypt.hashpw(b"legacy-pass", bcrypt.gensalt(rounds=4)) + b"\n"
+        with open(register.HTPASSWD_FILE, "wb") as users_file:
+            users_file.write(self.legacy_record)
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), register.Handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -24,6 +38,8 @@ class RegisterControlAPITest(unittest.TestCase):
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(timeout=2)
+        register.HTPASSWD_FILE = self.original_htpasswd_file
+        self.temp_dir.cleanup()
 
     def request(self, method, path, payload=None):
         body = None if payload is None else json.dumps(payload).encode("utf-8")
@@ -177,6 +193,65 @@ class RegisterControlAPITest(unittest.TestCase):
         self.assertNotIn("credential", payload)
         self.assertNotIn("sdp", payload)
         self.assertNotIn("nested", payload)
+
+    def test_register_succeeds_without_the_htpasswd_command_and_preserves_existing_users(self):
+        with mock.patch.dict(os.environ, {"PATH": ""}):
+            status, response = self.request(
+                "POST",
+                "/api/register",
+                {"user": "new_user", "pass": "correct horse battery staple"},
+            )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(response["ok"])
+        with open(register.HTPASSWD_FILE, "rb") as users_file:
+            records = users_file.read()
+        self.assertTrue(records.startswith(self.legacy_record))
+        new_record = next(line for line in records.splitlines() if line.startswith(b"new_user:"))
+        self.assertTrue(bcrypt.checkpw(b"correct horse battery staple", new_record.split(b":", 1)[1]))
+
+    def test_concurrent_registration_creates_only_one_record_for_a_username(self):
+        def register_same_user(_index):
+            return self.request(
+                "POST",
+                "/api/register",
+                {"user": "same_user", "pass": "shared-password"},
+            )[0]
+
+        with mock.patch.dict(os.environ, {"PATH": ""}):
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                statuses = list(executor.map(register_same_user, range(2)))
+
+        self.assertEqual(sorted(statuses), [200, 409])
+        with open(register.HTPASSWD_FILE, "rb") as users_file:
+            matching = [line for line in users_file.read().splitlines() if line.startswith(b"same_user:")]
+        self.assertEqual(len(matching), 1)
+
+    def test_atomic_replace_failure_keeps_the_original_credentials_file(self):
+        with mock.patch.object(register.os, "replace", side_effect=OSError("replace failed")) as replace:
+            status, response = self.request(
+                "POST",
+                "/api/register",
+                {"user": "write_failure", "pass": "shared-password"},
+            )
+
+        self.assertEqual(status, 500)
+        self.assertFalse(response["ok"])
+        replace.assert_called_once()
+        with open(register.HTPASSWD_FILE, "rb") as users_file:
+            self.assertEqual(users_file.read(), self.legacy_record)
+        self.assertEqual(os.listdir(self.temp_dir.name), ["users.htpasswd"])
+
+    def test_deployment_mounts_the_credentials_directory_for_atomic_updates(self):
+        compose_path = Path(__file__).parent / "screego" / "deploy" / "docker-compose.yml"
+        compose = compose_path.read_text(encoding="utf-8")
+
+        self.assertIn(
+            "${SCREEGO_USERS_DIR_HOST:-/etc/gamecast-sfu/users}:/app/users:ro",
+            compose,
+        )
+        self.assertIn("SCREEGO_USERS_FILE: /app/users/users.htpasswd", compose)
+        self.assertNotIn("SCREEGO_USERS_FILE_HOST:-", compose)
 
 
 if __name__ == "__main__":
