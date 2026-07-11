@@ -52,6 +52,8 @@
   var webShareLease = null;
   var webShareHeartbeatTimer = 0;
   var webShareSafetyTimer = 0;
+  var webAudioSafetyNoticeTimer = 0;
+  var activeCaptureAudioMode = 'off';
 
   var QUALITY = {
     quality:  { label: '清晰优先', bitrate: 50000000, desc: '带宽不足时优先保分辨率', pref: 'maintain-resolution' },
@@ -76,16 +78,16 @@
 
   var AUDIO_MODES = {
     app: {
-      label: '窗口/标签页音频 (推荐)',
-      desc: '优先共享当前窗口或浏览器标签页的声音，不把整个系统音频都带给观众。'
+      label: '标签页音频 (推荐)',
+      desc: '仅在选择浏览器标签页时共享该标签页声音；普通窗口会自动静音。'
     },
     off: {
       label: '不共享音频',
       desc: '只共享画面，最适合一边语音通话一边演示，完全避免回声。'
     },
     system: {
-      label: '整个系统音频',
-      desc: '共享整机所有声音，包括语音软件、游戏和通知音，最容易产生回声。'
+      label: '全屏系统音频',
+      desc: '仅在选择整个屏幕时共享系统声音；标签页和普通窗口会自动静音。'
     }
   };
 
@@ -345,6 +347,10 @@
     webShareSafetyTimer = 0;
   }
 
+  function effectiveWebShareAudioMode() {
+    return activeDisplayStream ? activeCaptureAudioMode : 'off';
+  }
+
   function heartbeatWebShare() {
     if (!webShareLease) return Promise.resolve(null);
     return controlRequest(SHARE_URL + '/heartbeat', {
@@ -354,7 +360,7 @@
         participantId: getWebParticipantId(),
         leaseId: webShareLease.leaseId,
         sfu: currentSfuMode(),
-        audioMode: extCfg().audio,
+        audioMode: effectiveWebShareAudioMode(),
         ttl: ROOM_STATE_TTL
       })
     }).then(function (data) {
@@ -403,6 +409,7 @@
     var lease = webShareLease;
     clearWebShareTimers();
     webShareLease = null;
+    activeCaptureAudioMode = 'off';
     syncShareButtonAvailability();
     if (!lease) return Promise.resolve(null);
     var payload = JSON.stringify({ room: lease.room, participantId: getWebParticipantId(), leaseId: lease.leaseId });
@@ -937,7 +944,7 @@
         active: !!active,
         sharing: !!active && !!activeDisplayStream,
         sfu: !!active && currentSfuMode(),
-        audioMode: extCfg().audio,
+        audioMode: active ? effectiveWebShareAudioMode() : 'off',
         ttl: ROOM_STATE_TTL
       })
     }).then(function (r) { return r.json(); }).then(function (data) {
@@ -959,7 +966,7 @@
         active: !!active,
         sharing: !!active && !!activeDisplayStream,
         sfu: !!active && currentSfuMode(),
-        audioMode: extCfg().audio,
+        audioMode: active ? effectiveWebShareAudioMode() : 'off',
         ttl: ROOM_STATE_TTL
       }));
     } catch (e) {}
@@ -1296,6 +1303,7 @@
       } catch (e) {}
       activeDisplayStream = null;
       activeVideoTrack = null;
+      activeCaptureAudioMode = 'off';
     }
     sfuDisconnect();
     releaseWebShare(false);
@@ -1783,22 +1791,15 @@
   }
 
   function buildDisplayCapturePrefs(mode) {
-    if (mode === 'off') return {};
-
-    if (mode === 'system') {
-      return {
-        systemAudio: 'include',
-        windowAudio: 'system',
-        surfaceSwitching: 'include'
-      };
-    }
-
-    return {
-      systemAudio: 'exclude',
-      windowAudio: 'window',
-      selfBrowserSurface: 'exclude',
-      surfaceSwitching: 'include'
+    var preferences = GameCastWebShareAudioPolicy.buildCapturePreferences(mode);
+    if (!preferences.requestAudio) return {};
+    var result = {
+      systemAudio: preferences.systemAudio,
+      windowAudio: preferences.windowAudio,
+      surfaceSwitching: preferences.surfaceSwitching
     };
+    if (preferences.selfBrowserSurface) result.selfBrowserSurface = preferences.selfBrowserSurface;
+    return result;
   }
 
   function getContentHint(mode) {
@@ -1882,13 +1883,37 @@
     };
   }
 
+  function showWebAudioSafetyNotice() {
+    var previous = document.getElementById('gc-audio-safety-notice');
+    if (previous) previous.remove();
+    if (webAudioSafetyNoticeTimer) clearTimeout(webAudioSafetyNoticeTimer);
+
+    var notice = document.createElement('div');
+    notice.id = 'gc-audio-safety-notice';
+    notice.setAttribute('role', 'status');
+    notice.textContent = '为防止泄露系统声音，窗口共享已自动关闭音频。';
+    notice.style.cssText = 'position:fixed;right:20px;bottom:20px;z-index:100002;max-width:420px;padding:10px 14px;background:rgba(15,23,42,.96);color:#f8fafc;border:1px solid rgba(251,191,36,.45);border-left:4px solid #fbbf24;border-radius:6px;box-shadow:0 12px 32px rgba(2,6,23,.32);font-size:13px;line-height:1.5;letter-spacing:0';
+    document.body.appendChild(notice);
+    webAudioSafetyNoticeTimer = setTimeout(function () {
+      if (notice.parentNode) notice.parentNode.removeChild(notice);
+      webAudioSafetyNoticeTimer = 0;
+    }, 5000);
+  }
+
   function activateCapturedDisplayStream(stream, settings) {
     if (!stream) return stream;
     if (stream._gcCaptureActivated) return stream;
 
+    var requestedAudioMode = settings && settings.audio ? settings.audio : extCfg().audio;
+    var audioResult = GameCastWebShareAudioPolicy.sanitizeCapturedStream(stream, requestedAudioMode);
+    stream = audioResult.stream;
+    activeCaptureAudioMode = audioResult.effectiveMode;
+    if (audioResult.shouldNotify) showWebAudioSafetyNotice();
+
     stream._gcCaptureActivated = true;
     markPeerStatsChange('_gcSourceChanged');
     activeDisplayStream = stream;
+    if (webShareLease) heartbeatWebShare();
     resetAutoSfuState();
     resetAdaptiveStreamingState();
     refreshAutoSfuState();
@@ -1900,6 +1925,7 @@
       vt.addEventListener('ended', function () {
         activeVideoTrack = null;
         activeDisplayStream = null;
+        activeCaptureAudioMode = 'off';
         resetAutoSfuState();
         resetAdaptiveStreamingState();
         if (canMaintainRoomState(currentRoomId())) startRoomStateHeartbeat();
