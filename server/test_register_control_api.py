@@ -179,6 +179,11 @@ class RegisterControlAPITest(unittest.TestCase):
                 "packetsLostDelta": 9,
                 "qualityStatus": "degraded-suspected",
                 "shadowAction": "would_restart_ice",
+                "adaptivePolicyVersion": "adaptive-per-peer-v1",
+                "adaptiveDecision": "downshift:0->1",
+                "adaptiveLevel": 1,
+                "adaptiveScale": 1.5,
+                "adaptiveMaxBitrate": 3000000,
                 "candidateAddress": "10.0.0.2",
                 "credential": "secret",
                 "sdp": "v=0",
@@ -188,6 +193,9 @@ class RegisterControlAPITest(unittest.TestCase):
         )
         self.assertEqual(payload["transport"], "tcp")
         self.assertEqual(payload["shadowAction"], "would_restart_ice")
+        self.assertEqual(payload["adaptiveDecision"], "downshift:0->1")
+        self.assertEqual(payload["adaptiveLevel"], 1)
+        self.assertEqual(payload["adaptiveScale"], 1.5)
         self.assertLessEqual(len(payload["serverNote"]), 160)
         self.assertNotIn("candidateAddress", payload)
         self.assertNotIn("credential", payload)

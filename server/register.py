@@ -36,7 +36,7 @@ STATS_STRING_FIELDS = set([
     'localAddressFamily', 'remoteAddressFamily', 'qualityLimitationReason',
     'qualityStatus', 'shadowAction', 'invalidReason', 'resolution', 'fps',
     'codec', 'kbps', 'loss', 'jitter', 'pcState', 'targetKbps', 'adaptive',
-    'serverLoadKbps', 'serverNote',
+    'adaptivePolicyVersion', 'adaptiveDecision', 'serverLoadKbps', 'serverNote',
 ])
 STATS_NUMBER_FIELDS = set([
     'generation', 'rtt', 'rttMs', 'jitterMs', 'lossPercent', 'upKbps',
@@ -44,6 +44,7 @@ STATS_NUMBER_FIELDS = set([
     'packetsReceivedDelta', 'packetsLostDelta', 'packetsSentDelta',
     'framesDecodedDelta', 'framesDroppedDelta', 'framesEncodedDelta',
     'badCount', 'windowSize', 'pcCount', 'estimatedCapacityKbps',
+    'adaptiveLevel', 'adaptiveScale', 'adaptiveMaxBitrate',
 ])
 STATS_BOOL_FIELDS = set(['valid', 'visible'])
 

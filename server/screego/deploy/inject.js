@@ -20,7 +20,6 @@
   var nativeViewerIntentActive = false;
   var autoSfuSuppressedForCurrentShare = false;
   var adaptiveStreamingMonitorTimer = 0;
-  var adaptiveStreamingState = null;
   var sfuConnection = null;
   var sfuStatusText = '未启用';
   var activeRoomSocket = null;
@@ -71,9 +70,7 @@
   var FPS_OPTIONS = [35, 45, 60];
 
   var MAX_SHARE_FPS = 60;
-  var MIN_SHARE_FPS = 30;
   var STATS_FETCH_TIMEOUT_MS = 3500;
-  var MIN_ADAPTIVE_BITRATE_SCALE = 0.72;
   var trackedPeerCounter = 0;
   var statsFetchRequestSeq = 0;
 
@@ -98,19 +95,6 @@
     netMbps: 20,
     safeNetMbps: 16
   };
-
-  function createAdaptiveStreamingState() {
-    return {
-      bitrateScale: 1,
-      fpsCap: null,
-      downshiftStreak: 0,
-      recoveryStreak: 0,
-      lastReason: '默认',
-      lastMetrics: null
-    };
-  }
-
-  adaptiveStreamingState = createAdaptiveStreamingState();
 
   function loadCfg() {
     try { return JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}') || {}; } catch (e) { return {}; }
@@ -491,7 +475,15 @@
   }
 
   function resetAdaptiveStreamingState() {
-    adaptiveStreamingState = createAdaptiveStreamingState();
+    activePCs.forEach(function (pc) {
+      pc._gcAdaptiveState = null;
+      if (typeof GameCastWebRTCAdaptive !== 'undefined') {
+        pc._gcAdaptiveState = GameCastWebRTCAdaptive.createAdaptiveState(Date.now());
+      }
+      pc._gcAdaptivePrev = null;
+      pc._gcAdaptiveProfile = null;
+      pc._gcAdaptivePendingDecision = '';
+    });
   }
 
   function isSfuMediaReady() {
@@ -725,7 +717,7 @@
   function buildStatsStatusText(message, pc) {
     var lines = [
       '🛰 SFU: ' + getSfuStatusLabel(),
-      '🎛 自适应: ' + getAdaptiveStatusLabel(),
+      '🎛 自适应: ' + getAdaptiveStatusLabel(pc),
       '📡 WebRTC: ' + message
     ];
     var stateText = describePeerConnectionState(pc);
@@ -743,250 +735,182 @@
     return { text: '🔴 差', level: 'poor', value: rttNum };
   }
 
-  function getAdaptiveBitrateScale() {
-    return Math.max(MIN_ADAPTIVE_BITRATE_SCALE, Math.min(1, adaptiveStreamingState && adaptiveStreamingState.bitrateScale ? adaptiveStreamingState.bitrateScale : 1));
+  function getAdaptiveStatusLabel(pc) {
+    var state = pc && pc._gcAdaptiveState;
+    var profile = pc && pc._gcAdaptiveProfile;
+    if (!state || !profile || state.level <= 0) return '默认';
+    return 'L' + state.level + ' / ' + profile.maxWidth + 'x' + profile.maxHeight +
+      ' / ' + profile.maxFramerate + ' FPS / ' + formatKbps(profile.maxBitrate / 1000);
   }
 
-  function getAdaptiveFpsLimit(baseFps) {
-    var fps = baseFps || 35;
-    if (adaptiveStreamingState && adaptiveStreamingState.fpsCap) fps = Math.min(fps, adaptiveStreamingState.fpsCap);
-    return Math.max(MIN_SHARE_FPS, fps);
+  function shouldUseAdaptiveStreaming(pc) {
+    return !!activeDisplayStream &&
+      typeof GameCastWebRTCAdaptive !== 'undefined' &&
+      peerConnectionIsMediaConnected(pc) &&
+      peerConnectionHasVideoSender(pc);
   }
 
-  function adaptiveFpsStepsFor(baseFps) {
-    return FPS_OPTIONS.filter(function (step) {
-      return step <= Math.max(MIN_SHARE_FPS, baseFps || 35);
+  function applyAdaptiveProfile(pc, reason) {
+    if (!shouldUseAdaptiveStreaming(pc)) return Promise.resolve(false);
+    if (reason) console.log('[GameCast] 逐观众自适应:', getTrackedPeerId(pc), reason);
+    return applyBitrate(pc);
+  }
+
+  function getAdaptivePeerDescriptors() {
+    var descriptors = [];
+    var seen = [];
+    activePCs.forEach(function (pc) {
+      if (!shouldUseAdaptiveStreaming(pc) || seen.indexOf(pc) >= 0) return;
+      seen.push(pc);
+      descriptors.push({pc: pc, mode: 'native-host'});
     });
-  }
-
-  function getNextLowerAdaptiveFpsCap(baseFps) {
-    var steps = adaptiveFpsStepsFor(baseFps);
-    var currentCap = adaptiveStreamingState && adaptiveStreamingState.fpsCap ? adaptiveStreamingState.fpsCap : Math.max(MIN_SHARE_FPS, baseFps || 35);
-    for (var i = steps.length - 1; i >= 0; i--) {
-      if (steps[i] < currentCap) return steps[i];
+    var sfuPc = getSfuPeerConnection();
+    if (getSfuRole() === 'host' && shouldUseAdaptiveStreaming(sfuPc) && seen.indexOf(sfuPc) < 0) {
+      descriptors.push({pc: sfuPc, mode: 'sfu-host'});
     }
-    return steps.length ? steps[0] : Math.max(MIN_SHARE_FPS, Math.min(35, baseFps || 35));
+    return descriptors;
   }
 
-  function getNextHigherAdaptiveFpsCap(baseFps) {
-    var steps = adaptiveFpsStepsFor(baseFps);
-    var currentCap = adaptiveStreamingState && adaptiveStreamingState.fpsCap ? adaptiveStreamingState.fpsCap : null;
-    if (!currentCap) return null;
-    for (var i = 0; i < steps.length; i++) {
-      if (steps[i] > currentCap) return steps[i];
+  function getPeerVideoSender(pc) {
+    if (!pc || typeof pc.getSenders !== 'function') return null;
+    var senders = pc.getSenders() || [];
+    for (var i = 0; i < senders.length; i++) {
+      if (senders[i] && senders[i].track && senders[i].track.kind === 'video') return senders[i];
     }
     return null;
   }
 
-  function getAdaptiveStatusLabel() {
-    if (!adaptiveStreamingState) return '默认';
-    var scale = getAdaptiveBitrateScale();
-    var fpsCap = adaptiveStreamingState.fpsCap;
-    if (scale >= 0.99 && !fpsCap) return '默认';
-    var parts = ['码率 ' + Math.round(scale * 100) + '%'];
-    if (fpsCap) parts.push('FPS≤' + fpsCap);
-    if (adaptiveStreamingState.lastReason && adaptiveStreamingState.lastReason !== '默认') parts.push(adaptiveStreamingState.lastReason);
-    return parts.join(' / ');
+  function computePeerAdaptiveProfile(pc) {
+    if (typeof GameCastWebRTCAdaptive === 'undefined') return null;
+    var sender = getPeerVideoSender(pc);
+    var settings = sender && sender.track && typeof sender.track.getSettings === 'function'
+      ? sender.track.getSettings() || {}
+      : {};
+    var cfg = extCfg();
+    var configuredResolution = RESOLUTIONS[cfg.res] || {};
+    var sourceWidth = settings.width || configuredResolution.w || 1280;
+    var sourceHeight = settings.height || configuredResolution.h || 720;
+    var state = pc._gcAdaptiveState || GameCastWebRTCAdaptive.createAdaptiveState(Date.now());
+    pc._gcAdaptiveState = state;
+    var profile = GameCastWebRTCAdaptive.computeEncodingProfile({
+      level: state.level,
+      sourceWidth: sourceWidth,
+      sourceHeight: sourceHeight,
+      configuredFps: cfg.fps || 35,
+      targetBitrate: computeTargetBitrate(),
+      viewerCount: Math.max(1, getAdaptivePeerDescriptors().length),
+      serverSafeBitrate: SERVER_PROFILE.safeNetMbps * 1000000
+    });
+    pc._gcAdaptiveProfile = profile;
+    return profile;
   }
 
-  function getConnectedVideoSenderPeerCount() {
-    return activePCs.filter(function (peer) {
-      return peerConnectionIsMediaConnected(peer) && peerConnectionHasVideoSender(peer);
-    }).length;
-  }
+  function sampleAdaptiveStreamingPeer(descriptor) {
+    var pc = descriptor && descriptor.pc;
+    if (!shouldUseAdaptiveStreaming(pc) || pc._gcAdaptiveFetchPromise) return;
+    var adaptiveState = pc._gcAdaptiveState || GameCastWebRTCAdaptive.createAdaptiveState(Date.now());
+    var adaptiveProfile = computePeerAdaptiveProfile(pc);
+    var prev = pc._gcAdaptivePrev;
+    var statsPromise = getStatsWithTimeout(pc, STATS_FETCH_TIMEOUT_MS);
+    pc._gcAdaptiveFetchPromise = statsPromise;
 
-  function shouldUseAdaptiveStreaming() {
-    if (!activeDisplayStream) return false;
-    if (currentSfuMode()) return true;
-    return getConnectedVideoSenderPeerCount() > 1;
-  }
-
-  function applyAdaptiveStreamingProfile() {
-    if (!activeDisplayStream) return;
-    applyAll();
-    applyLiveConstraints();
-  }
-
-  function degradeAdaptiveStreaming(baseFps, severe) {
-    var changed = false;
-    if (getAdaptiveBitrateScale() > 0.78) {
-      var nextScale = Math.max(0.78, Math.round(getAdaptiveBitrateScale() * (severe ? 0.86 : 0.93) * 100) / 100);
-      if (nextScale !== adaptiveStreamingState.bitrateScale) {
-        adaptiveStreamingState.bitrateScale = nextScale;
-        changed = true;
-      }
-      return changed;
-    }
-
-    var nextCap = getNextLowerAdaptiveFpsCap(baseFps);
-    if (nextCap && nextCap !== adaptiveStreamingState.fpsCap) {
-      adaptiveStreamingState.fpsCap = nextCap;
-      changed = true;
-      return changed;
-    }
-
-    var floorScale = Math.max(MIN_ADAPTIVE_BITRATE_SCALE, Math.round(getAdaptiveBitrateScale() * 0.95 * 100) / 100);
-    if (floorScale !== adaptiveStreamingState.bitrateScale) {
-      adaptiveStreamingState.bitrateScale = floorScale;
-      changed = true;
-    }
-    return changed;
-  }
-
-  function recoverAdaptiveStreaming(baseFps) {
-    var changed = false;
-    if (getAdaptiveBitrateScale() < 1) {
-      var nextScale = Math.min(1, Math.round((getAdaptiveBitrateScale() + 0.1) * 100) / 100);
-      if (nextScale !== adaptiveStreamingState.bitrateScale) {
-        adaptiveStreamingState.bitrateScale = nextScale;
-        changed = true;
-      }
-      if (nextScale < 0.95) return changed;
-    }
-
-    if (adaptiveStreamingState.fpsCap) {
-      var nextCap = getNextHigherAdaptiveFpsCap(baseFps);
-      adaptiveStreamingState.fpsCap = nextCap;
-      changed = true;
-    }
-    return changed;
-  }
-
-  function updateAdaptiveStreamingState(metrics) {
-    if (!shouldUseAdaptiveStreaming()) return;
-
-    var baseFps = extCfg().fps || 35;
-    var rttMs = metrics && typeof metrics.rttMs === 'number' && !isNaN(metrics.rttMs) ? metrics.rttMs : null;
-    var lossPct = metrics && typeof metrics.lossPct === 'number' && !isNaN(metrics.lossPct) ? metrics.lossPct : null;
-    var outboundKbps = metrics && typeof metrics.outboundKbps === 'number' && !isNaN(metrics.outboundKbps) ? metrics.outboundKbps : null;
-    var targetKbps = metrics && typeof metrics.targetKbps === 'number' && !isNaN(metrics.targetKbps) ? metrics.targetKbps : null;
-    var qualityReason = (metrics && metrics.qualityReason) || 'none';
-    var bandwidthLimited = qualityReason === 'bandwidth';
-    var lowThroughput = outboundKbps !== null && targetKbps !== null && targetKbps > 0 && outboundKbps < targetKbps * 0.82;
-
-    var severe = false;
-    var congested = false;
-
-    if ((rttMs !== null && rttMs > 1200) || (lossPct !== null && lossPct > 8)) severe = true;
-    if (lossPct !== null && lossPct > 4) congested = true;
-    if (bandwidthLimited && lowThroughput && ((rttMs !== null && rttMs > 700) || (lossPct !== null && lossPct > 1.5))) congested = true;
-    if (bandwidthLimited && outboundKbps !== null && targetKbps !== null && targetKbps > 0 && outboundKbps < targetKbps * 0.65 && rttMs !== null && rttMs > 900) severe = true;
-    if (severe) congested = true;
-
-    var recovering = !congested &&
-      (rttMs === null || rttMs < 500) &&
-      (lossPct === null || lossPct < 1.5) &&
-      (!bandwidthLimited || !lowThroughput || (outboundKbps !== null && targetKbps !== null && outboundKbps >= targetKbps * 0.92));
-
-    if (congested) {
-      adaptiveStreamingState.downshiftStreak += severe ? 2 : 1;
-      adaptiveStreamingState.recoveryStreak = 0;
-      adaptiveStreamingState.lastReason = severe ? '网络拥塞' : '带宽收缩';
-    } else if (recovering) {
-      adaptiveStreamingState.recoveryStreak += 1;
-      adaptiveStreamingState.downshiftStreak = Math.max(0, adaptiveStreamingState.downshiftStreak - 1);
-      adaptiveStreamingState.lastReason = '链路恢复';
-    } else {
-      adaptiveStreamingState.downshiftStreak = Math.max(0, adaptiveStreamingState.downshiftStreak - 1);
-      adaptiveStreamingState.recoveryStreak = 0;
-      adaptiveStreamingState.lastReason = '观察中';
-    }
-
-    adaptiveStreamingState.lastMetrics = metrics || null;
-
-    var changed = false;
-    if (adaptiveStreamingState.downshiftStreak >= 2) {
-      changed = degradeAdaptiveStreaming(baseFps, severe);
-      adaptiveStreamingState.downshiftStreak = 0;
-    } else if (adaptiveStreamingState.recoveryStreak >= 3) {
-      changed = recoverAdaptiveStreaming(baseFps);
-      adaptiveStreamingState.recoveryStreak = 0;
-    }
-
-    if (changed) applyAdaptiveStreamingProfile();
-  }
-
-  function sampleAdaptiveStreaming() {
-    if (!shouldUseAdaptiveStreaming()) {
-      if (!activeDisplayStream) {
-        resetAdaptiveStreamingState();
-      }
-      if (!currentSfuMode()) {
-        resetAdaptiveStreamingState();
-      }
-      return;
-    }
-
-    if (!activeDisplayStream) {
-      resetAdaptiveStreamingState();
-      return;
-    }
-
-    var descriptor = getStatsPeerDescriptor();
-    if (!descriptor || !descriptor.pc || descriptor.pc.connectionState !== 'connected') return;
-    var pc = descriptor.pc;
-    var prev = pc._gcAdaptivePrev || {
-      bytesSent: 0,
-      remotePacketsLost: 0,
-      remotePacketsReceived: 0,
-      ts: Date.now()
-    };
-
-    pc.getStats().then(function (stats) {
-      var rttMs = null;
-      var lossPct = null;
+    statsPromise.then(function (stats) {
+      var pairDescription = typeof GameCastWebRTCStats !== 'undefined'
+        ? GameCastWebRTCStats.describeSelectedPair(stats)
+        : {pairId: '', path: 'unknown'};
+      var pair = pairDescription.pairId ? stats.get(pairDescription.pairId) || {} : {};
       var outboundBytesTotal = 0;
+      var outboundPacketsSentTotal = 0;
       var qualityReason = 'none';
       var remotePacketsLostTotal = 0;
-      var remotePacketsReceivedTotal = 0;
+      var remoteJitterMs = 0;
       var hasRemoteInbound = false;
-
       stats.forEach(function (report) {
-        if (report.type === 'candidate-pair' && report.state === 'succeeded' && report.nominated && report.currentRoundTripTime) {
-          rttMs = report.currentRoundTripTime * 1000;
-        }
-        if (report.type === 'remote-inbound-rtp' && report.kind === 'video') {
+        if (report.type === 'remote-inbound-rtp' && (report.kind === 'video' || report.mediaType === 'video')) {
           hasRemoteInbound = true;
           remotePacketsLostTotal += report.packetsLost || 0;
-          remotePacketsReceivedTotal += report.packetsReceived || 0;
-          if (rttMs === null && report.roundTripTime) rttMs = report.roundTripTime * 1000;
+          remoteJitterMs = Math.max(remoteJitterMs, (report.jitter || 0) * 1000);
         }
-        if (report.type === 'outbound-rtp' && report.kind === 'video') {
+        if (report.type === 'outbound-rtp' && (report.kind === 'video' || report.mediaType === 'video')) {
           outboundBytesTotal += report.bytesSent || 0;
-          if (report.qualityLimitationReason && report.qualityLimitationReason !== 'none') qualityReason = report.qualityLimitationReason;
+          outboundPacketsSentTotal += report.packetsSent || 0;
+          if (report.qualityLimitationReason) qualityReason = report.qualityLimitationReason;
         }
       });
 
       var now = Date.now();
-      var elapsed = Math.max(0.5, (now - prev.ts) / 1000);
-      var outboundKbps = Math.max(0, (outboundBytesTotal - prev.bytesSent) * 8 / elapsed / 1000);
-
-      if (hasRemoteInbound) {
-        var lostDelta = Math.max(0, remotePacketsLostTotal - prev.remotePacketsLost);
-        var recvDelta = Math.max(0, remotePacketsReceivedTotal - prev.remotePacketsReceived);
-        if (lostDelta + recvDelta > 0) lossPct = (lostDelta * 100) / (lostDelta + recvDelta);
+      var adaptiveSample = {
+        now: now,
+        valid: false,
+        invalidReason: 'baseline',
+        pairId: pairDescription.pairId || '',
+        generation: pc._gcIceGeneration || 0,
+        path: pairDescription.path || 'unknown',
+        lossPercent: 0,
+        jitterMs: remoteJitterMs,
+        outboundKbps: 0,
+        profileKbps: adaptiveProfile ? adaptiveProfile.maxBitrate / 1000 : computeTargetBitrate() / 1000,
+        availableOutgoingBitrate: pair.availableOutgoingBitrate || 0,
+        qualityLimitationReason: qualityReason
+      };
+      if (!pairDescription.pairId) {
+        adaptiveSample.invalidReason = 'no-selected-pair';
+      } else if (!hasRemoteInbound) {
+        adaptiveSample.invalidReason = 'no-remote-inbound';
+      } else if (prev) {
+        if (prev.pairId !== adaptiveSample.pairId) {
+          adaptiveSample.invalidReason = 'pair-changed';
+        } else {
+          var deltas = GameCastWebRTCAdaptive.computeSenderDeltas({
+            bytesSent: outboundBytesTotal,
+            packetsSent: outboundPacketsSentTotal,
+            packetsLost: remotePacketsLostTotal,
+            now: now
+          }, {
+            bytesSent: prev.bytesSent,
+            packetsSent: prev.packetsSent,
+            packetsLost: prev.remotePacketsLost,
+            now: prev.ts
+          });
+          adaptiveSample.valid = deltas.valid;
+          adaptiveSample.invalidReason = deltas.invalidReason;
+          if (deltas.valid) {
+            adaptiveSample.outboundKbps = deltas.outboundKbps;
+            adaptiveSample.lossPercent = deltas.lossPercent;
+          }
+        }
       }
 
       pc._gcAdaptivePrev = {
         bytesSent: outboundBytesTotal,
+        packetsSent: outboundPacketsSentTotal,
         remotePacketsLost: remotePacketsLostTotal,
-        remotePacketsReceived: remotePacketsReceivedTotal,
+        pairId: adaptiveSample.pairId,
         ts: now
       };
+      var evaluation = GameCastWebRTCAdaptive.evaluateAdaptiveSample(adaptiveState, adaptiveSample);
+      adaptiveState = evaluation.state;
+      pc._gcAdaptiveState = adaptiveState;
+      pc._gcAdaptiveLastSample = adaptiveSample;
+      if (evaluation.decision) {
+        var adaptiveDecision = evaluation.decision.type + ':' +
+          evaluation.decision.fromLevel + '->' + evaluation.decision.toLevel;
+        pc._gcAdaptivePendingDecision = adaptiveDecision;
+        applyAdaptiveProfile(pc, adaptiveDecision);
+      }
+    }).catch(function () {}).finally(function () {
+      pc._gcAdaptiveFetchPromise = null;
+    });
+  }
 
-      updateAdaptiveStreamingState({
-        rttMs: rttMs,
-        lossPct: lossPct,
-        outboundKbps: outboundKbps,
-        targetKbps: Math.round((computeTargetBitrate() * getAdaptiveBitrateScale()) / 1000),
-        qualityReason: qualityReason
-      });
-    }).catch(function () {});
+  function sampleAdaptiveStreaming() {
+    if (!activeDisplayStream) return;
+    getAdaptivePeerDescriptors().forEach(sampleAdaptiveStreamingPeer);
   }
 
   function startAdaptiveStreamingMonitor() {
     if (adaptiveStreamingMonitorTimer) return;
-    adaptiveStreamingMonitorTimer = setInterval(sampleAdaptiveStreaming, 4000);
+    adaptiveStreamingMonitorTimer = setInterval(sampleAdaptiveStreaming, 2000);
   }
 
   function buildTransportLabel(baseConnType, mode) {
@@ -2072,9 +1996,22 @@
       pc._gcQualityState = typeof GameCastWebRTCQuality !== 'undefined'
         ? GameCastWebRTCQuality.createQualityState(Date.now())
         : null;
+      pc._gcAdaptiveState = typeof GameCastWebRTCAdaptive !== 'undefined'
+        ? GameCastWebRTCAdaptive.createAdaptiveState(Date.now())
+        : null;
+      pc._gcAdaptiveProfile = null;
+      pc._gcAdaptivePendingDecision = '';
+      pc._gcAdaptiveConnected = false;
       pc._gcStatsSnapshot = null;
       activePCs.push(pc);
       pc.addEventListener('connectionstatechange', function () {
+        if (pc.connectionState === 'connected' && !pc._gcAdaptiveConnected) {
+          pc._gcAdaptiveConnected = true;
+          pc._gcAdaptiveState = typeof GameCastWebRTCAdaptive !== 'undefined'
+            ? GameCastWebRTCAdaptive.createAdaptiveState(Date.now())
+            : null;
+          pc._gcAdaptivePrev = null;
+        }
         if (['closed', 'failed', 'disconnected'].indexOf(pc.connectionState) >= 0) {
           var i = activePCs.indexOf(pc); if (i >= 0) activePCs.splice(i, 1);
         }
@@ -2095,18 +2032,16 @@
 
   function applyBitrate(pc) {
     var c = extCfg();
-    var pref = QUALITY[c.qm] ? QUALITY[c.qm].pref : 'balanced';
-    if (c.qm !== 'quality') pref = 'maintain-framerate';
     var targetBitrate = computeTargetBitrate();
-    var approxPeerCount = Math.max(1, getConnectedVideoSenderPeerCount());
-    var adaptiveEnabled = shouldUseAdaptiveStreaming();
-    var effectiveBitrate = targetBitrate;
-    if (!(currentSfuMode() && activeDisplayStream)) {
-      effectiveBitrate = Math.max(700000, Math.round(targetBitrate / Math.max(1, approxPeerCount)));
-    }
-    effectiveBitrate = Math.max(1200000, Math.round(effectiveBitrate * (adaptiveEnabled ? getAdaptiveBitrateScale() : 1)));
-    var effectiveFps = adaptiveEnabled ? getAdaptiveFpsLimit(c.fps || 35) : (c.fps || 35);
-
+    var profile = computePeerAdaptiveProfile(pc) || {
+      level: 0,
+      maxWidth: (RESOLUTIONS[c.res] || {}).w || 1280,
+      maxHeight: (RESOLUTIONS[c.res] || {}).h || 720,
+      maxFramerate: c.fps || 35,
+      maxBitrate: targetBitrate,
+      scaleResolutionDownBy: 1
+    };
+    var updates = [];
     pc.getSenders().forEach(function (sender) {
       if (sender.track && sender.track.kind === 'video') {
         try {
@@ -2116,42 +2051,47 @@
             p.encodings.forEach(function (encoding, index) {
               var rid = encoding && encoding.rid ? encoding.rid : '';
               if (rid === 'q' || index === 0) {
-                encoding.maxBitrate = Math.max(900000, Math.round(effectiveBitrate * 0.24));
-                encoding.maxFramerate = Math.min(effectiveFps, 24);
-                if (!encoding.scaleResolutionDownBy || encoding.scaleResolutionDownBy > 2) encoding.scaleResolutionDownBy = 2;
+                encoding.maxBitrate = Math.max(250000, Math.round(profile.maxBitrate * 0.24));
+                encoding.maxFramerate = Math.min(profile.maxFramerate, 24);
+                encoding.scaleResolutionDownBy = Math.max(2, profile.scaleResolutionDownBy);
               } else if (rid === 'h' || index === 1) {
-                encoding.maxBitrate = Math.max(2000000, Math.round(effectiveBitrate * 0.6));
-                encoding.maxFramerate = Math.min(effectiveFps, 30);
-                if (!encoding.scaleResolutionDownBy || encoding.scaleResolutionDownBy < 1.5) encoding.scaleResolutionDownBy = 1.5;
+                encoding.maxBitrate = Math.max(500000, Math.round(profile.maxBitrate * 0.6));
+                encoding.maxFramerate = profile.maxFramerate;
+                encoding.scaleResolutionDownBy = Math.max(1.5, profile.scaleResolutionDownBy);
               } else {
-                encoding.maxBitrate = effectiveBitrate;
-                encoding.maxFramerate = effectiveFps;
-                if (!encoding.scaleResolutionDownBy || encoding.scaleResolutionDownBy < 1) encoding.scaleResolutionDownBy = 1;
+                encoding.maxBitrate = profile.maxBitrate;
+                encoding.maxFramerate = profile.maxFramerate;
+                encoding.scaleResolutionDownBy = profile.scaleResolutionDownBy;
               }
             });
           } else {
-            p.encodings[0].maxBitrate = effectiveBitrate;
-            p.encodings[0].maxFramerate = effectiveFps;
+            var encoding = p.encodings[0];
+            encoding.maxBitrate = profile.maxBitrate;
+            encoding.maxFramerate = profile.maxFramerate;
+            encoding.scaleResolutionDownBy = profile.scaleResolutionDownBy;
           }
           p.encodings[0].priority = 'high';
-          p.degradationPreference = pref;
+          p.degradationPreference = 'maintain-framerate';
           try {
             if (sender.track && 'contentHint' in sender.track) {
               sender.track.contentHint = getContentHint(c.qm);
             }
           } catch (e2) {}
-          sender.setParameters(p).catch(function () {});
+          updates.push(sender.setParameters(p).catch(function (error) {
+            console.warn('[GameCast] 逐观众编码参数应用失败:', error && error.name || 'Error');
+            return false;
+          }));
         } catch (e) {}
       }
     });
+    return Promise.all(updates).then(function () { return true; });
   }
 
   function applyAll() { activePCs.forEach(function (pc) { if (pc.connectionState !== 'closed') applyBitrate(pc); }); }
   function applyLiveConstraints() {
     if (!activeVideoTrack || activeVideoTrack.readyState !== 'live') return '无活跃视频';
     var c = extCfg();
-    var effectiveFps = shouldUseAdaptiveStreaming() ? getAdaptiveFpsLimit(c.fps) : c.fps;
-    var con = { frameRate: buildLiveFrameRateConstraints(effectiveFps) };
+    var con = { frameRate: buildLiveFrameRateConstraints(c.fps) };
     var rc = resConstraints();
     if (rc.width) { con.width = rc.width; con.height = rc.height; }
     try {
@@ -3000,7 +2940,12 @@
       pc._lastConnType = buildTransportLabel(connType, mode);
 
       var targetKbpsValue = Math.round(computeTargetBitrate() / 1000);
-      var adaptiveTargetKbpsValue = Math.round((computeTargetBitrate() * getAdaptiveBitrateScale()) / 1000);
+      var adaptiveState = pc._gcAdaptiveState;
+      var adaptiveProfile = computePeerAdaptiveProfile(pc);
+      var adaptiveDecision = pc._gcAdaptivePendingDecision || '';
+      var adaptiveTargetKbpsValue = Math.round(
+        (adaptiveProfile && adaptiveProfile.maxBitrate ? adaptiveProfile.maxBitrate : computeTargetBitrate()) / 1000
+      );
       var currentFlowKbps = Math.max(targetKbpsValue, upKbpsValue || 0, downKbpsValue || 0);
       var estimatedMembers = Math.max(1, getMemberCountEstimate());
       var estimatedViewers = Math.max(1, estimatedMembers - 1);
@@ -3033,7 +2978,7 @@
           '📡 链路: ' + buildTransportLabel(connType, mode) + '  |  延迟: ' + rtt + '  ' + quality + '\n' +
           '📐 发送画面: ' + resolution + '  ' + fps + '  ' + codec + '\n' +
           '📊 实时(浏览器): 上行 ' + formatKbps(upKbpsValue) + '  下行 ' + formatKbps(downKbpsValue) + '  目标 ' + formatKbps(adaptiveTargetKbpsValue) + '\n' +
-          '🎛 自适应: ' + getAdaptiveStatusLabel() + '\n' +
+          '🎛 自适应: ' + getAdaptiveStatusLabel(pc) + '\n' +
           '🧪 丢包: ' + loss + '  抖动: ' + jitter + '  Peer: ' + pc.connectionState + '\n' +
           '🖥 服务器(估算): ' + SERVER_PROFILE.cores + 'C/' + SERVER_PROFILE.ramGB + 'G/' + SERVER_PROFILE.netMbps + 'M  |  当前估算负载 ' + formatMbps(serverLoadKbps / 1000) + '\n' +
           '📦 参考容量(估算): SFU 约≤' + sfuSuggested + ' 人  TURN 约≤' + turnSuggested + ' 人  |  ' + serverNote + '\n' +
@@ -3069,7 +3014,7 @@
           pcState: pc.connectionState,
           pcCount: activePCs.length,
           targetKbps: adaptiveTargetKbpsValue + 'kbps',
-          adaptive: getAdaptiveStatusLabel(),
+          adaptive: getAdaptiveStatusLabel(pc),
           serverLoadKbps: Math.round(serverLoadKbps) + 'kbps',
           serverNote: serverNote,
           estimatedCapacityKbps: Math.round(serverLoadKbps)
@@ -3093,7 +3038,17 @@
           reportPayload.badCount = qualityState.badCount;
           reportPayload.windowSize = qualityState.window.length;
         }
+        if (adaptiveState && adaptiveProfile) {
+          Object.assign(reportPayload, {
+            adaptivePolicyVersion: adaptiveState.policyVersion,
+            adaptiveDecision: adaptiveDecision,
+            adaptiveLevel: adaptiveState.level,
+            adaptiveScale: adaptiveProfile.scaleResolutionDownBy,
+            adaptiveMaxBitrate: adaptiveProfile.maxBitrate
+          });
+        }
         reportStats(reportPayload);
+        if (adaptiveDecision) pc._gcAdaptivePendingDecision = '';
       }
     }).catch(function (err) {
       if (pc.connectionState === 'closed') return;
