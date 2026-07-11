@@ -1,0 +1,834 @@
+diff --git a/ui/src/Room.fullscreen.test.mjs b/ui/src/Room.fullscreen.test.mjs
+new file mode 100644
+index 0000000..b7e082c
+--- /dev/null
++++ b/ui/src/Room.fullscreen.test.mjs
+@@ -0,0 +1,11 @@
++import assert from 'node:assert/strict';
++import { readFile } from 'node:fs/promises';
++import test from 'node:test';
++
++const roomSource = await readFile(new URL('./Room.tsx', import.meta.url), 'utf8');
++
++test('web fullscreen toggles state and reports request failures to the user', () => {
++  assert.match(roomSource, /fullscreenchange/);
++  assert.match(roomSource, /exitFullscreen/);
++  assert.match(roomSource, /enqueueSnackbar\(.*Fullscreen/s);
++});
+diff --git a/ui/src/Room.tsx b/ui/src/Room.tsx
+index de04cf8..fa96762 100644
+--- a/ui/src/Room.tsx
++++ b/ui/src/Room.tsx
+@@ -3,6 +3,7 @@ import {Badge, Box, IconButton, Paper, Tooltip, Typography, Slider, Stack} from
+ import CancelPresentationIcon from '@mui/icons-material/CancelPresentation';
+ import PresentToAllIcon from '@mui/icons-material/PresentToAll';
+ import FullScreenIcon from '@mui/icons-material/Fullscreen';
++import FullscreenExitIcon from '@mui/icons-material/FullscreenExit';
+ import PeopleIcon from '@mui/icons-material/People';
+ import VolumeMuteIcon from '@mui/icons-material/VolumeOff';
+ import VolumeIcon from '@mui/icons-material/VolumeUp';
+@@ -36,20 +37,50 @@ const flags = (user: RoomUser) => {
+ };
+ 
+ interface FullScreenHTMLVideoElement extends HTMLVideoElement {
+-    msRequestFullscreen?: () => void;
+-    mozRequestFullScreen?: () => void;
+-    webkitRequestFullscreen?: () => void;
++    msRequestFullscreen?: () => Promise<void> | void;
++    mozRequestFullScreen?: () => Promise<void> | void;
++    webkitRequestFullscreen?: () => Promise<void> | void;
+ }
+ 
+-const requestFullscreen = (element: FullScreenHTMLVideoElement | null) => {
+-    if (element?.requestFullscreen) {
+-        element.requestFullscreen();
+-    } else if (element?.mozRequestFullScreen) {
+-        element.mozRequestFullScreen();
+-    } else if (element?.msRequestFullscreen) {
+-        element.msRequestFullscreen();
+-    } else if (element?.webkitRequestFullscreen) {
+-        element.webkitRequestFullscreen();
++interface FullScreenDocument extends Document {
++    webkitFullscreenElement?: Element | null;
++    msFullscreenElement?: Element | null;
++    webkitExitFullscreen?: () => Promise<void> | void;
++    msExitFullscreen?: () => Promise<void> | void;
++}
++
++const activeFullscreenElement = (document: FullScreenDocument) =>
++    document.fullscreenElement ||
++    document.webkitFullscreenElement ||
++    document.msFullscreenElement ||
++    null;
++
++const requestFullscreen = async (element: FullScreenHTMLVideoElement | null) => {
++    if (!element) {
++        throw new Error('No video stream is selected');
++    }
++    if (element.requestFullscreen) {
++        await element.requestFullscreen();
++    } else if (element.mozRequestFullScreen) {
++        await element.mozRequestFullScreen();
++    } else if (element.msRequestFullscreen) {
++        await element.msRequestFullscreen();
++    } else if (element.webkitRequestFullscreen) {
++        await element.webkitRequestFullscreen();
++    } else {
++        throw new Error('Fullscreen is not supported by this browser');
++    }
++};
++
++const exitFullscreen = async (document: FullScreenDocument) => {
++    if (document.exitFullscreen) {
++        await document.exitFullscreen();
++    } else if (document.webkitExitFullscreen) {
++        await document.webkitExitFullscreen();
++    } else if (document.msExitFullscreen) {
++        await document.msExitFullscreen();
++    } else {
++        throw new Error('Fullscreen is not supported by this browser');
+     }
+ };
+ 
+@@ -72,10 +103,38 @@ export const Room = ({
+     const [hoverControl, setHoverControl] = React.useState(false);
+     const [selectedStream, setSelectedStream] = React.useState<string | typeof HostStream>();
+     const [videoElement, setVideoElement] = React.useState<FullScreenHTMLVideoElement | null>(null);
++    const [fullscreen, setFullscreen] = React.useState(false);
+ 
+     useShowOnMouseMovement(setShowControl);
+ 
+-    const handleFullscreen = useCallback(() => requestFullscreen(videoElement), [videoElement]);
++    const handleFullscreen = useCallback(async () => {
++        const documentWithFullscreen = document as FullScreenDocument;
++        try {
++            if (activeFullscreenElement(documentWithFullscreen)) {
++                await exitFullscreen(documentWithFullscreen);
++            } else {
++                await requestFullscreen(videoElement);
++            }
++        } catch (error) {
++            const detail = error instanceof Error ? error.message : String(error);
++            enqueueSnackbar(`Fullscreen failed: ${detail}`, {variant: 'error'});
++        }
++    }, [enqueueSnackbar, videoElement]);
++
++    React.useEffect(() => {
++        const syncFullscreenState = () => {
++            setFullscreen(activeFullscreenElement(document as FullScreenDocument) === videoElement);
++        };
++        document.addEventListener('fullscreenchange', syncFullscreenState);
++        document.addEventListener('webkitfullscreenchange', syncFullscreenState);
++        document.addEventListener('MSFullscreenChange', syncFullscreenState);
++        syncFullscreenState();
++        return () => {
++            document.removeEventListener('fullscreenchange', syncFullscreenState);
++            document.removeEventListener('webkitfullscreenchange', syncFullscreenState);
++            document.removeEventListener('MSFullscreenChange', syncFullscreenState);
++        };
++    }, [videoElement]);
+ 
+     React.useEffect(() => {
+         if (selectedStream === HostStream && state.hostStream) {
+@@ -217,7 +276,7 @@ export const Room = ({
+                 <video
+                     ref={setVideoElement}
+                     className={videoClasses()}
+-                    onDoubleClick={handleFullscreen}
++                    onDoubleClick={() => void handleFullscreen()}
+                 />
+             ) : (
+                 <Typography
+@@ -273,13 +332,17 @@ export const Room = ({
+                                 <PeopleIcon fontSize="large" />
+                             </Badge>
+                         </Tooltip>
+-                        <Tooltip title="Fullscreen" arrow>
++                        <Tooltip title={fullscreen ? 'Exit Fullscreen' : 'Fullscreen'} arrow>
+                             <IconButton
+-                                onClick={() => handleFullscreen()}
++                                onClick={() => void handleFullscreen()}
+                                 disabled={!selectedStream}
+                                 size="large"
+                             >
+-                                <FullScreenIcon fontSize="large" />
++                                {fullscreen ? (
++                                    <FullscreenExitIcon fontSize="large" />
++                                ) : (
++                                    <FullScreenIcon fontSize="large" />
++                                )}
+                             </IconButton>
+                         </Tooltip>
+ 
+diff --git a/ui/src/iceSession.test.mjs b/ui/src/iceSession.test.mjs
+new file mode 100644
+index 0000000..1d2a793
+--- /dev/null
++++ b/ui/src/iceSession.test.mjs
+@@ -0,0 +1,121 @@
++import assert from 'node:assert/strict';
++import test from 'node:test';
++
++import {
++    closePeerSession,
++    createPeerSession,
++    createPeerSessionRegistry,
++    flushRemoteCandidates,
++    queueRemoteCandidate,
++    setRemoteDescriptionForSession,
++} from './iceSession.ts';
++
++class FakePeerConnection {
++    added = [];
++    descriptions = [];
++    closed = false;
++    addFailures = [];
++
++    async addIceCandidate(candidate) {
++        const failure = this.addFailures.shift();
++        if (failure) throw failure;
++        this.added.push(candidate);
++    }
++
++    async setRemoteDescription(description) {
++        this.descriptions.push(description);
++    }
++
++    close() {
++        this.closed = true;
++    }
++}
++
++const makeSession = (report = () => undefined) => {
++    const pc = new FakePeerConnection();
++    return {
++        pc,
++        session: createPeerSession({sid: 'sid-1', peerId: 'peer-1', role: 'client', pc, report}),
++    };
++};
++
++test('candidates wait for the remote description and preserve order', async () => {
++    const {pc, session} = makeSession();
++    const first = {candidate: 'candidate:first', usernameFragment: 'remote-a'};
++    const second = {candidate: 'candidate:second', usernameFragment: 'remote-a'};
++
++    await queueRemoteCandidate(session, first);
++    await queueRemoteCandidate(session, second);
++    assert.deepEqual(pc.added, []);
++
++    await setRemoteDescriptionForSession(session, {
++        type: 'offer',
++        sdp: 'v=0\r\na=ice-ufrag:remote-a\r\n',
++    });
++    assert.deepEqual(pc.added, [first, second]);
++});
++
++test('operations arriving before session registration are replayed in order', async () => {
++    const registry = createPeerSessionRegistry();
++    const calls = [];
++    const first = registry.run('sid-1', async () => calls.push('candidate'));
++    const second = registry.run('sid-1', async () => calls.push('description'));
++    const {session} = makeSession();
++
++    registry.register(session);
++    await Promise.all([first, second]);
++    assert.deepEqual(calls, ['candidate', 'description']);
++});
++
++test('retryable InvalidStateError keeps the candidate for a later flush', async () => {
++    const events = [];
++    const {pc, session} = makeSession((event) => events.push(event));
++    await setRemoteDescriptionForSession(session, {
++        type: 'offer',
++        sdp: 'v=0\r\na=ice-ufrag:remote-a\r\n',
++    });
++    const retry = new Error('remote description not ready');
++    retry.name = 'InvalidStateError';
++    pc.addFailures.push(retry);
++
++    const candidate = {candidate: 'candidate:retry', usernameFragment: 'remote-a'};
++    await queueRemoteCandidate(session, candidate);
++    assert.equal(session.pendingRemoteCandidates.length, 1);
++    assert.equal(events.at(-1).type, 'ice_candidate_retry');
++
++    await flushRemoteCandidates(session);
++    assert.deepEqual(pc.added, [candidate]);
++    assert.equal(session.pendingRemoteCandidates.length, 0);
++});
++
++test('a new remote username fragment advances generation and drops stale candidates', async () => {
++    const events = [];
++    const {pc, session} = makeSession((event) => events.push(event));
++    await setRemoteDescriptionForSession(session, {
++        type: 'offer',
++        sdp: 'v=0\r\na=ice-ufrag:remote-a\r\n',
++    });
++    await setRemoteDescriptionForSession(session, {
++        type: 'offer',
++        sdp: 'v=0\r\na=ice-ufrag:remote-b\r\n',
++    });
++    await queueRemoteCandidate(session, {
++        candidate: 'candidate:old',
++        usernameFragment: 'remote-a',
++    });
++
++    assert.equal(session.generation, 1);
++    assert.deepEqual(pc.added, []);
++    assert.equal(events.at(-1).type, 'ice_candidate_stale');
++});
++
++test('closing a session clears queued candidates and ignores late candidates', async () => {
++    const {pc, session} = makeSession();
++    await queueRemoteCandidate(session, {candidate: 'candidate:queued'});
++    closePeerSession(session);
++    await queueRemoteCandidate(session, {candidate: 'candidate:late'});
++
++    assert.equal(pc.closed, true);
++    assert.equal(session.pendingRemoteCandidates.length, 0);
++    assert.deepEqual(pc.added, []);
++});
+diff --git a/ui/src/iceSession.ts b/ui/src/iceSession.ts
+new file mode 100644
+index 0000000..8d3d2f7
+--- /dev/null
++++ b/ui/src/iceSession.ts
+@@ -0,0 +1,223 @@
++export type PeerRole = 'host' | 'client';
++
++export type IceDiagnostic = {
++    type: string;
++    sid: string;
++    role: PeerRole;
++    generation: number;
++    error?: string;
++};
++
++export type PeerSession = {
++    sid: string;
++    peerId: string;
++    role: PeerRole;
++    pc: RTCPeerConnection;
++    remoteDescriptionReady: boolean;
++    pendingRemoteCandidates: RTCIceCandidateInit[];
++    remoteUsernameFragment?: string;
++    generation: number;
++    closed: boolean;
++    recoveryCount: number;
++    cooldownUntil: number;
++    report: (event: IceDiagnostic) => void;
++};
++
++type SessionOperation = (session: PeerSession) => Promise<void> | void;
++
++export type PeerSessionRegistry = {
++    register: (session: PeerSession) => void;
++    run: (sid: string, operation: SessionOperation) => Promise<void>;
++    get: (sid: string) => PeerSession | undefined;
++    close: (sid: string) => void;
++    closeAll: () => void;
++};
++
++const usernameFragmentFromSDP = (sdp?: string): string | undefined => {
++    const match = sdp?.match(/^a=ice-ufrag:([^\r\n]+)/m);
++    return match?.[1];
++};
++
++const errorName = (error: unknown): string =>
++    error instanceof Error ? `${error.name}: ${error.message}` : String(error);
++
++const isRetryableCandidateError = (error: unknown): boolean =>
++    error instanceof DOMException
++        ? error.name === 'InvalidStateError'
++        : error instanceof Error && error.name === 'InvalidStateError';
++
++export const createPeerSession = ({
++    sid,
++    peerId,
++    role,
++    pc,
++    report = () => undefined,
++}: {
++    sid: string;
++    peerId: string;
++    role: PeerRole;
++    pc: RTCPeerConnection;
++    report?: (event: IceDiagnostic) => void;
++}): PeerSession => ({
++    sid,
++    peerId,
++    role,
++    pc,
++    remoteDescriptionReady: false,
++    pendingRemoteCandidates: [],
++    generation: 0,
++    closed: false,
++    recoveryCount: 0,
++    cooldownUntil: 0,
++    report,
++});
++
++export const createPeerSessionRegistry = (): PeerSessionRegistry => {
++    const sessions = new Map<string, PeerSession>();
++    const pending = new Map<
++        string,
++        Array<{
++            operation: SessionOperation;
++            resolve: () => void;
++            reject: (error: unknown) => void;
++        }>
++    >();
++
++    const runOperation = async (session: PeerSession, operation: SessionOperation) => {
++        if (!session.closed) await operation(session);
++    };
++
++    return {
++        register(session) {
++            sessions.set(session.sid, session);
++            const queued = pending.get(session.sid) || [];
++            pending.delete(session.sid);
++            void queued.reduce(
++                (chain, item) =>
++                    chain
++                        .then(() => runOperation(session, item.operation))
++                        .then(item.resolve, item.reject),
++                Promise.resolve()
++            );
++        },
++        run(sid, operation) {
++            const session = sessions.get(sid);
++            if (session) return runOperation(session, operation);
++            return new Promise<void>((resolve, reject) => {
++                const queued = pending.get(sid) || [];
++                queued.push({operation, resolve, reject});
++                pending.set(sid, queued);
++            });
++        },
++        get(sid) {
++            return sessions.get(sid);
++        },
++        close(sid) {
++            const session = sessions.get(sid);
++            if (session) closePeerSession(session);
++            sessions.delete(sid);
++            const queued = pending.get(sid) || [];
++            queued.forEach((item) => item.resolve());
++            pending.delete(sid);
++        },
++        closeAll() {
++            sessions.forEach(closePeerSession);
++            sessions.clear();
++            pending.forEach((queued) => queued.forEach((item) => item.resolve()));
++            pending.clear();
++        },
++    };
++};
++
++const candidateMatchesGeneration = (
++    session: PeerSession,
++    candidate: RTCIceCandidateInit
++): boolean =>
++    !candidate.usernameFragment ||
++    !session.remoteUsernameFragment ||
++    candidate.usernameFragment === session.remoteUsernameFragment;
++
++export const flushRemoteCandidates = async (session: PeerSession): Promise<void> => {
++    if (session.closed || !session.remoteDescriptionReady) return;
++
++    while (session.pendingRemoteCandidates.length > 0) {
++        const candidate = session.pendingRemoteCandidates[0];
++        if (!candidateMatchesGeneration(session, candidate)) {
++            session.pendingRemoteCandidates.shift();
++            session.report({
++                type: 'ice_candidate_stale',
++                sid: session.sid,
++                role: session.role,
++                generation: session.generation,
++            });
++            continue;
++        }
++
++        try {
++            await session.pc.addIceCandidate(candidate);
++            session.pendingRemoteCandidates.shift();
++        } catch (error) {
++            session.report({
++                type: isRetryableCandidateError(error)
++                    ? 'ice_candidate_retry'
++                    : 'ice_candidate_failed',
++                sid: session.sid,
++                role: session.role,
++                generation: session.generation,
++                error: errorName(error),
++            });
++            if (!isRetryableCandidateError(error)) {
++                session.pendingRemoteCandidates.shift();
++                continue;
++            }
++            return;
++        }
++    }
++};
++
++export const queueRemoteCandidate = (
++    session: PeerSession,
++    candidate: RTCIceCandidateInit
++): Promise<void> => {
++    if (session.closed) return Promise.resolve();
++    session.pendingRemoteCandidates.push(candidate);
++    return flushRemoteCandidates(session);
++};
++
++export const setRemoteDescriptionForSession = async (
++    session: PeerSession,
++    description: RTCSessionDescriptionInit
++): Promise<void> => {
++    if (session.closed) return;
++
++    try {
++        await session.pc.setRemoteDescription(description);
++        const nextUsernameFragment = usernameFragmentFromSDP(description.sdp);
++        if (
++            session.remoteUsernameFragment &&
++            nextUsernameFragment &&
++            session.remoteUsernameFragment !== nextUsernameFragment
++        ) {
++            session.generation += 1;
++        }
++        session.remoteUsernameFragment = nextUsernameFragment;
++        session.remoteDescriptionReady = true;
++        await flushRemoteCandidates(session);
++    } catch (error) {
++        session.report({
++            type: 'remote_description_failed',
++            sid: session.sid,
++            role: session.role,
++            generation: session.generation,
++            error: errorName(error),
++        });
++        throw error;
++    }
++};
++
++export const closePeerSession = (session: PeerSession): void => {
++    if (session.closed) return;
++    session.closed = true;
++    session.pendingRemoteCandidates.length = 0;
++    session.pc.close();
++};
+diff --git a/ui/src/useRoom.ts b/ui/src/useRoom.ts
+index 5385b9b..dbd15cf 100644
+--- a/ui/src/useRoom.ts
++++ b/ui/src/useRoom.ts
+@@ -14,6 +14,14 @@ import {loadSettings, resolveCodecPlaceholder} from './settings';
+ import {urlWithSlash} from './url';
+ import {authModeToRoomMode} from './useConfig';
+ import {getFromURL, useRoomID} from './useRoomID';
++import {
++    closePeerSession,
++    createPeerSession,
++    createPeerSessionRegistry,
++    PeerSession,
++    queueRemoteCandidate,
++    setRemoteDescriptionForSession,
++} from './iceSession';
+ 
+ export type RoomState = false | ConnectedRoom;
+ export type ConnectedRoom = {
+@@ -39,20 +47,29 @@ export interface UseRoom {
+ const relayConfig: Partial<RTCConfiguration> =
+     window.location.search.indexOf('forceTurn=true') !== -1 ? {iceTransportPolicy: 'relay'} : {};
+ 
+-const hostSession = async ({
++const hostSession = ({
+     sid,
++    peerId,
+     ice,
+     send,
+     done,
+     stream,
+ }: {
+     sid: string;
++    peerId: string;
+     ice: ICEServer[];
+     send: (e: OutgoingMessage) => void;
+     done: () => void;
+     stream: MediaStream;
+-}): Promise<RTCPeerConnection> => {
++}): PeerSession => {
+     const peer = new RTCPeerConnection({...relayConfig, iceServers: ice});
++    const session = createPeerSession({
++        sid,
++        peerId,
++        role: 'host',
++        pc: peer,
++        report: (event) => console.warn('ICE session diagnostic', event),
++    });
+     peer.onicecandidate = (event) => {
+         if (!event.candidate) {
+             return;
+@@ -67,7 +84,7 @@ const hostSession = async ({
+             peer.connectionState === 'disconnected' ||
+             peer.connectionState === 'failed'
+         ) {
+-            peer.close();
++            closePeerSession(session);
+             done();
+         }
+     };
+@@ -104,28 +121,41 @@ const hostSession = async ({
+         }
+     }
+ 
+-    const hostOffer = await peer.createOffer({offerToReceiveVideo: true});
+-    await peer.setLocalDescription(hostOffer);
+-    send({type: 'hostoffer', payload: {value: hostOffer, sid: sid}});
++    void (async () => {
++        const hostOffer = await peer.createOffer({offerToReceiveVideo: true});
++        await peer.setLocalDescription(hostOffer);
++        send({type: 'hostoffer', payload: {value: hostOffer, sid: sid}});
++    })().catch((error) =>
++        console.error('Host session negotiation failed', {sid, error: String(error)})
++    );
+ 
+-    return peer;
++    return session;
+ };
+ 
+-const clientSession = async ({
++const clientSession = ({
+     sid,
++    peerId,
+     ice,
+     send,
+     done,
+     onTrack,
+ }: {
+     sid: string;
++    peerId: string;
+     ice: ICEServer[];
+     send: (e: OutgoingMessage) => void;
+     onTrack: (s: MediaStream) => void;
+     done: () => void;
+-}): Promise<RTCPeerConnection> => {
++}): PeerSession => {
+     console.log('ice', ice);
+     const peer = new RTCPeerConnection({...relayConfig, iceServers: ice});
++    const session = createPeerSession({
++        sid,
++        peerId,
++        role: 'client',
++        pc: peer,
++        report: (event) => console.warn('ICE session diagnostic', event),
++    });
+     peer.onicecandidate = (event) => {
+         if (!event.candidate) {
+             return;
+@@ -139,7 +169,7 @@ const clientSession = async ({
+             peer.connectionState === 'disconnected' ||
+             peer.connectionState === 'failed'
+         ) {
+-            peer.close();
++            closePeerSession(session);
+             done();
+         }
+     };
+@@ -154,7 +184,7 @@ const clientSession = async ({
+         }
+     };
+ 
+-    return peer;
++    return session;
+ };
+ 
+ export type FCreateRoom = (room: RoomCreate | JoinRoom) => Promise<void>;
+@@ -163,8 +193,8 @@ export const useRoom = (config: UIConfig): UseRoom => {
+     const [roomID, setRoomID] = useRoomID();
+     const {enqueueSnackbar} = useSnackbar();
+     const conn = React.useRef<WebSocket | undefined>(undefined);
+-    const host = React.useRef<Record<string, RTCPeerConnection>>({});
+-    const client = React.useRef<Record<string, RTCPeerConnection>>({});
++    const host = React.useRef(createPeerSessionRegistry());
++    const client = React.useRef(createPeerSessionRegistry());
+     const stream = React.useRef<MediaStream>(undefined);
+ 
+     const [state, setState] = React.useState<RoomState>(false);
+@@ -205,83 +235,103 @@ export const useRoom = (config: UIConfig): UseRoom => {
+                             if (!stream.current) {
+                                 return;
+                             }
+-                            hostSession({
+-                                sid: event.payload.id,
+-                                stream: stream.current!,
+-                                ice: event.payload.iceServers,
+-                                send,
+-                                done: () => delete host.current[event.payload.id],
+-                            }).then((peer) => {
+-                                host.current[event.payload.id] = peer;
+-                            });
++                            host.current.register(
++                                hostSession({
++                                    sid: event.payload.id,
++                                    peerId: event.payload.peer,
++                                    stream: stream.current!,
++                                    ice: event.payload.iceServers,
++                                    send,
++                                    done: () => host.current.close(event.payload.id),
++                                })
++                            );
+                             return;
+                         case 'clientsession':
+                             const {id: sid, peer} = event.payload;
+-                            clientSession({
+-                                sid,
+-                                send,
+-                                ice: event.payload.iceServers,
+-                                done: () => {
+-                                    delete client.current[sid];
+-                                    setState((current) =>
+-                                        current
+-                                            ? {
+-                                                  ...current,
+-                                                  clientStreams: current.clientStreams.filter(
+-                                                      ({id}) => id !== sid
+-                                                  ),
+-                                              }
+-                                            : current
+-                                    );
+-                                },
+-                                onTrack: (stream) =>
+-                                    setState((current) =>
+-                                        current
+-                                            ? {
+-                                                  ...current,
+-                                                  clientStreams: [
+-                                                      ...current.clientStreams,
+-                                                      {
+-                                                          id: sid,
+-                                                          stream,
+-                                                          peer_id: peer,
+-                                                      },
+-                                                  ],
+-                                              }
+-                                            : current
+-                                    ),
+-                            }).then((peer) => (client.current[event.payload.id] = peer));
++                            client.current.register(
++                                clientSession({
++                                    sid,
++                                    peerId: peer,
++                                    send,
++                                    ice: event.payload.iceServers,
++                                    done: () => {
++                                        client.current.close(sid);
++                                        setState((current) =>
++                                            current
++                                                ? {
++                                                      ...current,
++                                                      clientStreams: current.clientStreams.filter(
++                                                          ({id}) => id !== sid
++                                                      ),
++                                                  }
++                                                : current
++                                        );
++                                    },
++                                    onTrack: (stream) =>
++                                        setState((current) =>
++                                            current
++                                                ? {
++                                                      ...current,
++                                                      clientStreams: [
++                                                          ...current.clientStreams,
++                                                          {
++                                                              id: sid,
++                                                              stream,
++                                                              peer_id: peer,
++                                                          },
++                                                      ],
++                                                  }
++                                                : current
++                                        ),
++                                })
++                            );
+                             return;
+                         case 'clientice':
+-                            host.current[event.payload.sid]?.addIceCandidate(event.payload.value);
++                            void host.current.run(event.payload.sid, (session) =>
++                                queueRemoteCandidate(session, event.payload.value)
++                            );
+                             return;
+                         case 'clientanswer':
+-                            host.current[event.payload.sid]?.setRemoteDescription(
+-                                event.payload.value
+-                            );
++                            void host.current
++                                .run(event.payload.sid, (session) =>
++                                    setRemoteDescriptionForSession(session, event.payload.value)
++                                )
++                                .catch((error) =>
++                                    console.error('Client answer failed', {
++                                        sid: event.payload.sid,
++                                        error: String(error),
++                                    })
++                                );
+                             return;
+                         case 'hostoffer':
+-                            (async () => {
+-                                await client.current[event.payload.sid]?.setRemoteDescription(
+-                                    event.payload.value
+-                                );
+-                                const answer =
+-                                    await client.current[event.payload.sid]?.createAnswer();
+-                                await client.current[event.payload.sid]?.setLocalDescription(
+-                                    answer
++                            void client.current
++                                .run(event.payload.sid, async (session) => {
++                                    await setRemoteDescriptionForSession(
++                                        session,
++                                        event.payload.value
++                                    );
++                                    const answer = await session.pc.createAnswer();
++                                    await session.pc.setLocalDescription(answer);
++                                    send({
++                                        type: 'clientanswer',
++                                        payload: {sid: event.payload.sid, value: answer},
++                                    });
++                                })
++                                .catch((error) =>
++                                    console.error('Host offer failed', {
++                                        sid: event.payload.sid,
++                                        error: String(error),
++                                    })
+                                 );
+-                                send({
+-                                    type: 'clientanswer',
+-                                    payload: {sid: event.payload.sid, value: answer},
+-                                });
+-                            })();
+                             return;
+                         case 'hostice':
+-                            client.current[event.payload.sid]?.addIceCandidate(event.payload.value);
++                            void client.current.run(event.payload.sid, (session) =>
++                                queueRemoteCandidate(session, event.payload.value)
++                            );
+                             return;
+                         case 'endshare':
+-                            client.current[event.payload]?.close();
+-                            host.current[event.payload]?.close();
++                            client.current.close(event.payload);
++                            host.current.close(event.payload);
+                             setState((current) =>
+                                 current
+                                     ? {
+@@ -362,10 +412,7 @@ export const useRoom = (config: UIConfig): UseRoom => {
+     };
+ 
+     const stopShare = async () => {
+-        Object.values(host.current).forEach((peer) => {
+-            peer.close();
+-        });
+-        host.current = {};
++        host.current.closeAll();
+         stream.current?.getTracks().forEach((track) => track.stop());
+         stream.current = undefined;
+         conn.current?.send(JSON.stringify({type: 'stopshare', payload: {}}));

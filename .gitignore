@@ -8,6 +8,8 @@ logs/
 QF_logs/
 Wei_logs/
 *.log
+__pycache__/
+*.pyc
 
 # Temporary build/download/check directories
 tmp/

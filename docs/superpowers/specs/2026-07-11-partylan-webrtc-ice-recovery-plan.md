@@ -389,6 +389,44 @@ git diff --check
 
 ## 15. 执行状态
 
-- 状态：待实施
-- 当前阶段：P0 源码与构建基线
+- 状态：P1-P3 已部署，等待真实影子数据验收
+- 当前阶段：P3 影子观测
 - 自动恢复默认状态：关闭
+
+### 15.1 已完成
+
+- P0：确认 Screego 上游基线为 `f946cee83b61d9f47c2f1c2238fb31f4042b628a`，`useRoom.ts` 与本地 vendor 快照哈希一致。
+- P1：PeerConnection 同步登记、登记前操作队列、远端 SDP 前候选队列、候选顺序、临时 `InvalidStateError` 重放和 ICE ufrag 代次过滤已实现。
+- P2：每条 PeerConnection 独立采样 selected pair、TURN/UDP/TCP、地址族、增量包/字节/帧、RTT、jitter 和发送端限制原因；服务端使用字段白名单且不保存候选地址、credential 或 SDP。
+- P3：`ice-shadow-v1` 状态机已实现，仅产生 `would_restart_ice`、`would_rebuild_session` 或 `would_protect_bitrate` 影子结论，不执行恢复动作。
+- 可复现构建：补丁可无警告应用到干净上游 worktree；新镜像 `gamecast-sfu:ice-recovery-shadow-v1` 已在独立 HTTP/TURN 端口通过烟雾测试。
+
+### 15.2 自动验证
+
+- Node 网页、stats、策略和集成测试：25 项通过。
+- Python 控制面和 stats API 测试：10 项通过。
+- ICE session 行为测试：5 项通过。
+- Screego UI production build：通过。
+- Screego `ws` 与 `turn` Go 测试：通过。
+- Linux amd64 Screego 交叉编译：通过。
+
+### 15.3 保持关闭
+
+- P4 自动 ICE restart：关闭，等待影子阶段退出门槛。
+- P5 单观看者 session 重建：未实现，等待 P4 数据。
+- P6 TURN 保护档：未启用，等待 P4/P5 数据。
+
+### 15.4 生产部署记录
+
+- 部署时间：2026-07-11 02:10 UTC。
+- 生产镜像：`gamecast-sfu:ice-recovery-shadow-v1`。
+- 生产镜像 ID：`sha256:66525ea7980180c947a8f73cfa514c3978b6a88705e6e161b3004c38a88e1de6`。
+- 完整备份：`/root/screego/backups/ice-recovery-20260711T020737Z`。
+- 旧镜像 `gamecast-sfu:v2` 已保留，备份目录另含镜像 tar、容器 inspect、compose、nginx、register、两份 inject 和 SFU脚本。
+- 新镜像使用带已验收全屏修复的 `assets/index-BLH5PjfQ.js`，没有回退 2026-07-10 的网页全屏行为。
+- 页面脚本顺序：`webrtc-stats.js?v=1`、`webrtc-quality.js?v=1`、`inject.js?v=6.14`、`sfu-client.js?v=1.8`。
+- 生产 HTTP 5060、TURN TCP/UDP 3478、nginx 和 register service 均通过健康检查。
+- Playwright 真实浏览器检查：GameCast登录页正常，四个脚本与 UI bundle 均为 HTTP 200，控制台 0 errors。
+- stats落盘烟雾验证：策略版本、路径、传输和影子结论可保存；credential、SDP和候选地址被白名单过滤。人工 smoke行已从数据文件清理。
+
+首次容器切换因直接执行 `docker compose` 未加载 `/etc/gamecast-sfu/runtime.env` 而失败，脚本立即恢复 `gamecast-sfu:v2`。确认旧容器、HTTP和TURN恢复后，第二次使用 `docker compose --env-file /etc/gamecast-sfu/runtime.env` 完成切换。后续部署和回滚必须显式使用该 env file。
