@@ -8,6 +8,7 @@ func TestParseMode(t *testing.T) {
 		want  Mode
 		ok    bool
 	}{
+		{input: "gamecast-client", want: ModeGameCastClient, ok: true},
 		{input: "loopback", want: ModeLoopback, ok: true},
 		{input: "lan", want: ModeLAN, ok: true},
 		{input: "networked", want: ModeNetworked, ok: true},
@@ -27,11 +28,11 @@ func TestParseMode(t *testing.T) {
 	}
 }
 
-func TestResolveModeDefaultsToTailscaleSystem(t *testing.T) {
+func TestResolveModeDefaultsToGameCastClient(t *testing.T) {
 	t.Setenv("PARTYLAN_MODE", "")
 
-	if got := ResolveMode(); got != ModeTailscaleSystem {
-		t.Fatalf("ResolveMode()=%q want %q", got, ModeTailscaleSystem)
+	if got := ResolveMode(); got != ModeGameCastClient {
+		t.Fatalf("ResolveMode()=%q want %q", got, ModeGameCastClient)
 	}
 }
 

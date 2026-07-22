@@ -201,6 +201,12 @@
     var maxHeight = profile ? Math.min(sourceHeight, profile.maxHeight) : sourceHeight;
     var maxFramerate = profile ? Math.min(configuredFps, profile.maxFramerate) : configuredFps;
     var profileBitrate = profile ? profile.maxBitrate : targetBitrate;
+    var protectionMaxWidth = Math.max(0, Number(options.protectionMaxWidth) || 0);
+    var protectionMaxHeight = Math.max(0, Number(options.protectionMaxHeight) || 0);
+    var protectionMaxBitrate = Math.max(0, Number(options.protectionMaxBitrate) || 0);
+    if (protectionMaxWidth > 0) maxWidth = Math.min(maxWidth, protectionMaxWidth);
+    if (protectionMaxHeight > 0) maxHeight = Math.min(maxHeight, protectionMaxHeight);
+    if (protectionMaxBitrate > 0) profileBitrate = Math.min(profileBitrate, protectionMaxBitrate);
     var maxBitrate = Math.round(Math.min(targetBitrate, profileBitrate, serverSafeBitrate / viewerCount));
     var scaleResolutionDownBy = roundScale(Math.max(
       1,

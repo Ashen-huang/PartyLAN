@@ -69,7 +69,8 @@
 
 .audio-btn.active {
   background: var(--accent-bg);
-  color: #f5ffff;
+  color: var(--on-accent);
+  box-shadow: 0 6px 16px var(--highlight-glow);
 }
 
 .audio-btn.muted {
@@ -130,7 +131,7 @@
   padding: 12px;
   border-radius: 14px;
   border: 1px solid rgba(92, 138, 173, 0.18);
-  background: rgba(255, 255, 255, 0.56);
+  background: var(--surface-muted);
 }
 
 .audio-capability-card.ready {
@@ -164,6 +165,29 @@
   border-top: 1px solid var(--border-color);
 }
 
+.audio-share-mode-row {
+  display: flex;
+  gap: 8px;
+  padding: 0 14px 14px;
+}
+
+.audio-share-mode-btn {
+  padding: 8px 12px;
+  border: 1px solid rgba(92, 138, 173, 0.18);
+  border-radius: 10px;
+  background: var(--surface-muted);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.audio-share-mode-btn.active {
+  border-color: rgba(43, 199, 172, 0.34);
+  background: rgba(43, 199, 172, 0.08);
+  color: var(--accent-strong);
+}
+
 .audio-share-list {
   display: flex;
   flex-direction: column;
@@ -182,7 +206,7 @@
   padding: 8px 10px;
   border: 1px solid rgba(92, 138, 173, 0.18);
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.54);
+  background: var(--surface-raised);
   font-size: 12px;
   color: var(--text-primary);
   cursor: pointer;
@@ -192,12 +216,16 @@
 
 .audio-share-item:hover {
   border-color: rgba(58, 139, 166, 0.28);
-  background: rgba(255, 255, 255, 0.74);
+  background: var(--hover-bg);
 }
 
 .audio-share-item.selected {
   border-color: rgba(43, 199, 172, 0.34);
   background: rgba(43, 199, 172, 0.08);
+}
+
+.audio-share-item.disabled {
+  opacity: 0.56;
 }
 
 .audio-share-item input {

@@ -247,5 +247,34 @@
 
 ## 10. 执行状态
 
-- 状态：进行中
-- 当前阶段：P1 服务端控制面
+- 状态：实现完成，等待真实双端媒体验收
+- 当前阶段：P5 手工验收
+
+### 10.1 已完成
+
+- P1：服务端房间来源、统一 Presence、原子共享租约与兼容接口已部署。
+- P2：Go 客户端已接入稳定 participant ID、Presence 生命周期和共享租约生命周期。
+- P3：客户端房间来源标签、浏览器分流、统一成员列表、共享占用提示和远端共享状态收尾已完成。
+- P4：网页端已接入 Presence、共享前 claim、异常 release、客户端房强制 SFU viewer/host 切换和客户端成员补充。
+- P5：生产前端与 `build/bin/PartyLAN.exe` 已构建，登录页部署前后布局盒坐标一致，浏览器控制台无脚本错误。
+
+### 10.2 部署记录
+
+- 网页脚本备份：`/root/screego/backups/cross-client-web-20260710T081500Z`
+- 部署脚本 SHA-256：`070cd9a33c4255680cd23dc17366db8eedf5130a826d9ff8eec7a3dcd41efaec`
+- `sfu-client.js` 与 nginx 配置哈希未变化，未修改网页主题 CSS 或 Screego 基础 bundle。
+
+### 10.3 自动验证
+
+- `npm run build`：通过。
+- `go test .`：通过。
+- `go test ./internal/gamecast/...`：通过。
+- 客户端编排 Node 测试：14 项通过。
+- 网页控制面 Node 测试：6 项通过。
+- 服务端 Python 测试：9 项通过。
+- Wails production build：通过；原生媒体元数据与 Opus runtime 校验通过。
+- `PartyLAN.exe` 烟雾启动：进程保持运行，未发生启动即退出。
+
+### 10.4 待验收
+
+- 使用实际登录的网页端与新构建客户端执行第 7.3 节九项双端矩阵，重点验证客户端原生共享的网页音画、网页共享的客户端音画，以及双方同时点击共享时的唯一租约结果。

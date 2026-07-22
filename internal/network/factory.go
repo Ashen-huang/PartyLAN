@@ -8,6 +8,8 @@ import (
 
 func NewNetworkForMode(mode appmode.Mode) (Network, error) {
 	switch mode {
+	case appmode.ModeGameCastClient:
+		return NewLoopbackNetwork("gamecast-client"), nil
 	case appmode.ModeLoopback:
 		return NewLoopbackNetwork("host-node"), nil
 	case appmode.ModeLAN:

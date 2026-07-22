@@ -167,6 +167,7 @@
       ) {
         sample.invalidReason = 'counter-reset';
       } else {
+        sample.elapsedMs = elapsedMs;
         sample.packetsReceivedDelta = received;
         sample.packetsLostDelta = lost;
         sample.packetsSentDelta = sent;
@@ -187,8 +188,35 @@
     return sample;
   }
 
+  function buildViewerQualityReport(sample, context) {
+    context = context || {};
+    var mode = String(context.mode || '');
+    var room = String(context.room || '').trim();
+    var participantId = String(context.participantId || '').trim();
+    var totalPackets = number(sample && sample.packetsReceivedDelta) + number(sample && sample.packetsLostDelta);
+    if (
+      !sample || !sample.valid ||
+      (mode !== 'native-viewer' && mode !== 'sfu-viewer') ||
+      !room || !participantId || !sample.pairId || !(number(sample.elapsedMs) > 0) ||
+      totalPackets < 20
+    ) return null;
+    return {
+      room: room,
+      participantId: participantId,
+      generation: String(sample.generation || 0),
+      pairId: String(sample.pairId),
+      packetsReceivedDelta: Math.max(0, Math.round(number(sample.packetsReceivedDelta))),
+      packetsLostDelta: Math.max(0, Math.round(number(sample.packetsLostDelta))),
+      framesDroppedDelta: Math.max(0, Math.round(number(sample.framesDroppedDelta))),
+      decodedFps: Math.max(0, number(sample.framesDecodedDelta) * 1000 / number(sample.elapsedMs)),
+      incomingBitrateKbps: Math.max(0, number(sample.downKbps)),
+      jitterMs: Math.max(0, number(sample.jitterMs))
+    };
+  }
+
   return {
     describeSelectedPair: describeSelectedPair,
-    buildWebRTCSample: buildWebRTCSample
+    buildWebRTCSample: buildWebRTCSample,
+    buildViewerQualityReport: buildViewerQualityReport
   };
 });

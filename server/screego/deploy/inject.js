@@ -5,6 +5,7 @@
   var HISTORY_KEY = 'screegoRoomHistory';
   var REGISTER_URL = '/api/register';
   var STATS_URL = '/api/stats';
+  var QUALITY_REPORT_URL = '/api/quality/report';
   var ROOM_STATE_URL = '/api/room-state';
   var PRESENCE_URL = '/api/presence';
   var SHARE_URL = '/api/share';
@@ -12,6 +13,8 @@
   var PRESENT_TO_ALL_ICON_PATH = 'M21 3H3c-1.11 0-2 .89-2 2v14c0 1.11.89 2 2 2h18c1.11 0 2-.89 2-2V5c0-1.11-.89-2-2-2m0 16.02H3V4.98h18zM10 12H8l4-4 4 4h-2v4h-4z';
   var ROOM_STATE_TTL = 15;
   var ROOM_STATE_HEARTBEAT_MS = 5000;
+  var RECOVERY_STABLE_MS = 20000;
+  var RECOVERY_BITRATE_STEPS = [6000000, 8000000];
   var AUTO_SFU_MIN_PARTICIPANTS = 3;
   var NativeWebSocket = window.WebSocket;
   var currentUser = null;
@@ -26,6 +29,8 @@
   var activeRoomSocketRoomId = '';
   var roomStateHeartbeatTimer = 0;
   var roomStateHeartbeatRoomId = '';
+  var lastRoomStatePostSignature = '';
+  var lastRoomStatePostAt = 0;
   var roomStateFetchPromise = null;
   var roomStateFetchRoomId = '';
   var lastRoomState = null;
@@ -176,8 +181,32 @@
     return currentUser || lastKnownAuthUser || '网页成员';
   }
 
+  function canSendProtectedControl() {
+    return !!lastKnownLoggedIn && !!currentUser && currentUser !== 'guest';
+  }
+
+  function isProtectedControlWrite(url, options) {
+    if (!options || String(options.method || 'GET').toUpperCase() === 'GET') return false;
+    return [ROOM_STATE_URL, PRESENCE_URL, SHARE_URL, QUALITY_REPORT_URL].some(function (base) {
+      return url === base || url.indexOf(base + '/') === 0;
+    });
+  }
+
+  function suspendProtectedControlWrites() {
+    lastKnownLoggedIn = false;
+    clearRoomStateHeartbeat();
+    if (webPresenceTimer) clearInterval(webPresenceTimer);
+    webPresenceTimer = 0;
+    clearWebShareTimers();
+  }
+
   function controlRequest(url, options) {
     options = options || {};
+    if (isProtectedControlWrite(url, options) && !canSendProtectedControl()) {
+      var authError = new Error('not_authenticated');
+      authError.code = 'not_authenticated';
+      return Promise.reject(authError);
+    }
     options.credentials = 'same-origin';
     options.cache = 'no-store';
     if (options.body && !options.headers) options.headers = { 'Content-Type': 'application/json' };
@@ -185,6 +214,7 @@
       return response.json().catch(function () { return {}; }).then(function (data) {
         if (!response.ok || !data.ok) {
           var code = data.code || data.error || ('http_' + response.status);
+          if (response.status === 401) suspendProtectedControlWrites();
           var error = new Error(code);
           error.code = code;
           throw error;
@@ -276,7 +306,6 @@
     if (webPresenceTimer) clearInterval(webPresenceTimer);
     webPresenceTimer = setInterval(function () {
       heartbeatWebPresence();
-      refreshWebPresence();
     }, ROOM_STATE_HEARTBEAT_MS);
   }
 
@@ -806,7 +835,10 @@
       configuredFps: cfg.fps || 35,
       targetBitrate: computeTargetBitrate(),
       viewerCount: Math.max(1, getAdaptivePeerDescriptors().length),
-      serverSafeBitrate: SERVER_PROFILE.safeNetMbps * 1000000
+      serverSafeBitrate: SERVER_PROFILE.safeNetMbps * 1000000,
+      protectionMaxWidth: pc._gcProtectionMaxWidth || 0,
+      protectionMaxHeight: pc._gcProtectionMaxHeight || 0,
+      protectionMaxBitrate: pc._gcProtectionMaxBitrate || 0
     });
     pc._gcAdaptiveProfile = profile;
     return profile;
@@ -933,24 +965,28 @@
 
   function postRoomState(active, roomOverride) {
     var roomId = roomOverride || currentRoomId();
-    if (!roomId) return Promise.resolve(null);
+    if (!roomId || !canSendProtectedControl()) return Promise.resolve(null);
+    var payload = {
+      room: roomId,
+      active: !!active,
+      sharing: !!active && !!activeDisplayStream,
+      sfu: !!active && currentSfuMode(),
+      audioMode: active ? effectiveWebShareAudioMode() : 'off',
+      ttl: ROOM_STATE_TTL
+    };
+    var signature = JSON.stringify(payload);
+    var now = Date.now();
+    if (signature === lastRoomStatePostSignature && now - lastRoomStatePostAt < ROOM_STATE_HEARTBEAT_MS) {
+      return Promise.resolve(lastRoomState);
+    }
+    lastRoomStatePostSignature = signature;
+    lastRoomStatePostAt = now;
 
-    return fetch(ROOM_STATE_URL, {
+    return controlRequest(ROOM_STATE_URL, {
       method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        room: roomId,
-        active: !!active,
-        sharing: !!active && !!activeDisplayStream,
-        sfu: !!active && currentSfuMode(),
-        audioMode: active ? effectiveWebShareAudioMode() : 'off',
-        ttl: ROOM_STATE_TTL
-      })
-    }).then(function (r) { return r.json(); }).then(function (data) {
-      if (data && data.ok && data.state) {
-        lastRoomState = data.state;
-      }
+      body: JSON.stringify(payload)
+    }).then(function (data) {
+      if (data && data.state) lastRoomState = data.state;
       return data;
     }).catch(function () {
       return null;
@@ -959,7 +995,7 @@
 
   function sendRoomStateBeacon(active, roomOverride) {
     var roomId = roomOverride || currentRoomId();
-    if (!roomId || !navigator.sendBeacon) return;
+    if (!roomId || !navigator.sendBeacon || !canSendProtectedControl()) return;
     try {
       navigator.sendBeacon(ROOM_STATE_URL, JSON.stringify({
         room: roomId,
@@ -1522,7 +1558,7 @@
     if (authStateMonitorTimer) return;
     authStateMonitorTimer = setInterval(function () {
       fetchUsername({ silent: true });
-    }, 1500);
+    }, 5000);
   }
   function isRoomIdField(input) {
     if (!input) return false;
@@ -1707,6 +1743,8 @@
         return;
       }
 
+      refreshWebPresence();
+
       var hasStreamer = false;
       var amStreamer = false;
       document.querySelectorAll('[data-streaming="true"], .streaming-indicator').forEach(function () {
@@ -1745,7 +1783,7 @@
       });
     }
     tick();
-    setInterval(tick, 3000);
+    setInterval(tick, ROOM_STATE_HEARTBEAT_MS);
   }
 
   /* ── 画质补丁 ── */
@@ -2028,6 +2066,42 @@
       pc._gcAdaptiveProfile = null;
       pc._gcAdaptivePendingDecision = '';
       pc._gcAdaptiveConnected = false;
+      pc._gcProtectionMaxWidth = 0;
+      pc._gcProtectionMaxHeight = 0;
+      pc._gcProtectionMaxBitrate = 0;
+      pc._gcProtectionRecoveryStep = 0;
+      pc._gcProtectionChangedAt = 0;
+      pc.__gamecastHandleIceRecoveryRequest = function (action) {
+        var now = Date.now();
+        if (action === 'restart' || action === 'protect') {
+          pc._gcProtectionMaxWidth = 1280;
+          pc._gcProtectionMaxHeight = 720;
+          pc._gcProtectionMaxBitrate = 3000000;
+          pc._gcProtectionRecoveryStep = 0;
+          pc._gcProtectionChangedAt = now;
+          return applyBitrate(pc).then(function () {
+            if (action !== 'restart' || typeof pc.__gamecastRestartIce !== 'function') return true;
+            return pc.__gamecastRestartIce();
+          });
+        }
+        if (action !== 'recover' || !pc._gcProtectionMaxBitrate) return Promise.resolve(false);
+        if (now - pc._gcProtectionChangedAt < RECOVERY_STABLE_MS) return Promise.resolve(false);
+        var targetBitrate = computeTargetBitrate();
+        var step = pc._gcProtectionRecoveryStep || 0;
+        var nextBitrate = step < RECOVERY_BITRATE_STEPS.length
+          ? Math.min(targetBitrate, RECOVERY_BITRATE_STEPS[step])
+          : targetBitrate;
+        pc._gcProtectionRecoveryStep = step + 1;
+        pc._gcProtectionChangedAt = now;
+        if (nextBitrate >= targetBitrate) {
+          pc._gcProtectionMaxWidth = 0;
+          pc._gcProtectionMaxHeight = 0;
+          pc._gcProtectionMaxBitrate = 0;
+        } else {
+          pc._gcProtectionMaxBitrate = nextBitrate;
+        }
+        return applyBitrate(pc);
+      };
       pc._gcStatsSnapshot = null;
       activePCs.push(pc);
       pc.addEventListener('connectionstatechange', function () {
@@ -2038,7 +2112,7 @@
             : null;
           pc._gcAdaptivePrev = null;
         }
-        if (['closed', 'failed', 'disconnected'].indexOf(pc.connectionState) >= 0) {
+        if (['closed', 'failed'].indexOf(pc.connectionState) >= 0) {
           var i = activePCs.indexOf(pc); if (i >= 0) activePCs.splice(i, 1);
         }
         setTimeout(applyAll, 500);
@@ -2111,6 +2185,27 @@
       }
     });
     return Promise.all(updates).then(function () { return true; });
+  }
+
+  function requestPeerIceRecovery(pc, mode, action) {
+    var mappedAction = action === 'protect_and_restart_ice'
+      ? 'restart'
+      : action === 'protect_bitrate'
+        ? 'protect'
+        : action === 'recover_bitrate'
+          ? 'recover'
+          : '';
+    if (!mappedAction) return false;
+    if (mode === 'native-viewer' && typeof pc.__gamecastRequestIceRecovery === 'function') {
+      return pc.__gamecastRequestIceRecovery(mappedAction);
+    }
+    if (mode === 'native-host' && typeof pc.__gamecastHandleIceRecoveryRequest === 'function') {
+      void pc.__gamecastHandleIceRecoveryRequest(mappedAction).catch(function (error) {
+        console.warn('[GameCast] ICE 恢复执行失败:', error && error.message || error);
+      });
+      return true;
+    }
+    return false;
   }
 
   function applyAll() { activePCs.forEach(function (pc) { if (pc.connectionState !== 'closed') applyBitrate(pc); }); }
@@ -2903,6 +2998,7 @@
           if (!qualityState) qualityState = GameCastWebRTCQuality.createQualityState(Date.now());
           qualityState = GameCastWebRTCQuality.evaluateQualitySample(qualityState, diagnosticSample).state;
           pc._gcQualityState = qualityState;
+          if (qualityState.action) requestPeerIceRecovery(pc, mode, qualityState.action);
         }
       }
 
@@ -2959,6 +3055,26 @@
       pc._prevRecvBytes = bytesRecvTotal;
       pc._prevTime = now;
 
+      if (
+        diagnosticSample &&
+        typeof GameCastWebRTCStats !== 'undefined' &&
+        typeof GameCastWebRTCStats.buildViewerQualityReport === 'function' &&
+        now - (pc._gcLastQualityReportAt || 0) >= 2000
+      ) {
+        var qualityReport = GameCastWebRTCStats.buildViewerQualityReport(diagnosticSample, {
+          room: currentRoomId(),
+          participantId: getWebParticipantId(),
+          mode: mode
+        });
+        if (qualityReport && webPresenceRole !== 'owner') {
+          pc._gcLastQualityReportAt = now;
+          controlRequest(QUALITY_REPORT_URL, {
+            method: 'POST',
+            body: JSON.stringify(qualityReport)
+          }).catch(function () { return null; });
+        }
+      }
+
       var rttQuality = classifyRttQuality(rtt);
       var quality = rttQuality.text;
       var rttNum = rttQuality.value;
@@ -2977,13 +3093,13 @@
       var estimatedViewers = Math.max(1, estimatedMembers - 1);
       var sfuSuggested = Math.max(1, Math.floor((SERVER_PROFILE.safeNetMbps * 1000) / Math.max(1, currentFlowKbps)));
       var turnSuggested = Math.max(1, Math.floor((SERVER_PROFILE.safeNetMbps * 1000) / Math.max(1, currentFlowKbps * 2)));
-      var serverLoadKbps = 0;
+      var estimatedRelayLoadKbps = 0;
       if (mode === 'sfu-host' || mode === 'sfu-viewer') {
-        serverLoadKbps = currentFlowKbps * estimatedViewers;
+        estimatedRelayLoadKbps = currentFlowKbps * estimatedViewers;
       } else if (connType.indexOf('TURN 中继') === 0) {
-        serverLoadKbps = currentFlowKbps * estimatedViewers * 2;
+        estimatedRelayLoadKbps = currentFlowKbps * estimatedViewers * 2;
       }
-      var serverLoadRatio = serverLoadKbps > 0 ? (serverLoadKbps / (SERVER_PROFILE.safeNetMbps * 1000)) : 0;
+      var serverLoadRatio = estimatedRelayLoadKbps > 0 ? (estimatedRelayLoadKbps / (SERVER_PROFILE.safeNetMbps * 1000)) : 0;
       var serverNote = '余量充足';
       if (serverLoadRatio > 1) serverNote = '服务器带宽已超建议值';
       else if (serverLoadRatio > 0.8) serverNote = '服务器带宽接近上限';
@@ -3006,7 +3122,7 @@
           '📊 实时(浏览器): 上行 ' + formatKbps(upKbpsValue) + '  下行 ' + formatKbps(downKbpsValue) + '  目标 ' + formatKbps(adaptiveTargetKbpsValue) + '\n' +
           '🎛 自适应: ' + getAdaptiveStatusLabel(pc) + '\n' +
           '🧪 丢包: ' + loss + '  抖动: ' + jitter + '  Peer: ' + pc.connectionState + '\n' +
-          '🖥 服务器(估算): ' + SERVER_PROFILE.cores + 'C/' + SERVER_PROFILE.ramGB + 'G/' + SERVER_PROFILE.netMbps + 'M  |  当前估算负载 ' + formatMbps(serverLoadKbps / 1000) + '\n' +
+          '🖥 服务器(估算): ' + SERVER_PROFILE.cores + 'C/' + SERVER_PROFILE.ramGB + 'G/' + SERVER_PROFILE.netMbps + 'M  |  当前估算负载 ' + formatMbps(estimatedRelayLoadKbps / 1000) + '\n' +
           '📦 参考容量(估算): SFU 约≤' + sfuSuggested + ' 人  TURN 约≤' + turnSuggested + ' 人  |  ' + serverNote + '\n' +
           '📝 说明: 当前为发送侧视角；服务器负载与容量为按当前码率推算';
       }
@@ -3041,9 +3157,10 @@
           pcCount: activePCs.length,
           targetKbps: adaptiveTargetKbpsValue + 'kbps',
           adaptive: getAdaptiveStatusLabel(pc),
-          serverLoadKbps: Math.round(serverLoadKbps) + 'kbps',
+          serverLoadKbps: Math.round(estimatedRelayLoadKbps) + 'kbps',
           serverNote: serverNote,
-          estimatedCapacityKbps: Math.round(serverLoadKbps)
+          estimatedRelayLoadKbps: Math.round(estimatedRelayLoadKbps),
+          protectionMaxBitrate: pc._gcProtectionMaxBitrate || 0
         };
         if (diagnosticSample) {
           [

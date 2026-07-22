@@ -35,7 +35,7 @@ func (b *fakeAudioBridge) CreateSession() uintptr {
 func (b *fakeAudioBridge) ConfigureSession(handle uintptr, config SessionConfig) Status {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if handle == 0 || config.TargetProcessID == 0 {
+	if handle == 0 || (config.TargetProcessID == 0 && config.Mode != CaptureSystemMix) {
 		b.reason = "target process id is required"
 		return StatusInternalError
 	}
@@ -138,5 +138,21 @@ func TestProcessCapturerRejectsMissingTargetPID(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(err.Error()), "target process id") {
 		t.Fatalf("expected target PID error, got %v", err)
+	}
+}
+
+func TestProcessCapturerAllowsSystemMixWithoutTargetPID(t *testing.T) {
+	bridge := &fakeAudioBridge{}
+	capturer := NewProcessCapturerWithBridge(bridge)
+
+	if err := capturer.Start(context.Background(), ProcessCaptureConfig{Mode: CaptureSystemMix}); err != nil {
+		t.Fatalf("Start(system mix) error = %v", err)
+	}
+	capturer.Stop()
+
+	bridge.mu.Lock()
+	defer bridge.mu.Unlock()
+	if bridge.configured.Mode != CaptureSystemMix {
+		t.Fatalf("configured mode = %v, want CaptureSystemMix", bridge.configured.Mode)
 	}
 }

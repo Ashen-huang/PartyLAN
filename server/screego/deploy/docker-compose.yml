@@ -1,6 +1,6 @@
 services:
   screego:
-    image: gamecast-sfu:registration-hot-reload-v1
+    image: gamecast-sfu:turn-recovery-v1-20260720
     container_name: screego
     restart: unless-stopped
     network_mode: "host"

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import AudioPanel from './AudioPanel';
 import type { ShareSettings } from './RoomControls';
-import type { AudioCapability, AudioShareSource, AudioState, VoiceChatState } from '../types';
+import type { AudioCapability, AudioShareSource, AudioState, ShareSource, ShareSourceKind, VoiceChatState } from '../types';
 import type { Translator } from '../i18n';
 import './RoomToolsDialog.css';
 
@@ -24,6 +24,7 @@ interface RoomToolsDialogProps {
   busy: boolean;
   sharing: boolean;
   hostVideoCapable: boolean;
+  shareSources: ShareSource[];
   audio: AudioState;
   audioCapability: AudioCapability | null;
   audioSources: AudioShareSource[];
@@ -54,6 +55,7 @@ const FPS_OPTIONS: FPSOption[] = [
   { label: '15 FPS', fps: 15 },
   { label: '24 FPS', fps: 24 },
   { label: '30 FPS', fps: 30 },
+  { label: '45 FPS', fps: 45 },
   { label: '60 FPS', fps: 60 },
 ];
 
@@ -88,12 +90,18 @@ function voiceStatusLabel(voice: VoiceChatState, t: Translator): string {
   return t('voice.idle');
 }
 
+function sourceInitial(source: ShareSource): string {
+  const label = source.subtitle || source.label || '?';
+  return label.trim().slice(0, 1).toUpperCase() || '?';
+}
+
 export default function RoomToolsDialog({
   open,
   initialTab,
   busy,
   sharing,
   hostVideoCapable,
+  shareSources,
   audio,
   audioCapability,
   audioSources,
@@ -112,15 +120,49 @@ export default function RoomToolsDialog({
   onVoiceVolumeChange,
 }: RoomToolsDialogProps) {
   const [activeTab, setActiveTab] = useState<RoomToolsTab>(initialTab);
+  const [sourceKind, setSourceKind] = useState<ShareSourceKind>('display');
+  const [sourceId, setSourceId] = useState('');
+  const [shareAudioMode, setShareAudioMode] = useState<'default' | 'off' | 'process'>('default');
   const [resolutionKey, setResolutionKey] = useState<string>('1280x720');
   const [fpsValue, setFpsValue] = useState<number>(30);
   const selectedResolution = useMemo(() => parseResolutionKey(resolutionKey), [resolutionKey]);
+  const displaySources = useMemo(() => shareSources.filter((source) => source.kind === 'display'), [shareSources]);
+  const windowSources = useMemo(() => shareSources.filter((source) => source.kind === 'window'), [shareSources]);
+  const visibleSources = sourceKind === 'window' ? windowSources : displaySources;
+  const selectedSource = useMemo(
+    () => visibleSources.find((source) => source.id === sourceId) || visibleSources[0] || null,
+    [visibleSources, sourceId],
+  );
+  const audioPolicySummary = useMemo(() => {
+    if (!selectedSource) {
+      return t('audio.defaultNone');
+    }
+    if (selectedSource.audioDefault === 'system') {
+      return t('audio.defaultSystem');
+    }
+    if (selectedSource.audioDefault === 'process' && selectedSource.audioProcessName) {
+      return t('audio.defaultProcess', { name: selectedSource.audioProcessName });
+    }
+    return t('audio.defaultNone');
+  }, [selectedSource, t]);
 
   useEffect(() => {
     if (open) {
       setActiveTab(initialTab);
+      setShareAudioMode('default');
     }
   }, [initialTab, open]);
+
+  useEffect(() => {
+    const nextSources = sourceKind === 'window' ? windowSources : displaySources;
+    if (nextSources.length === 0) {
+      setSourceId('');
+      return;
+    }
+    if (!nextSources.some((source) => source.id === sourceId)) {
+      setSourceId(nextSources[0].id);
+    }
+  }, [sourceKind, displaySources, windowSources, sourceId]);
 
   if (!open) {
     return null;
@@ -167,7 +209,63 @@ export default function RoomToolsDialog({
         <div className="room-tools-body">
           {activeTab === 'share' && (
             <div className="room-tools-section">
+              <div className="room-tools-source-toggle">
+                <button
+                  type="button"
+                  className={`room-tools-source-btn ${sourceKind === 'display' ? 'active' : ''}`}
+                  onClick={() => setSourceKind('display')}
+                  disabled={busy || sharing}
+                >
+                  {t('tools.sourceDisplay')}
+                </button>
+                <button
+                  type="button"
+                  className={`room-tools-source-btn ${sourceKind === 'window' ? 'active' : ''}`}
+                  onClick={() => setSourceKind('window')}
+                  disabled={busy || sharing}
+                >
+                  {t('tools.sourceWindow')}
+                </button>
+              </div>
+
               <div className="room-tools-grid">
+                <div className="room-tools-field room-tools-field-wide">
+                  <span>{t('tools.source')}</span>
+                  {visibleSources.length > 0 ? (
+                    <div className="room-tools-source-list">
+                      {visibleSources.map((source) => (
+                        <button
+                          key={source.id}
+                          type="button"
+                          className={`room-tools-source-card ${source.id === selectedSource?.id ? 'selected' : ''}`}
+                          onClick={() => setSourceId(source.id)}
+                          disabled={busy || sharing}
+                        >
+                          <span className="room-tools-source-preview" aria-hidden="true">
+                            {source.previewDataUrl ? (
+                              <img src={source.previewDataUrl} alt="" />
+                            ) : source.iconDataUrl ? (
+                              <span className="room-tools-source-icon">
+                                <img src={source.iconDataUrl} alt="" />
+                              </span>
+                            ) : (
+                              <span className="room-tools-source-icon">
+                                <span className="room-tools-source-icon-fallback">{sourceInitial(source)}</span>
+                              </span>
+                            )}
+                          </span>
+                          <span className="room-tools-source-meta">
+                            <span className="room-tools-source-name">{source.label}</span>
+                            <span className="room-tools-source-subtitle">{source.subtitle || t('tools.sourceDisplay')}</span>
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="room-tools-note">{t('tools.sourceUnavailable')}</div>
+                  )}
+                </div>
+
                 <label className="room-tools-field">
                   <span>{t('tools.resolution')}</span>
                   <select
@@ -203,19 +301,32 @@ export default function RoomToolsDialog({
               </div>
 
               <div className="room-tools-note">
-                {t('tools.audioNote')}
+                {selectedSource ? t('tools.sourceSelected', { source: selectedSource.label }) : t('tools.sourceUnavailable')}
+              </div>
+              <div className="room-tools-note">
+                {audioPolicySummary}
               </div>
 
               <button
                 className="room-tools-primary"
                 onClick={() => {
+                  if (!selectedSource) {
+                    return;
+                  }
                   void onStartSharing({
+                    sourceId: selectedSource.id,
+                    sourceKind: selectedSource.kind,
+                    sourceLabel: selectedSource.label,
+                    audioMode: shareAudioMode,
+                    audioDefault: selectedSource.audioDefault,
+                    audioProcessName: selectedSource.audioProcessName,
+                    audioProcessId: selectedSource.processId,
                     width: selectedResolution.width,
                     height: selectedResolution.height,
                     fps: fpsValue,
                   });
                 }}
-                disabled={busy || sharing || !hostVideoCapable}
+                disabled={busy || sharing || !hostVideoCapable || !selectedSource}
                 type="button"
               >
                 {sharing ? t('tools.sharingActive') : t('room.startSharing')}
@@ -228,9 +339,12 @@ export default function RoomToolsDialog({
               audio={audio}
               capability={audioCapability}
               audioSources={audioSources}
+              shareAudioPolicy={audioPolicySummary}
+              shareAudioMode={shareAudioMode}
               onToggleMic={onToggleMic}
               onToggleSpeaker={onToggleSpeaker}
               onVolumeChange={onVolumeChange}
+              onShareAudioModeChange={setShareAudioMode}
               onToggleAudioSource={onToggleAudioSource}
               t={t}
             />

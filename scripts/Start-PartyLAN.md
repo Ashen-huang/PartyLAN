@@ -8,9 +8,24 @@ Use `scripts/Start-PartyLAN.ps1` for both run and build.
 .\scripts\Start-PartyLAN.ps1
 ```
 
-The default run mode is `tailscale-system`, so the app reuses the installed and
-signed-in Tailscale client without requiring a command-line environment
-override.
+The default run mode is `gamecast-client`, so the app opens the native
+GameCast/Screego viewer shell and uses the configured GameCast server instead
+of the legacy PartyLAN P2P network.
+
+When `gamecast-client` starts on Windows and a supported MinGW-w64 `gcc`
+toolchain is available, the launcher now auto-enables `-UseNativeMedia` so
+native GameCast host sharing does not silently fall back to the stub backend.
+To opt out explicitly for diagnostics, pass:
+
+```powershell
+.\scripts\Start-PartyLAN.ps1 -UseNativeMedia:$false
+```
+
+To run the old Tailscale-backed PartyLAN path explicitly:
+
+```powershell
+.\scripts\Start-PartyLAN.ps1 -Mode tailscale-system
+```
 
 For same-LAN discovery without Tailscale:
 
@@ -50,16 +65,16 @@ If you want log mirroring in the terminal while using the packaged build:
 .\Start-PartyLAN-DERP.ps1 -LogToStdout
 ```
 
-For a single-machine smoke test that validates the current build can start,
-join the tailnet, and see the custom DERP region in the active DERP map:
+For a single-machine smoke test that validates the default GameCast client can
+start and initialize native media:
 
 ```powershell
 .\Start-PartyLAN-SmokeTest.ps1
 ```
 
-The smoke test also accepts `-TSControlURL`, `-ICEServers`, `-TURNUsername`,
-and `-TURNCredential` so you can verify that relay-related runtime markers are
-actually written into the log before doing a real multi-machine session.
+The smoke test also accepts `-Mode`, `-TSControlURL`, `-ICEServers`,
+`-TURNUsername`, and `-TURNCredential`. Use `-Mode networked` only with a build
+that includes the `partylan_tsnet` tag when checking the custom DERP path.
 
 ## Build
 
@@ -143,7 +158,7 @@ Check the log for `[media/ice]` lines, including:
 .\scripts\Package-PartyLAN.ps1
 ```
 
-Release bundles default to `-Mode tailscale-system` with native WebRTC media
+Release bundles default to `-Mode gamecast-client` with native WebRTC media
 enabled. For non-native diagnostic builds, pass explicit overrides such as:
 
 ```powershell

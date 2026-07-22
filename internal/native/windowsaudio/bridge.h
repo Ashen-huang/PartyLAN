@@ -21,7 +21,8 @@ typedef struct PartyLANAudioCapability {
 
 typedef enum PartyLANAudioCaptureMode {
     PARTYLAN_AUDIO_CAPTURE_INCLUDE_PROCESS_TREE = 0,
-    PARTYLAN_AUDIO_CAPTURE_EXCLUDE_PROCESS_TREE = 1
+    PARTYLAN_AUDIO_CAPTURE_EXCLUDE_PROCESS_TREE = 1,
+    PARTYLAN_AUDIO_CAPTURE_SYSTEM_MIX = 2
 } PartyLANAudioCaptureMode;
 
 typedef struct PartyLANAudioSessionConfig {

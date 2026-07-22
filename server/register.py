@@ -29,6 +29,12 @@ USERNAME_RE = re.compile(r'^[a-zA-Z0-9_\-]{2,20}$')
 BACKEND_CONFIG_URL = 'http://127.0.0.1:5060/config'
 SFU_SESSIONS_URL = os.environ.get('GAMECAST_SFU_SESSIONS_URL', 'http://127.0.0.1:5053/sessions')
 SFU_SESSIONS_TIMEOUT = float(os.environ.get('GAMECAST_SFU_SESSIONS_TIMEOUT', '1.0'))
+QUALITY_ACTIVE_TTL = 8.0
+QUALITY_RETENTION_TTL = 15.0
+try:
+    SAFE_VIDEO_EGRESS_KBPS = max(0, int(os.environ.get('GAMECAST_SAFE_VIDEO_EGRESS_KBPS', '0') or 0))
+except (TypeError, ValueError):
+    SAFE_VIDEO_EGRESS_KBPS = 0
 ROOM_STATE_AUDIO_MODES = set(['app', 'off', 'system'])
 STATS_STRING_FIELDS = set([
     'event', 'policyVersion', 'user', 'room', 'peer', 'mode', 'conn', 'path',
@@ -37,6 +43,7 @@ STATS_STRING_FIELDS = set([
     'qualityStatus', 'shadowAction', 'invalidReason', 'resolution', 'fps',
     'codec', 'kbps', 'loss', 'jitter', 'pcState', 'targetKbps', 'adaptive',
     'adaptivePolicyVersion', 'adaptiveDecision', 'serverLoadKbps', 'serverNote',
+    'participantId', 'pairId', 'receiverState',
 ])
 STATS_NUMBER_FIELDS = set([
     'generation', 'rtt', 'rttMs', 'jitterMs', 'lossPercent', 'upKbps',
@@ -44,7 +51,9 @@ STATS_NUMBER_FIELDS = set([
     'packetsReceivedDelta', 'packetsLostDelta', 'packetsSentDelta',
     'framesDecodedDelta', 'framesDroppedDelta', 'framesEncodedDelta',
     'badCount', 'windowSize', 'pcCount', 'estimatedCapacityKbps',
+    'estimatedRelayLoadKbps', 'protectionMaxBitrate',
     'adaptiveLevel', 'adaptiveScale', 'adaptiveMaxBitrate',
+    'decodedFps', 'incomingBitrateKbps', 'packetsLost', 'framesDropped',
 ])
 STATS_BOOL_FIELDS = set(['valid', 'visible'])
 
@@ -58,9 +67,12 @@ room_state_lock = threading.Lock()
 viewer_intent_lock = threading.Lock()
 rate_limit_lock = threading.Lock()
 user_store_lock = threading.Lock()
+quality_lock = threading.Lock()
 room_states = {}
 viewer_intents = {}
 rate_buckets = {}
+quality_samples = {}
+quality_clock = time.time
 
 REGISTER_CREATED = 'created'
 REGISTER_EXISTS = 'exists'
@@ -210,6 +222,80 @@ def append_stats(data):
         with open(get_stats_path(), 'a', encoding='utf-8') as f:
             f.write(line)
     return True
+
+
+def normalize_quality_sample(data):
+    if not isinstance(data, dict):
+        raise ControlError('quality_sample_invalid', 400)
+
+    def bounded_text(name, max_length):
+        value = str(data.get(name) or '').strip()
+        if not value or len(value) > max_length or any(ch in value for ch in '\r\n\t'):
+            raise ControlError('quality_sample_invalid', 400)
+        return value
+
+    def bounded_number(name, minimum, maximum, integer=False):
+        value = data.get(name)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ControlError('quality_sample_invalid', 400)
+        value = max(minimum, min(maximum, value))
+        return int(value) if integer else float(value)
+
+    return {
+        'room': bounded_text('room', 120),
+        'participantId': bounded_text('participantId', 128),
+        'generation': bounded_text('generation', 80),
+        'pairId': bounded_text('pairId', 120),
+        'packetsReceivedDelta': bounded_number('packetsReceivedDelta', 0, 10000000, True),
+        'packetsLostDelta': bounded_number('packetsLostDelta', 0, 10000000, True),
+        'framesDroppedDelta': bounded_number('framesDroppedDelta', 0, 1000000, True),
+        'decodedFps': bounded_number('decodedFps', 0, 240),
+        'incomingBitrateKbps': bounded_number('incomingBitrateKbps', 0, 1000000),
+        'jitterMs': bounded_number('jitterMs', 0, 60000),
+    }
+
+
+def store_quality_sample(data, username):
+    sample = normalize_quality_sample(data)
+    control_plane.authorize_quality_report(sample['room'], sample['participantId'], username)
+    now = quality_clock()
+    sample['reportedAtUnix'] = now
+    with quality_lock:
+        room = quality_samples.setdefault(sample['room'], {})
+        room[sample['participantId']] = sample
+        prune_quality_samples_locked(now)
+    return sample
+
+
+def prune_quality_samples_locked(now):
+    for room_id, samples in list(quality_samples.items()):
+        for participant_id, sample in list(samples.items()):
+            if now - sample.get('reportedAtUnix', 0) > QUALITY_RETENTION_TTL:
+                samples.pop(participant_id, None)
+        if not samples:
+            quality_samples.pop(room_id, None)
+
+
+def get_quality_snapshot(room_id, participant_id, username):
+    _, active_ids = control_plane.authorize_quality_snapshot(room_id, participant_id, username)
+    now = quality_clock()
+    with quality_lock:
+        prune_quality_samples_locked(now)
+        samples = []
+        for sample in (quality_samples.get(room_id) or {}).values():
+            age = now - sample.get('reportedAtUnix', 0)
+            if age > QUALITY_ACTIVE_TTL or sample.get('participantId') not in active_ids:
+                continue
+            item = dict(sample)
+            item['ageSeconds'] = max(0.0, age)
+            samples.append(item)
+    samples.sort(key=lambda item: item['participantId'])
+    return {
+        'room': room_id,
+        'count': len(samples),
+        'safeVideoEgressKbps': SAFE_VIDEO_EGRESS_KBPS,
+        'samples': samples,
+    }
 
 
 def read_stats(lines=200):
@@ -734,6 +820,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     'participants': participants,
                     'room': room,
                 })
+            elif parsed.path == '/api/quality/snapshot':
+                if not self.enforce_rate_limit('quality:snapshot', 120, 60):
+                    return
+                username = self.require_authenticated_user()
+                if not username:
+                    return
+                params = parse_qs(parsed.query)
+                room_id = (params.get('room', [''])[0]).strip()
+                participant_id = (params.get('participantId', [''])[0]).strip()
+                try:
+                    snapshot = get_quality_snapshot(room_id, participant_id, username)
+                except ControlError as error:
+                    self.send_control_error(error)
+                    return
+                self.send_json(200, dict({'ok': True}, **snapshot))
             else:
                 self.send_json(404, {'ok': False, 'error': '未知路径'})
         except Exception as e:
@@ -775,6 +876,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if not self.enforce_rate_limit('stats:post', 240, 60):
                     return
                 self.handle_stats(data)
+            elif request_path == '/api/quality/report':
+                if not self.enforce_rate_limit('quality:report', 120, 60):
+                    return
+                self.handle_quality_report(data)
             elif request_path == '/api/room-state':
                 if not self.enforce_rate_limit('room-state:post', 240, 60):
                     return
@@ -859,6 +964,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_json(400, {'ok': False, 'error': 'stats 保存失败'})
             return
         self.send_json(200, {'ok': True})
+
+    def handle_quality_report(self, data):
+        username = self.require_authenticated_user()
+        if not username:
+            return
+        try:
+            sample = store_quality_sample(data, username)
+        except ControlError as error:
+            self.send_control_error(error)
+            return
+        self.send_json(200, {
+            'ok': True,
+            'reportedAtUnix': sample['reportedAtUnix'],
+        })
 
     def handle_room_state(self, data):
         username, session_fingerprint = self.require_room_state_writer()

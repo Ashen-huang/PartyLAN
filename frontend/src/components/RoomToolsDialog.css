@@ -19,7 +19,7 @@
   border: 1px solid var(--border-color);
   border-radius: 22px;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.93), rgba(239, 248, 252, 0.88)),
+    linear-gradient(180deg, rgba(240, 253, 255, 0.96), rgba(215, 241, 247, 0.92)),
     var(--panel-bg);
   box-shadow: 0 28px 64px rgba(16, 61, 88, 0.18);
   color: var(--text-primary);
@@ -71,7 +71,7 @@
   padding: 8px 12px;
   border: 1px solid rgba(88, 130, 164, 0.18);
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.56);
+  background: var(--surface-muted);
   color: var(--text-secondary);
   font-size: 12px;
   font-weight: 700;
@@ -96,10 +96,138 @@
   gap: 14px;
 }
 
+.room-tools-source-toggle {
+  display: flex;
+  gap: 8px;
+}
+
+.room-tools-source-btn {
+  padding: 8px 12px;
+  border: 1px solid rgba(88, 130, 164, 0.18);
+  border-radius: 10px;
+  background: var(--surface-muted);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.room-tools-source-btn.active {
+  border-color: rgba(57, 208, 183, 0.36);
+  background: rgba(57, 208, 183, 0.14);
+  color: var(--accent-strong);
+}
+
 .room-tools-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
+}
+
+.room-tools-field-wide {
+  grid-column: 1 / -1;
+}
+
+.room-tools-source-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+  max-height: 420px;
+  overflow: auto;
+}
+
+.room-tools-source-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid rgba(88, 130, 164, 0.18);
+  border-radius: 16px;
+  background: var(--surface-raised);
+  text-align: left;
+  cursor: pointer;
+  color: var(--text-primary);
+  overflow: hidden;
+}
+
+.room-tools-source-card.selected {
+  border-color: rgba(57, 208, 183, 0.36);
+  background: rgba(57, 208, 183, 0.12);
+}
+
+.room-tools-source-card:disabled {
+  opacity: 0.62;
+  cursor: not-allowed;
+}
+
+.room-tools-source-preview {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(7, 15, 28, 0.92), rgba(10, 21, 38, 0.98));
+  overflow: hidden;
+}
+
+.room-tools-source-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.room-tools-source-icon {
+  width: 52px;
+  height: 52px;
+  display: grid;
+  place-items: center;
+  border-radius: 14px;
+  background: rgba(95, 134, 160, 0.16);
+  overflow: hidden;
+}
+
+.room-tools-source-icon img {
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+}
+
+.room-tools-source-icon-fallback {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  color: var(--accent-strong);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.room-tools-source-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  padding: 0 2px 2px;
+}
+
+.room-tools-source-name {
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.35;
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.room-tools-source-subtitle {
+  color: var(--text-muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .room-tools-field {
@@ -128,7 +256,7 @@
   padding: 10px 12px;
   border: 1px solid rgba(88, 130, 164, 0.18);
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.56);
+  background: var(--surface-muted);
   color: var(--text-muted);
   font-size: 12px;
   line-height: 1.5;
@@ -145,14 +273,15 @@
 }
 
 .room-tools-primary {
-  background: linear-gradient(135deg, var(--accent-strong), var(--accent-soft));
-  color: #f5ffff;
-  box-shadow: 0 14px 28px rgba(19, 110, 135, 0.18);
+  background: var(--accent-bg);
+  color: var(--on-accent);
+  border: 1px solid var(--border-highlight);
+  box-shadow: 0 10px 24px var(--highlight-glow);
 }
 
 .room-tools-secondary {
-  border: 1px solid rgba(88, 130, 164, 0.2);
-  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid var(--border-color);
+  background: var(--surface-muted);
   color: var(--text-primary);
 }
 
@@ -175,7 +304,7 @@
   padding: 12px;
   border: 1px solid rgba(88, 130, 164, 0.18);
   border-radius: 14px;
-  background: rgba(255, 255, 255, 0.58);
+  background: var(--surface-raised);
 }
 
 .voice-state-card.status-active,

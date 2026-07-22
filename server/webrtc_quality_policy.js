@@ -5,13 +5,15 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
-  var POLICY_VERSION = 'ice-shadow-v1';
+  var POLICY_VERSION = 'ice-recovery-v1';
   var OBSERVATION_MS = 15000;
   var WINDOW_SIZE = 7;
   var REQUIRED_BAD = 5;
   var REQUIRED_CONSECUTIVE = 3;
   var COOLDOWN_MS = 60000;
   var STABLE_MS = 20000;
+  var MAX_AUTO_RESTARTS = 1;
+  var MAX_RECOVERY_STEPS = 3;
 
   function createQualityState(connectedAt) {
     return {
@@ -24,6 +26,7 @@
       generation: 0,
       badCount: 0,
       recoveryCount: 0,
+      recoveryStep: 0,
       cooldownUntil: 0,
       stableSince: null,
       stable: false
@@ -49,12 +52,6 @@
 
   function stableSample(sample) {
     return sample.valid && sample.lossPercent < 1 && sample.jitterMs < 40;
-  }
-
-  function nextAction(recoveryCount) {
-    if (recoveryCount <= 0) return 'would_restart_ice';
-    if (recoveryCount === 1) return 'would_rebuild_session';
-    return 'would_protect_bitrate';
   }
 
   function resetForPath(state, sample) {
@@ -97,17 +94,24 @@
     if (stableSample(sample)) {
       if (state.stableSince === null) state.stableSince = sample.now;
       if (sample.now - state.stableSince >= STABLE_MS) {
-        state.status = 'normal';
         state.stable = true;
         state.window = [];
         state.badCount = 0;
+        if (state.recoveryCount > 0 && state.recoveryStep < MAX_RECOVERY_STEPS) {
+          state.recoveryStep += 1;
+          state.status = 'recovering';
+          state.action = 'recover_bitrate';
+          state.stableSince = sample.now;
+          return {state: state, decision: state.action};
+        }
+        state.status = 'normal';
       }
     } else {
       state.stableSince = null;
     }
 
     if (sample.now < state.cooldownUntil) {
-      state.status = 'cooldown';
+      state.status = state.recoveryCount > 0 ? 'protected' : 'cooldown';
       return {state: state, decision: null};
     }
 
@@ -126,8 +130,19 @@
       trailing.every(Boolean);
 
     if (confirmed) {
-      state.status = 'degraded-confirmed';
-      state.action = nextAction(state.recoveryCount);
+      state.window = [];
+      state.badCount = 0;
+      state.stableSince = null;
+      state.recoveryStep = 0;
+      state.cooldownUntil = sample.now + COOLDOWN_MS;
+      if (state.recoveryCount < MAX_AUTO_RESTARTS) {
+        state.recoveryCount += 1;
+        state.status = 'restarting';
+        state.action = 'protect_and_restart_ice';
+      } else {
+        state.status = 'protected';
+        state.action = 'protect_bitrate';
+      }
       return {state: state, decision: state.action};
     }
     state.status = bad ? 'degraded-suspected' : state.status === 'protected' ? 'protected' : 'normal';

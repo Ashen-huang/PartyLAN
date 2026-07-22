@@ -7,12 +7,21 @@
    files, `/root/screego/register.py`, `/etc/gamecast-sfu/users.htpasswd`, and
    the current compose file into it.
 4. Build a new immutable image tag, currently
-   `gamecast-sfu:registration-hot-reload-v1`. Do not replace the previous image.
+   `gamecast-sfu:turn-recovery-v1-20260720`. Do not replace the previous image.
 5. Start a temporary container with the production environment except for a
    non-conflicting HTTP port, then verify `/config`, `/`, and TURN startup.
 6. Replace the production container using the recorded parameters. Verify room
    create/join, sharing, viewing, nginx, and the register service.
-7. Keep automatic recovery disabled. P1-P3 remain in shadow mode only.
+7. Automatic recovery is limited to one authenticated per-session ICE restart.
+   Confirmed degraded TURN sessions are protected at 720p/3 Mbps first; a
+   failed or repeatedly degraded session remains protected without rebuilding
+   the peer connection.
+
+The Python control service on port 5052 accepts an optional
+`GAMECAST_SAFE_VIDEO_EGRESS_KBPS` environment variable. Set it on that
+service's systemd unit (or its environment file), not on the Screego container.
+Use the safe aggregate video egress budget in Kbps; leave it unset or `0` to
+disable proactive per-viewer budget division.
 
 Every production compose command, including rollback, must load the runtime
 environment explicitly:

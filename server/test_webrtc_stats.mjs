@@ -3,7 +3,7 @@ import {createRequire} from 'node:module';
 import test from 'node:test';
 
 const require = createRequire(import.meta.url);
-const {buildWebRTCSample, describeSelectedPair} = require('./webrtc_stats.js');
+const {buildViewerQualityReport, buildWebRTCSample, describeSelectedPair} = require('./webrtc_stats.js');
 
 const report = (entries) => new Map(entries.map((item) => [item.id, item]));
 
@@ -87,4 +87,41 @@ test('background and source changes invalidate a sample without manufacturing lo
   ]);
   assert.equal(buildWebRTCSample(stats, null, {now: 1000, visible: false}).invalidReason, 'page-hidden');
   assert.equal(buildWebRTCSample(stats, null, {now: 1000, visible: true, sourceChanged: true}).invalidReason, 'source-changed');
+});
+
+test('valid inbound samples produce bounded native viewer quality reports', () => {
+  const quality = buildViewerQualityReport({
+    valid: true,
+    pairId: 'pair-1',
+    generation: 2,
+    elapsedMs: 2000,
+    packetsReceivedDelta: 190,
+    packetsLostDelta: 10,
+    framesDecodedDelta: 48,
+    framesDroppedDelta: 3,
+    downKbps: 800,
+    jitterMs: 120,
+  }, {
+    room: 'room-1',
+    participantId: 'web-1',
+    mode: 'native-viewer',
+  });
+  assert.deepEqual(quality, {
+    room: 'room-1',
+    participantId: 'web-1',
+    generation: '2',
+    pairId: 'pair-1',
+    packetsReceivedDelta: 190,
+    packetsLostDelta: 10,
+    framesDroppedDelta: 3,
+    decodedFps: 24,
+    incomingBitrateKbps: 800,
+    jitterMs: 120,
+  });
+  assert.equal(buildViewerQualityReport({...quality, valid: false}, {
+    room: 'room-1', participantId: 'web-1', mode: 'native-viewer'
+  }), null);
+  assert.equal(buildViewerQualityReport({valid: true}, {
+    room: 'room-1', participantId: 'web-1', mode: 'native-host'
+  }), null);
 });

@@ -133,20 +133,27 @@
   background: rgba(255, 255, 255, 0.84);
 }
 
-.screen-preview:fullscreen {
+.screen-preview:fullscreen,
+.screen-preview.is-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
   border-radius: 0;
   width: 100vw;
   height: 100vh;
   background: #000;
 }
 
-.screen-preview:fullscreen .screen-stage {
+.screen-preview:fullscreen .screen-stage,
+.screen-preview.is-fullscreen .screen-stage {
   padding: 16px;
   background: #000;
 }
 
 .screen-preview:fullscreen .screen-canvas,
-.screen-preview:fullscreen .screen-video {
+.screen-preview:fullscreen .screen-video,
+.screen-preview.is-fullscreen .screen-canvas,
+.screen-preview.is-fullscreen .screen-video {
   border-radius: 0;
   background: #000;
 }

@@ -13,6 +13,8 @@ interface MemberListProps {
 }
 
 function MemberRow({ member, t, isSelf = false }: { member: Member; t: Translator; isSelf?: boolean }) {
+  const statusLabel = member.statusLabel || (member.sharing ? t('members.sharing') : member.muted ? t('members.muted') : t('members.connected'));
+  const clientLabel = member.clientType ? t(member.clientType === 'client' ? 'members.clientTypeClient' : 'members.clientTypeWeb') : '';
   return (
     <li className={`member-item ${isSelf ? 'is-self' : ''}`}>
       <span className={`member-status ${member.online ? 'online' : 'offline'}`}>
@@ -24,8 +26,7 @@ function MemberRow({ member, t, isSelf = false }: { member: Member; t: Translato
           {isSelf && <span className="member-self-pill">{t('members.self')}</span>}
         </span>
         <span className="member-icons">
-          {member.muted ? t('members.muted') : t('members.speaking')}
-          {member.sharing ? ` · ${t('members.sharing')}` : ''}
+          {clientLabel ? `${clientLabel} · ${statusLabel}` : statusLabel}
         </span>
       </div>
     </li>

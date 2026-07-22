@@ -13,6 +13,28 @@
 
 这一阶段以“客户端自建房间中的原生共享”作为主战场，不先解决网页房接管共享。
 
+## 当前执行状态（2026-07-10）
+
+- P1 已完成：共享源模型、显示器/窗口目录、窗口预览与进程元数据已接通。
+- P2 已完成：整屏/窗口选择、共享音频策略和共享源展示已接通。
+- P3 的适配器、错误分类与生命周期已完成：临时无帧会持续重试，窗口句柄销毁会自动停止共享并上报明确错误。当前实现仍为 `PrintWindow + BitBlt`，不是真正的 Windows Graphics Capture；由于当前 MinGW 构建环境没有 Windows SDK/C++/WinRT 头文件，最小化与切桌面只能按现有 GDI 能力尽力工作。
+- P4 已完成：GameCast native host 已包含 Opus track；整屏系统音频、窗口所属进程音频、手动关闭和手动改绑均已接入。指定进程音频失败时不再静默回退到全局系统音频，而是关闭音频、保留视频并提示用户；运行中音频源失效也执行相同降级。
+- P5 代码收尾已完成：按源类型选择捕获路径，指标使用真实发送数据，窗口关闭、音频失效、手动停止和重新共享均通过会话身份保护与统一清理处理；网页兼容共享协议未改动。
+
+自动验证已通过：
+
+- `npm run build`
+- `node --test --experimental-strip-types tests/gamecastOrchestrator.test.mjs`
+- `go test .`
+- `go test ./internal/gamecast/...`
+- `go test ./internal/native/windowsaudio`
+
+仍需真机验收或后续工具链工作：
+
+- 安装 Windows SDK/C++/WinRT 后，将 GDI 窗口适配器迁移为真正的 Windows Graphics Capture。
+- 验收窗口最小化、遮挡、切桌面、关闭窗口，以及进程音频在暂停、恢复和进程退出时的行为。
+- 分别用网页 viewer 和原生 viewer 验收视频与共享音频。
+
 ## 2. 交付策略
 
 本轮实现按五条主线推进：

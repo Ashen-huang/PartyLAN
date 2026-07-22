@@ -53,6 +53,34 @@ type EncodedPacket struct {
 	TimestampMicros int64
 }
 
+type WindowCaptureStatus int
+
+const (
+	WindowCaptureStatusOK WindowCaptureStatus = iota
+	WindowCaptureStatusUnavailable
+	WindowCaptureStatusWindowClosed
+	WindowCaptureStatusFrameUnavailable
+	WindowCaptureStatusInternalError
+)
+
+type WindowCaptureFrame struct {
+	Data            []byte
+	Width           int
+	Height          int
+	Stride          int
+	TimestampMicros int64
+}
+
+type WindowCaptureBridge interface {
+	Create() uintptr
+	Start(handle uintptr, windowHandle uintptr) WindowCaptureStatus
+	Bounds(windowHandle uintptr) (width int, height int, status WindowCaptureStatus)
+	GrabFrame(handle uintptr, timeoutMs int) (WindowCaptureFrame, WindowCaptureStatus)
+	Stop(handle uintptr)
+	Destroy(handle uintptr)
+	LastErrorReason(handle uintptr) string
+}
+
 type Bridge interface {
 	QueryCapability() Capability
 	LastErrorReason() string

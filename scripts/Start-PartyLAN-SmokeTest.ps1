@@ -1,5 +1,7 @@
 param(
   [string]$BinaryPath = '',
+  [ValidateSet('gamecast-client', 'loopback', 'lan', 'networked', 'tailscale-system')]
+  [string]$Mode = 'gamecast-client',
   [string]$AuthKey = '',
   [int]$WaitSeconds = 20,
   [switch]$LogToStdout,
@@ -31,12 +33,20 @@ if (-not (Test-Path $BinaryPath)) {
   throw "Binary not found: $BinaryPath"
 }
 
-$env:PARTYLAN_DERP_REGION_ID = '901'
-$env:PARTYLAN_DERP_REGION_CODE = 'cn1'
-$env:PARTYLAN_DERP_HOSTNAME = '103.236.92.32'
-$env:PARTYLAN_DERP_PORT = '443'
-$env:PARTYLAN_NETWORKED_BACKEND = 'tsnet'
-$env:PARTYLAN_MODE = 'networked'
+$env:PARTYLAN_MODE = $Mode
+if ($Mode -eq 'networked') {
+  $env:PARTYLAN_DERP_REGION_ID = '901'
+  $env:PARTYLAN_DERP_REGION_CODE = 'cn1'
+  $env:PARTYLAN_DERP_HOSTNAME = '103.236.92.32'
+  $env:PARTYLAN_DERP_PORT = '443'
+  $env:PARTYLAN_NETWORKED_BACKEND = 'tsnet'
+} else {
+  Remove-Item Env:PARTYLAN_DERP_REGION_ID -ErrorAction SilentlyContinue
+  Remove-Item Env:PARTYLAN_DERP_REGION_CODE -ErrorAction SilentlyContinue
+  Remove-Item Env:PARTYLAN_DERP_HOSTNAME -ErrorAction SilentlyContinue
+  Remove-Item Env:PARTYLAN_DERP_PORT -ErrorAction SilentlyContinue
+  Remove-Item Env:PARTYLAN_NETWORKED_BACKEND -ErrorAction SilentlyContinue
+}
 $smokeLogRoot = Join-Path $env:TEMP ("PartyLAN-SmokeTest-" + [guid]::NewGuid().ToString('N'))
 $env:PARTYLAN_LOG_DIR = $smokeLogRoot
 if ($LogToStdout) {
@@ -99,9 +109,13 @@ try {
 
   $content = Get-Content -Raw $latestLog.FullName
   $checks = @(
-    'custom DERP present',
-    'region=901/cn1'
+    '[video/capability] startup',
+    '[audio/capability] startup'
   )
+  if ($Mode -eq 'networked') {
+    $checks += 'custom DERP present'
+    $checks += 'region=901/cn1'
+  }
   if ($ICEServers) {
     $checks += 'media ICE servers configured'
   } else {
@@ -121,6 +135,9 @@ try {
   if ($missing.Count -gt 0) {
     throw "Smoke test failed. Missing markers: $($missing -join ', '). Log: $($latestLog.FullName)"
   }
+  if ($content -match [regex]::Escape('network start failed')) {
+    throw "Smoke test failed: selected mode '$Mode' could not start. Log: $($latestLog.FullName)"
+  }
 
   $warnings = @()
   if ($content -match [regex]::Escape("Tailscale could not connect to the 'PartyLAN CN Relay' relay server")) {
@@ -132,7 +149,10 @@ try {
 
   Write-Host "Smoke test passed."
   Write-Host "Log: $($latestLog.FullName)"
-  Write-Host "DERP note: custom DERP present and region=901/cn1 observed."
+  Write-Host "Mode: $Mode"
+  if ($Mode -eq 'networked') {
+    Write-Host "DERP note: custom DERP present and region=901/cn1 observed."
+  }
   if ($ICEServers) {
     Write-Host "Media note: ICE/TURN configuration markers were observed."
   } else {
@@ -156,4 +176,11 @@ finally {
   Remove-Item Env:PARTYLAN_ICE_SERVERS -ErrorAction SilentlyContinue
   Remove-Item Env:PARTYLAN_TURN_USERNAME -ErrorAction SilentlyContinue
   Remove-Item Env:PARTYLAN_TURN_CREDENTIAL -ErrorAction SilentlyContinue
+  Remove-Item Env:PARTYLAN_AUTH_KEY -ErrorAction SilentlyContinue
+  Remove-Item Env:PARTYLAN_MODE -ErrorAction SilentlyContinue
+  Remove-Item Env:PARTYLAN_NETWORKED_BACKEND -ErrorAction SilentlyContinue
+  Remove-Item Env:PARTYLAN_DERP_REGION_ID -ErrorAction SilentlyContinue
+  Remove-Item Env:PARTYLAN_DERP_REGION_CODE -ErrorAction SilentlyContinue
+  Remove-Item Env:PARTYLAN_DERP_HOSTNAME -ErrorAction SilentlyContinue
+  Remove-Item Env:PARTYLAN_DERP_PORT -ErrorAction SilentlyContinue
 }

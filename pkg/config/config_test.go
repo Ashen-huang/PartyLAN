@@ -30,6 +30,9 @@ func TestLoadReturnsDefaultConfigWhenMissing(t *testing.T) {
 	if cfg.AudioShareSources == nil || len(cfg.AudioShareSources) != 0 {
 		t.Fatalf("expected empty audio share sources, got %#v", cfg.AudioShareSources)
 	}
+	if cfg.GameCast.BaseURL != "https://113.142.217.42:5050" {
+		t.Fatalf("unexpected default GameCast URL: %q", cfg.GameCast.BaseURL)
+	}
 }
 
 func TestSaveAndLoadRoundTrip(t *testing.T) {
@@ -43,6 +46,13 @@ func TestSaveAndLoadRoundTrip(t *testing.T) {
 	cfg.DERPRegionCode = "cn1"
 	cfg.DERPHostName = "relay.example.com"
 	cfg.DERPPort = 443
+	cfg.GameCast.BaseURL = "https://gamecast.example.com:5050"
+	cfg.GameCast.DisplayName = "Viewer"
+	cfg.GameCast.TrustedCertificateSHA256 = "abcdef"
+	cfg.GameCast.RoomHistory = []GameCastRoomHistoryEntry{
+		{ID: "room-1", Time: 42},
+		{ID: "room-2", Time: 24},
+	}
 
 	if err := Save(cfg); err != nil {
 		t.Fatalf("Save: %v", err)

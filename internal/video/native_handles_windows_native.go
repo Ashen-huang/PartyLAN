@@ -19,9 +19,14 @@ type NativeCapturer struct {
 }
 
 func NewNativeCapturer() *NativeCapturer {
-	return &NativeCapturer{
-		bridge: windowsmedia.NewBridge(),
+	return newNativeCapturerWithBridge(windowsmedia.NewBridge())
+}
+
+func newNativeCapturerWithBridge(bridge windowsmedia.Bridge) *NativeCapturer {
+	if bridge == nil {
+		bridge = windowsmedia.NewBridge()
 	}
+	return &NativeCapturer{bridge: bridge}
 }
 
 func (c *NativeCapturer) Start(config CaptureConfig) error {
@@ -72,6 +77,9 @@ func (c *NativeCapturer) GetFrame() (*Frame, error) {
 	}
 
 	captured, status := c.bridge.CapturerGrabFrame(c.handle, timeoutMs)
+	if status == windowsmedia.StatusUnavailable {
+		return nil, ErrCaptureFrameUnavailable
+	}
 	if status != windowsmedia.StatusOK {
 		return nil, mapNativeStatusError(status, c.bridge.LastErrorReason())
 	}

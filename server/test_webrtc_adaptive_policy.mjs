@@ -160,6 +160,27 @@ test('encoding profiles cap resolution, frame rate, bitrate and server budget', 
   });
   assert.equal(oneViewer.maxBitrate, 10800000);
   assert.equal(twoViewers.maxBitrate, 8000000);
+
+  const protectedViewer = computeEncodingProfile({
+    level: 0,
+    sourceWidth: 1920,
+    sourceHeight: 1080,
+    configuredFps: 60,
+    targetBitrate: 10800000,
+    viewerCount: 1,
+    serverSafeBitrate: 16000000,
+    protectionMaxWidth: 1280,
+    protectionMaxHeight: 720,
+    protectionMaxBitrate: 3000000,
+  });
+  assert.deepEqual(protectedViewer, {
+    level: 0,
+    maxWidth: 1280,
+    maxHeight: 720,
+    maxFramerate: 60,
+    maxBitrate: 3000000,
+    scaleResolutionDownBy: 1.5,
+  });
 });
 
 test('sender deltas derive loss from packets sent when remote received is absent', () => {

@@ -1288,7 +1288,7 @@ PartyLANMediaStatus PartyLAN_EncoderConfigure(void* handle, const PartyLANMediaE
     encode_config.rcParams.vbvInitialDelay = bitrate_bps / 2U;
     encode_config.rcParams.zeroReorderDelay = 1;
     encode_config.encodeCodecConfig.h264Config.idrPeriod = keyframe_interval;
-    encode_config.encodeCodecConfig.h264Config.level = NV_ENC_LEVEL_H264_31;
+    encode_config.encodeCodecConfig.h264Config.level = NV_ENC_LEVEL_AUTOSELECT;
     encode_config.encodeCodecConfig.h264Config.chromaFormatIDC = 1;
     encode_config.encodeCodecConfig.h264Config.disableSPSPPS = 0;
     encode_config.encodeCodecConfig.h264Config.outputAUD = 1;

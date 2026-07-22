@@ -1,8 +1,16 @@
+import type { ShareAudioDefault, ShareSourceKind } from '../types';
 import { useState } from 'react';
 import type { Translator } from '../i18n';
 import './RoomControls.css';
 
 export interface ShareSettings {
+  sourceId: string;
+  sourceKind: ShareSourceKind;
+  sourceLabel: string;
+  audioMode: 'default' | 'off' | 'process';
+  audioDefault: ShareAudioDefault;
+  audioProcessName?: string;
+  audioProcessId?: number;
   width: number;
   height: number;
   fps: number;

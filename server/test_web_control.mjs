@@ -9,6 +9,8 @@ const {
   canStartShare,
   desiredSfuRole,
   runShareStart,
+  canSendProtectedControl,
+  shouldPostRoomState,
 } = require('./web_control.js');
 
 test('web creates an absent room but joins an existing client room as a member', () => {
@@ -77,4 +79,19 @@ test('share workflow never captures when claim fails and releases on publish fai
     /publish failed/,
   );
   assert.deepEqual(calls, ['capture', 'publish', 'release']);
+});
+
+test('protected control writes require an authenticated non-guest user', () => {
+  assert.equal(canSendProtectedControl(true, 'admin'), true);
+  assert.equal(canSendProtectedControl(false, 'admin'), false);
+  assert.equal(canSendProtectedControl(true, 'guest'), false);
+  assert.equal(canSendProtectedControl(true, ''), false);
+});
+
+test('room state posts are deduplicated inside the heartbeat interval', () => {
+  const state = { room: 'room-a', active: true, sharing: true, sfu: false, audioMode: 'system' };
+  assert.equal(shouldPostRoomState('', state, 1000, 0, 5000), true);
+  assert.equal(shouldPostRoomState(JSON.stringify(state), state, 4500, 1000, 5000), false);
+  assert.equal(shouldPostRoomState(JSON.stringify(state), state, 6000, 1000, 5000), true);
+  assert.equal(shouldPostRoomState(JSON.stringify(state), {...state, sfu: true}, 2000, 1000, 5000), true);
 });

@@ -132,6 +132,38 @@ class ControlPlane:
             result.sort(key=lambda item: (item["role"] != "owner", item["name"], item["participantId"]))
             return result
 
+    def authorize_quality_report(self, room_id, participant_id, auth_user):
+        room_id = self._required_text(room_id, "room_not_found", 400, 120)
+        participant_id = self._required_text(
+            participant_id, "participant_not_found", 400, 128
+        )
+        now = self._clock()
+        with self._lock:
+            self._prune_locked(now)
+            participant = self._get_participant_locked(room_id, participant_id, auth_user)
+            if participant.get("role") == "owner":
+                raise ControlError("quality_report_forbidden", 403)
+            return self._build_participant(room_id, participant, now)
+
+    def authorize_quality_snapshot(self, room_id, participant_id, auth_user):
+        room_id = self._required_text(room_id, "room_not_found", 400, 120)
+        participant_id = self._required_text(
+            participant_id, "participant_not_found", 400, 128
+        )
+        now = self._clock()
+        with self._lock:
+            self._prune_locked(now)
+            participant = self._get_participant_locked(room_id, participant_id, auth_user)
+            room = self._rooms.get(room_id) or {}
+            if (
+                participant.get("role") != "owner"
+                or participant.get("client_type") != "client"
+                or room.get("owner_participant_id") != participant_id
+            ):
+                raise ControlError("quality_snapshot_forbidden", 403)
+            active_ids = set((self._presence.get(room_id) or {}).keys())
+            return self._build_participant(room_id, participant, now), active_ids
+
     def claim_share(self, data, auth_user):
         room_id, participant_id = self._presence_identity(data)
         now = self._clock()

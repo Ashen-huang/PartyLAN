@@ -34,7 +34,7 @@
   padding: 9px 10px;
   border-radius: 14px;
   border: 1px solid rgba(92, 138, 173, 0.18);
-  background: rgba(255, 255, 255, 0.54);
+  background: var(--surface-raised);
 }
 
 .diag-badge-label {
@@ -95,7 +95,7 @@
 .diagnostics-link-btn {
   border: 1px solid rgba(15, 91, 125, 0.12);
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.72);
+  background: var(--surface-muted);
   color: var(--accent-strong);
   padding: 7px 10px;
   font-size: 11px;
@@ -104,7 +104,7 @@
 }
 
 .diagnostics-link-btn:hover {
-  background: rgba(255, 255, 255, 0.9);
+  background: var(--hover-bg);
 }
 
 .diagnostics-overlay {

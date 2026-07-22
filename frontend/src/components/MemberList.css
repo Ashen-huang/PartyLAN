@@ -66,21 +66,21 @@
   font-size: 12px;
   border-radius: 14px;
   border: 1px solid rgba(84, 126, 164, 0.16);
-  background: rgba(248, 252, 255, 0.55);
+  background: var(--surface-raised);
   transition: background 0.15s, border-color 0.15s, transform 0.15s;
 }
 
 .member-item:hover {
-  background: rgba(255, 255, 255, 0.74);
-  border-color: rgba(82, 140, 179, 0.26);
+  background: var(--hover-bg);
+  border-color: var(--border-highlight);
   transform: translateY(-1px);
 }
 
 .member-item.is-self {
   border-color: rgba(57, 208, 183, 0.32);
   background:
-    linear-gradient(135deg, rgba(57, 208, 183, 0.15), rgba(255, 255, 255, 0.76)),
-    rgba(255, 255, 255, 0.72);
+    linear-gradient(135deg, rgba(44, 226, 196, 0.2), rgba(235, 250, 253, 0.9)),
+    var(--surface-raised);
 }
 
 .member-status {
@@ -151,7 +151,7 @@
   padding: 9px 12px;
   border: 1px solid rgba(88, 130, 164, 0.2);
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.66);
+  background: var(--surface-muted);
   color: var(--text-primary);
   font-size: 12px;
   font-weight: 700;
@@ -159,7 +159,7 @@
 }
 
 .member-voice-btn:hover {
-  background: rgba(255, 255, 255, 0.84);
+  background: var(--hover-bg);
 }
 
 .member-voice-btn.active {

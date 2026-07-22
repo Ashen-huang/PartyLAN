@@ -7,6 +7,7 @@
 #include <audioclient.h>
 #include <audiopolicy.h>
 #include <objbase.h>
+#include <objidl.h>
 #include <propidl.h>
 #include <shellapi.h>
 #include <stdint.h>
@@ -19,7 +20,7 @@
 #define PARTYLAN_AUDIO_DEFAULT_CHANNELS 2u
 #define PARTYLAN_AUDIO_DEFAULT_FRAME_MS 20u
 #define PARTYLAN_AUDIO_BITS_PER_SAMPLE 16u
-#define PARTYLAN_AUDIO_MIN_PROCESS_LOOPBACK_BUILD 20348u
+#define PARTYLAN_AUDIO_MIN_PROCESS_LOOPBACK_BUILD 20438u
 #define PARTYLAN_VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK L"VAD\\Process_Loopback"
 
 typedef HRESULT (WINAPI* PartyLANActivateAudioInterfaceAsyncFn)(
@@ -455,7 +456,9 @@ static HRESULT STDMETHODCALLTYPE partylan_activation_query_interface(
     }
     *ppvObject = NULL;
 
-    if (IsEqualGUID(riid, &IID_IUnknown) || IsEqualGUID(riid, &IID_IActivateAudioInterfaceCompletionHandler)) {
+    if (IsEqualGUID(riid, &IID_IUnknown) ||
+        IsEqualGUID(riid, &IID_IActivateAudioInterfaceCompletionHandler) ||
+        IsEqualGUID(riid, &IID_IAgileObject)) {
         *ppvObject = This;
         IActivateAudioInterfaceCompletionHandler_AddRef(This);
         return S_OK;
@@ -648,6 +651,31 @@ static PartyLANAudioStatus partylan_audio_activate_session(PartyLANAudioSession*
     return PARTYLAN_AUDIO_STATUS_OK;
 }
 
+static PartyLANAudioStatus partylan_audio_activate_default_render_session(PartyLANAudioSession* session) {
+    IMMDeviceEnumerator* device_enumerator = NULL;
+    IMMDevice* device = NULL;
+    HRESULT hr;
+
+    hr = CoCreateInstance(&CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL, &IID_IMMDeviceEnumerator, (void**)&device_enumerator);
+    if (FAILED(hr) || device_enumerator == NULL) {
+        return partylan_audio_status_from_hresult("create audio device enumerator", hr);
+    }
+
+    hr = IMMDeviceEnumerator_GetDefaultAudioEndpoint(device_enumerator, eRender, eConsole, &device);
+    if (FAILED(hr) || device == NULL) {
+        IMMDeviceEnumerator_Release(device_enumerator);
+        return partylan_audio_status_from_hresult("get default render audio endpoint", hr);
+    }
+
+    hr = IMMDevice_Activate(device, &IID_IAudioClient, CLSCTX_ALL, NULL, (void**)&session->audio_client);
+    IMMDevice_Release(device);
+    IMMDeviceEnumerator_Release(device_enumerator);
+    if (FAILED(hr) || session->audio_client == NULL) {
+        return partylan_audio_status_from_hresult("activate default render audio client", hr);
+    }
+    return PARTYLAN_AUDIO_STATUS_OK;
+}
+
 PartyLANAudioStatus PartyLAN_QueryAudioCapability(PartyLANAudioCapability* capability) {
     if (capability == NULL) {
         return PARTYLAN_AUDIO_STATUS_INTERNAL_ERROR;
@@ -829,11 +857,12 @@ PartyLANAudioStatus PartyLAN_ConfigureAudioSession(void* handle, const PartyLANA
     if (session->started) {
         return partylan_audio_status_with_reason(PARTYLAN_AUDIO_STATUS_INTERNAL_ERROR, "audio session must be stopped before reconfiguration");
     }
-    if (config->target_process_id == 0) {
+    if (config->target_process_id == 0 && config->capture_mode != PARTYLAN_AUDIO_CAPTURE_SYSTEM_MIX) {
         return partylan_audio_status_with_reason(PARTYLAN_AUDIO_STATUS_INTERNAL_ERROR, "target process id is required for process loopback audio");
     }
     if (config->capture_mode != PARTYLAN_AUDIO_CAPTURE_INCLUDE_PROCESS_TREE &&
-        config->capture_mode != PARTYLAN_AUDIO_CAPTURE_EXCLUDE_PROCESS_TREE) {
+        config->capture_mode != PARTYLAN_AUDIO_CAPTURE_EXCLUDE_PROCESS_TREE &&
+        config->capture_mode != PARTYLAN_AUDIO_CAPTURE_SYSTEM_MIX) {
         return partylan_audio_status_with_reason(PARTYLAN_AUDIO_STATUS_INTERNAL_ERROR, "invalid process loopback capture mode");
     }
 
@@ -871,7 +900,8 @@ PartyLANAudioStatus PartyLAN_StartAudioSession(void* handle) {
     if (session->started) {
         return PARTYLAN_AUDIO_STATUS_OK;
     }
-    if (!partylan_audio_process_loopback_available()) {
+    if (session->config.capture_mode != PARTYLAN_AUDIO_CAPTURE_SYSTEM_MIX &&
+        !partylan_audio_process_loopback_available()) {
         return PARTYLAN_AUDIO_STATUS_UNAVAILABLE;
     }
 
@@ -885,7 +915,9 @@ PartyLANAudioStatus PartyLAN_StartAudioSession(void* handle) {
     }
     session->com_initialized = 1;
 
-    if (partylan_audio_activate_session(session) != PARTYLAN_AUDIO_STATUS_OK) {
+    if ((session->config.capture_mode == PARTYLAN_AUDIO_CAPTURE_SYSTEM_MIX
+            ? partylan_audio_activate_default_render_session(session)
+            : partylan_audio_activate_session(session)) != PARTYLAN_AUDIO_STATUS_OK) {
         partylan_audio_reset_runtime(session);
         return PARTYLAN_AUDIO_STATUS_UNAVAILABLE;
     }
@@ -934,7 +966,11 @@ PartyLANAudioStatus PartyLAN_StartAudioSession(void* handle) {
     }
 
     session->started = 1;
-    partylan_audio_set_reason("process loopback capture started");
+    if (session->config.capture_mode == PARTYLAN_AUDIO_CAPTURE_SYSTEM_MIX) {
+        partylan_audio_set_reason("system loopback capture started");
+    } else {
+        partylan_audio_set_reason("process loopback capture started");
+    }
     return PARTYLAN_AUDIO_STATUS_OK;
 }
 

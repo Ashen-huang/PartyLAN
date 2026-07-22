@@ -36,7 +36,8 @@ test('the first 15 seconds are observation only', () => {
   assert.equal(state.action, null);
   assert.equal(state.status, 'observing');
   state = evaluateQualitySample(state, bad(16000)).state;
-  assert.equal(state.action, 'would_restart_ice');
+  assert.equal(state.action, 'protect_and_restart_ice');
+  assert.equal(state.recoveryCount, 1);
   assert.equal(state.policyVersion, POLICY_VERSION);
 });
 
@@ -54,14 +55,31 @@ test('short spikes and non-consecutive bad samples do not trigger', () => {
   assert.equal(state.action, null);
 });
 
-test('five of seven bad samples with the last three consecutive creates a shadow restart decision', () => {
+test('five of seven bad samples with the last three consecutive protects and restarts once', () => {
   let state = createQualityState(0);
   state = evaluateQualitySample(state, good(16000)).state;
   const samples = [bad(18000), good(20000), good(22000), bad(24000), bad(26000), bad(28000), bad(30000)];
   for (const sample of samples) state = evaluateQualitySample(state, sample).state;
-  assert.equal(state.action, 'would_restart_ice');
-  assert.equal(state.status, 'degraded-confirmed');
-  assert.equal(state.badCount, 5);
+  assert.equal(state.action, 'protect_and_restart_ice');
+  assert.equal(state.status, 'restarting');
+  assert.equal(state.recoveryCount, 1);
+  assert.equal(state.badCount, 0);
+});
+
+test('a repeatedly degraded session remains protected without a second restart', () => {
+  let state = createQualityState(0);
+  for (const now of [16000, 18000, 20000, 22000, 24000, 26000, 28000]) {
+    state = evaluateQualitySample(state, bad(now)).state;
+  }
+  assert.equal(state.action, 'protect_and_restart_ice');
+
+  state = {...state, connectedAt: 70000, cooldownUntil: 0};
+  for (const now of [86000, 88000, 90000, 92000, 94000, 96000, 98000]) {
+    state = evaluateQualitySample(state, bad(now)).state;
+  }
+  assert.equal(state.action, 'protect_bitrate');
+  assert.equal(state.status, 'protected');
+  assert.equal(state.recoveryCount, 1);
 });
 
 test('low bitrate, low fps, high RTT, direct paths, hidden pages and insufficient packets do not trigger alone', () => {
@@ -102,10 +120,12 @@ test('an invalid sample is skipped without erasing the prior quality window', ()
   assert.deepEqual(state.window, before);
 });
 
-test('twenty stable seconds clear protection eligibility', () => {
+test('twenty stable seconds request one bounded bitrate recovery step', () => {
   let state = createQualityState(0);
-  state = {...state, status: 'protected', recoveryCount: 2, stableSince: null};
+  state = {...state, status: 'protected', recoveryCount: 1, stableSince: null};
   for (let now = 20000; now <= 40000; now += 2000) state = evaluateQualitySample(state, good(now)).state;
-  assert.equal(state.status, 'normal');
+  assert.equal(state.status, 'recovering');
   assert.equal(state.stable, true);
+  assert.equal(state.action, 'recover_bitrate');
+  assert.equal(state.recoveryStep, 1);
 });

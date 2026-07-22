@@ -7,20 +7,33 @@ import (
 )
 
 type Config struct {
-	DisplayName         string   `json:"displayName"`
-	TailscaleAuthKey    string   `json:"tailscaleAuthKey,omitempty"`
-	LastRoomID          string   `json:"lastRoomId,omitempty"`
-	WindowAutoSized     bool     `json:"windowAutoSized,omitempty"`
-	WindowLayoutVersion int      `json:"windowLayoutVersion,omitempty"`
-	VideoQuality        int      `json:"videoQuality"` // 0=smooth, 1=balanced, 2=high, 3=original
-	AudioBitrate        int      `json:"audioBitrate"` // kbps
-	MicDeviceID         string   `json:"micDeviceId,omitempty"`
-	AudioShareSources   []string `json:"audioShareSources,omitempty"`
-	AutoJoin            bool     `json:"autoJoin"`
-	DERPRegionID        int      `json:"derpRegionId,omitempty"`
-	DERPRegionCode      string   `json:"derpRegionCode,omitempty"`
-	DERPHostName        string   `json:"derpHostName,omitempty"`
-	DERPPort            int      `json:"derpPort,omitempty"`
+	DisplayName         string          `json:"displayName"`
+	TailscaleAuthKey    string          `json:"tailscaleAuthKey,omitempty"`
+	LastRoomID          string          `json:"lastRoomId,omitempty"`
+	WindowAutoSized     bool            `json:"windowAutoSized,omitempty"`
+	WindowLayoutVersion int             `json:"windowLayoutVersion,omitempty"`
+	VideoQuality        int             `json:"videoQuality"` // 0=smooth, 1=balanced, 2=high, 3=original
+	AudioBitrate        int             `json:"audioBitrate"` // kbps
+	MicDeviceID         string          `json:"micDeviceId,omitempty"`
+	AudioShareSources   []string        `json:"audioShareSources,omitempty"`
+	AutoJoin            bool            `json:"autoJoin"`
+	DERPRegionID        int             `json:"derpRegionId,omitempty"`
+	DERPRegionCode      string          `json:"derpRegionCode,omitempty"`
+	DERPHostName        string          `json:"derpHostName,omitempty"`
+	DERPPort            int             `json:"derpPort,omitempty"`
+	GameCast            GameCastProfile `json:"gamecast"`
+}
+
+type GameCastProfile struct {
+	BaseURL                  string                     `json:"baseUrl"`
+	DisplayName              string                     `json:"displayName,omitempty"`
+	TrustedCertificateSHA256 string                     `json:"trustedCertificateSha256,omitempty"`
+	RoomHistory              []GameCastRoomHistoryEntry `json:"roomHistory,omitempty"`
+}
+
+type GameCastRoomHistoryEntry struct {
+	ID   string `json:"id"`
+	Time int64  `json:"time"`
 }
 
 func DefaultConfig() *Config {
@@ -30,15 +43,22 @@ func DefaultConfig() *Config {
 		AudioBitrate:      128,
 		AudioShareSources: []string{},
 		AutoJoin:          false,
+		GameCast: GameCastProfile{
+			BaseURL: "https://113.142.217.42:5050",
+		},
 	}
 }
 
-func configDir() (string, error) {
+func Dir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
 	return filepath.Join(home, ".partylan"), nil
+}
+
+func configDir() (string, error) {
+	return Dir()
 }
 
 func configPath() (string, error) {

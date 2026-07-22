@@ -4,6 +4,9 @@ export interface Member {
   online: boolean;
   muted: boolean;
   sharing: boolean;
+  statusLabel?: string;
+  clientType?: 'web' | 'client';
+  role?: 'owner' | 'member' | string;
 }
 
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected';
@@ -48,6 +51,82 @@ export interface UserPreferences {
   displayName: string;
 }
 
+export interface GameCastProfile {
+  baseUrl: string;
+  displayName?: string;
+  trustedCertificateSha256?: string;
+}
+
+export interface GameCastProbeResult {
+  ok: boolean;
+  status: 'ok' | 'tls_untrusted' | 'error' | string;
+  baseUrl: string;
+  user?: string;
+  loggedIn: boolean;
+  roomName?: string;
+  certificateFingerprint?: string;
+  certificateTrusted: boolean;
+  message?: string;
+}
+
+export interface GameCastRoomState {
+  room: string;
+  active: boolean;
+  origin?: 'web' | 'client' | string;
+  ownerParticipantId?: string;
+  ownerName?: string;
+  sharing: boolean;
+  shareOwnerParticipantId?: string;
+  shareOwnerName?: string;
+  shareOrigin?: 'web' | 'client' | string;
+  sfu: boolean;
+  audioMode?: string;
+  user?: string;
+  ttl?: number;
+  updatedAt?: string;
+  participantCount?: number;
+  updatedAtUnix?: number;
+}
+
+export interface GameCastPresenceParticipant {
+  participantId: string;
+  room: string;
+  name?: string;
+  clientType: 'web' | 'client' | string;
+  role: 'owner' | 'member' | string;
+  active: boolean;
+  sharing: boolean;
+  ttl?: number;
+  ageSeconds?: number;
+}
+
+export interface GameCastSessionState {
+  user: string;
+  loggedIn: boolean;
+  authMode?: string;
+  version?: string;
+  roomName?: string;
+}
+
+export interface GameCastRoomSession {
+  roomId: string;
+  role: 'host' | 'viewer' | string;
+  state: GameCastRoomState;
+}
+
+export interface GameCastStatus {
+  state: 'connecting' | 'connected' | 'closed' | 'error' | string;
+  detail?: string;
+}
+
+export interface GameCastShareRuntimeEvent {
+  kind: 'video-stopped' | 'audio-disabled' | string;
+  roomId: string;
+  peerId: string;
+  audioMode?: string;
+  message: string;
+}
+
 export interface RoomState {
   roomId: string | null;
   inRoom: boolean;
@@ -71,6 +150,24 @@ export interface AudioShareSource {
   iconDataUrl: string;
   active: boolean;
   selected: boolean;
+}
+
+export type ShareSourceKind = 'display' | 'window';
+export type ShareAudioDefault = 'none' | 'system' | 'process';
+
+export interface ShareSource {
+  id: string;
+  kind: ShareSourceKind;
+  label: string;
+  subtitle?: string;
+  displayIndex?: number;
+  windowHandle?: string;
+  processId?: number;
+  processName?: string;
+  iconDataUrl?: string;
+  previewDataUrl?: string;
+  audioDefault: ShareAudioDefault;
+  audioProcessName?: string;
 }
 
 export interface AvailableNode {
@@ -101,6 +198,30 @@ export interface StreamSettings {
   fps: number;
 }
 
+export interface StreamStats {
+  peerId: string;
+  width: number;
+  height: number;
+  mode: string;
+  encodedFps: number;
+  estimatedSourceFps: number;
+  bitrateKbps: number;
+  sessions: number;
+  requestedWidth?: number;
+  requestedHeight?: number;
+  requestedFps?: number;
+  actualFps?: number;
+  freshFps?: number;
+  repeatedRatio?: number;
+  encodeBudgetRatio?: number;
+  adaptiveState?: string;
+  adaptiveReason?: string;
+  adaptivePolicy?: string;
+  adaptiveLevel?: number;
+  adaptiveLevels?: number;
+  weakViewers?: number;
+}
+
 export type MediaSignalKind = 'offer' | 'answer' | 'ice' | 'close' | 'renegotiate' | 'error';
 
 export interface MediaSignal {
@@ -118,6 +239,13 @@ export interface WebRTCPlaybackStats {
   packetsLost: number | null;
   jitterMs: number | null;
   framesDropped: number | null;
+  valid?: boolean;
+  invalidReason?: string;
+  generation?: string;
+  pairId?: string;
+  packetsReceivedDelta?: number | null;
+  packetsLostDelta?: number | null;
+  framesDroppedDelta?: number | null;
 }
 
 export type VoiceStatus = 'idle' | 'starting' | 'active' | 'muted' | 'error';

@@ -6,10 +6,13 @@ interface AudioPanelProps {
   audio: AudioState;
   capability: AudioCapability | null;
   audioSources: AudioShareSource[];
+  shareAudioPolicy: string;
+  shareAudioMode: 'default' | 'off' | 'process';
   t: Translator;
   onToggleMic: () => void;
   onToggleSpeaker: () => void;
   onVolumeChange: (volume: number) => void;
+  onShareAudioModeChange: (mode: 'default' | 'off' | 'process') => void;
   onToggleAudioSource: (pid: number) => void | Promise<void>;
 }
 
@@ -17,10 +20,13 @@ export default function AudioPanel({
   audio,
   capability,
   audioSources,
+  shareAudioPolicy,
+  shareAudioMode,
   t,
   onToggleMic,
   onToggleSpeaker,
   onVolumeChange,
+  onShareAudioModeChange,
   onToggleAudioSource,
 }: AudioPanelProps) {
   const appAudioReady = Boolean(capability?.supportsProcessCapture);
@@ -80,6 +86,36 @@ export default function AudioPanel({
         <div className="audio-capability-reason">{capabilityReason}</div>
       </div>
 
+      <div className="audio-capability-card ready">
+        <div className="audio-capability-title">{t('audio.defaultPolicy')}</div>
+        <div className="audio-capability-reason">{shareAudioPolicy}</div>
+      </div>
+
+      <div className="audio-share-header">{t('audio.sharedMode')}</div>
+      <div className="audio-share-mode-row">
+        <button
+          type="button"
+          className={`audio-share-mode-btn ${shareAudioMode === 'default' ? 'active' : ''}`}
+          onClick={() => onShareAudioModeChange('default')}
+        >
+          {t('audio.modeDefault')}
+        </button>
+        <button
+          type="button"
+          className={`audio-share-mode-btn ${shareAudioMode === 'off' ? 'active' : ''}`}
+          onClick={() => onShareAudioModeChange('off')}
+        >
+          {t('audio.modeOff')}
+        </button>
+        <button
+          type="button"
+          className={`audio-share-mode-btn ${shareAudioMode === 'process' ? 'active' : ''}`}
+          onClick={() => onShareAudioModeChange('process')}
+        >
+          {t('audio.modeProcess')}
+        </button>
+      </div>
+
       <div className="audio-share-header">{t('audio.sharedSources')}</div>
       <div className="audio-share-list">
         {audioSources.length === 0 ? (
@@ -88,10 +124,12 @@ export default function AudioPanel({
           audioSources.map((source) => (
             <label
               key={source.pid}
-              className={`audio-share-item ${source.selected ? 'selected' : ''}`}
+              className={`audio-share-item ${source.selected ? 'selected' : ''} ${shareAudioMode !== 'process' ? 'disabled' : ''}`}
               onClick={(event) => {
                 event.preventDefault();
-                void onToggleAudioSource(source.pid);
+                if (shareAudioMode === 'process') {
+                  void onToggleAudioSource(source.pid);
+                }
               }}
             >
               <span className="audio-share-icon" aria-hidden="true">
@@ -109,6 +147,7 @@ export default function AudioPanel({
                 type="radio"
                 name="partylan-audio-source"
                 checked={source.selected}
+                disabled={shareAudioMode !== 'process'}
                 readOnly
               />
             </label>

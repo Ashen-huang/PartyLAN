@@ -52,7 +52,7 @@ func (c *ProcessCapturer) Start(ctx context.Context, config ProcessCaptureConfig
 		ctx = context.Background()
 	}
 	config = normalizeProcessCaptureConfig(config)
-	if config.TargetProcessID == 0 {
+	if config.Mode != CaptureSystemMix && config.TargetProcessID == 0 {
 		return fmt.Errorf("target process id is required for process audio capture")
 	}
 

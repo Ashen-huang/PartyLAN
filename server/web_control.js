@@ -51,10 +51,21 @@ async function runShareStart(steps) {
   }
 }
 
+function canSendProtectedControl(loggedIn, user) {
+  return !!loggedIn && !!String(user || '').trim() && String(user).trim() !== 'guest';
+}
+
+function shouldPostRoomState(previousSignature, state, now, lastPostAt, heartbeatMs) {
+  var signature = JSON.stringify(state || {});
+  return signature !== previousSignature || Number(now) - Number(lastPostAt || 0) >= Number(heartbeatMs || 0);
+}
+
 module.exports = {
   decidePresenceJoin: decidePresenceJoin,
   mergePresence: mergePresence,
   canStartShare: canStartShare,
   desiredSfuRole: desiredSfuRole,
-  runShareStart: runShareStart
+  runShareStart: runShareStart,
+  canSendProtectedControl: canSendProtectedControl,
+  shouldPostRoomState: shouldPostRoomState
 };

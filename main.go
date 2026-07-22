@@ -28,9 +28,10 @@ func main() {
 	app := NewApp(net)
 
 	err = wails.Run(&options.App{
-		Title:  "PartyLAN",
-		Width:  1120,
-		Height: 630,
+		Title:     "PartyLAN",
+		Width:     1120,
+		Height:    630,
+		Frameless: true,
 		MinWidth:  920,
 		MinHeight: 560,
 		AssetServer: &assetserver.Options{

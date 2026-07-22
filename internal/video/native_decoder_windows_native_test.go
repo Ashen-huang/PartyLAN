@@ -3,6 +3,7 @@
 package video
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -10,10 +11,13 @@ import (
 )
 
 type fakeMediaBridge struct {
-	decoderHandle uintptr
-	reason        string
-	decodeStatus  windowsmedia.Status
-	decodeFrame   windowsmedia.CapturedFrame
+	capturerHandle uintptr
+	captureStatus  windowsmedia.Status
+	captureFrame   windowsmedia.CapturedFrame
+	decoderHandle  uintptr
+	reason         string
+	decodeStatus   windowsmedia.Status
+	decodeFrame    windowsmedia.CapturedFrame
 
 	createDecoderCalls int
 	configureCalls     int
@@ -36,7 +40,7 @@ func (b *fakeMediaBridge) LastErrorReason() string {
 }
 
 func (b *fakeMediaBridge) CreateCapturer() uintptr {
-	return 0
+	return b.capturerHandle
 }
 
 func (b *fakeMediaBridge) CreateEncoder() uintptr {
@@ -49,11 +53,11 @@ func (b *fakeMediaBridge) CreateDecoder() uintptr {
 }
 
 func (b *fakeMediaBridge) CapturerStart(handle uintptr, displayIndex int) windowsmedia.Status {
-	return windowsmedia.StatusUnavailable
+	return windowsmedia.StatusOK
 }
 
 func (b *fakeMediaBridge) CapturerGrabFrame(handle uintptr, timeoutMs int) (windowsmedia.CapturedFrame, windowsmedia.Status) {
-	return windowsmedia.CapturedFrame{}, windowsmedia.StatusUnavailable
+	return b.captureFrame, b.captureStatus
 }
 
 func (b *fakeMediaBridge) CapturerStop(handle uintptr) {}
@@ -143,6 +147,22 @@ func TestNativeDecoderConfiguresAndDecodesAnnexB(t *testing.T) {
 	}
 	if frame.Width != 2 || frame.Height != 1 || frame.Timestamp != 123 || len(frame.Data) != 8 {
 		t.Fatalf("decoded frame = %+v len=%d, want 2x1 ts=123 len=8", frame, len(frame.Data))
+	}
+}
+
+func TestNativeCapturerMapsFrameTimeoutToTransientError(t *testing.T) {
+	bridge := &fakeMediaBridge{
+		capturerHandle: 42,
+		captureStatus:  windowsmedia.StatusUnavailable,
+	}
+	capturer := newNativeCapturerWithBridge(bridge)
+	if err := capturer.Start(CaptureConfig{DisplayIndex: 0, FrameRate: 30}); err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+	defer capturer.Stop()
+	_, err := capturer.GetFrame()
+	if !errors.Is(err, ErrCaptureFrameUnavailable) {
+		t.Fatalf("GetFrame error = %v, want transient frame-unavailable error", err)
 	}
 }
 

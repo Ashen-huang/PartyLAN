@@ -8,6 +8,10 @@ Desktop app built with Wails + Go + React.
 .\scripts\Start-PartyLAN.ps1
 ```
 
+The default run mode is now `gamecast-client`, which opens the native
+GameCast/Screego viewer shell and connects to the configured GameCast server
+instead of starting the legacy PartyLAN P2P network.
+
 ## Build
 
 ```powershell
@@ -24,10 +28,8 @@ The packaged app is written to `build/bin/PartyLAN.exe`.
 .\scripts\Package-PartyLAN.ps1
 ```
 
-This writes a zip release under `release/`. Release bundles default to
-`tailscale-system` with native WebRTC media enabled, so double-clicking the
-packaged app uses the installed Tailscale client for cross-network sharing.
-For non-native diagnostic builds, pass explicit overrides such as
+This writes a zip release under `release/`. Legacy PartyLAN/Tailscale test
+bundles can still be produced with explicit overrides such as
 `-Mode loopback -UseNativeMedia:$false`.
 
 Pushes to `main` or `master` also upload the same zip from GitHub Actions.
@@ -38,9 +40,9 @@ The release bundle also includes `SHA256SUMS.txt` for integrity checks and `RELE
 Packaged releases now also include `Start-PartyLAN-DERP.ps1`, which launches the
 bundled `PartyLAN.exe` with the current custom DERP runtime environment
 preconfigured.
-For a quick local-only sanity check, use `Start-PartyLAN-SmokeTest.ps1`. It can
-also verify injected `TSControlURL` and ICE/TURN runtime markers before a real
-multi-machine test.
+For a quick local-only sanity check, use `Start-PartyLAN-SmokeTest.ps1`. It
+defaults to the packaged `gamecast-client` mode and can also verify injected
+ICE/TURN runtime markers before a real multi-machine test.
 
 ## Optional LAN mode
 

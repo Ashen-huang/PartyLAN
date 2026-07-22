@@ -11,6 +11,8 @@ interface StatusBarProps {
 
 function describeMode(mode: string, t: Translator) {
   switch (mode) {
+    case 'gamecast-client':
+      return t('mode.gamecastClient');
     case 'loopback':
       return t('mode.loopback');
     case 'lan':
@@ -26,6 +28,8 @@ function describeMode(mode: string, t: Translator) {
 
 function describeNetworkBackend(backend: string, t: Translator) {
   switch (backend) {
+    case 'gamecast-client':
+      return t('network.gamecastClient');
     case 'loopback':
       return t('network.loopback');
     case 'lan':

@@ -23,6 +23,8 @@ class RegisterControlAPITest(unittest.TestCase):
         register.resolve_authenticated_user = lambda _headers: "tester"
         register.fetch_sfu_room_states = lambda: []
         register.rate_buckets.clear()
+        register.quality_samples.clear()
+        register.quality_clock = lambda: 1000.0
         self.original_htpasswd_file = register.HTPASSWD_FILE
         self.temp_dir = tempfile.TemporaryDirectory()
         register.HTPASSWD_FILE = os.path.join(self.temp_dir.name, "users.htpasswd")
@@ -122,6 +124,90 @@ class RegisterControlAPITest(unittest.TestCase):
         )
         self.assertEqual(status, 200)
         self.assertFalse(released["room"]["sharing"])
+
+    def test_quality_report_requires_active_room_participant(self):
+        status, response = self.request(
+            "POST",
+            "/api/quality/report",
+            {
+                "room": "quality-room",
+                "participantId": "missing-viewer",
+                "generation": "g1",
+                "pairId": "p1",
+                "packetsReceivedDelta": 100,
+                "packetsLostDelta": 8,
+                "decodedFps": 18,
+                "incomingBitrateKbps": 1200,
+                "jitterMs": 120,
+                "framesDroppedDelta": 2,
+            },
+        )
+
+        self.assertEqual(status, 404)
+        self.assertEqual(response["code"], "participant_not_found")
+
+    def test_quality_snapshot_is_room_scoped_owner_only_and_expires(self):
+        for participant in (
+            {
+                "room": "quality-room",
+                "participantId": "client-owner",
+                "clientType": "client",
+                "origin": "client",
+                "role": "owner",
+                "name": "Desktop",
+            },
+            {
+                "room": "quality-room",
+                "participantId": "web-viewer",
+                "clientType": "web",
+                "origin": "web",
+                "role": "member",
+                "name": "Browser",
+            },
+        ):
+            status, _ = self.request("POST", "/api/presence/join", participant)
+            self.assertEqual(status, 200)
+
+        payload = {
+            "room": "quality-room",
+            "participantId": "web-viewer",
+            "generation": "g1",
+            "pairId": "relay-udp",
+            "packetsReceivedDelta": 100,
+            "packetsLostDelta": 8,
+            "decodedFps": 18,
+            "incomingBitrateKbps": 1200,
+            "jitterMs": 120,
+            "framesDroppedDelta": 2,
+        }
+        status, report = self.request("POST", "/api/quality/report", payload)
+        self.assertEqual(status, 200)
+        self.assertTrue(report["ok"])
+
+        status, forbidden = self.request(
+            "GET",
+            "/api/quality/snapshot?room=quality-room&participantId=web-viewer",
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(forbidden["code"], "quality_snapshot_forbidden")
+
+        status, snapshot = self.request(
+            "GET",
+            "/api/quality/snapshot?room=quality-room&participantId=client-owner",
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(snapshot["count"], 1)
+        self.assertEqual(snapshot["samples"][0]["participantId"], "web-viewer")
+        self.assertEqual(snapshot["samples"][0]["packetsLostDelta"], 8)
+        self.assertNotIn("candidateAddress", snapshot["samples"][0])
+
+        register.quality_clock = lambda: 1008.1
+        status, expired = self.request(
+            "GET",
+            "/api/quality/snapshot?room=quality-room&participantId=client-owner",
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(expired["count"], 0)
 
     def test_legacy_room_state_cannot_clear_active_lease(self):
         self.request(
@@ -260,6 +346,12 @@ class RegisterControlAPITest(unittest.TestCase):
         )
         self.assertIn("SCREEGO_USERS_FILE: /app/users/users.htpasswd", compose)
         self.assertNotIn("SCREEGO_USERS_FILE_HOST:-", compose)
+
+    def test_nginx_proxies_quality_control_api(self):
+        nginx_path = Path(__file__).parent / "screego" / "deploy" / "nginx-screego.conf"
+        nginx = nginx_path.read_text(encoding="utf-8")
+        self.assertIn("location /api/quality", nginx)
+        self.assertIn("proxy_pass http://127.0.0.1:5052;", nginx)
 
 
 if __name__ == "__main__":

@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
 	"image/jpeg"
 	"log"
+	"math"
 	"net"
 	"os"
 	"sort"
@@ -20,6 +22,14 @@ import (
 	"PartyLAN/internal/app"
 	"PartyLAN/internal/appmode"
 	"PartyLAN/internal/audio"
+	"PartyLAN/internal/gamecast"
+	"PartyLAN/internal/gamecast/adaptive"
+	hostwindowcapture "PartyLAN/internal/gamecast/host/windowcapture"
+	"PartyLAN/internal/gamecast/nativehost"
+	"PartyLAN/internal/gamecast/rooms"
+	"PartyLAN/internal/gamecast/session"
+	"PartyLAN/internal/gamecast/sharecatalog"
+	gamecastws "PartyLAN/internal/gamecast/ws"
 	"PartyLAN/internal/media"
 	"PartyLAN/internal/native/windowsaudio"
 	"PartyLAN/internal/network"
@@ -39,35 +49,58 @@ const (
 	maxShareFPS     = 120
 	previewUIFPS    = 15
 
+	gameCastStartupKeyFrameWindow   = 5 * time.Second
+	gameCastStartupKeyFrameCooldown = 1500 * time.Millisecond
+	gameCastSteadyKeyFrameCooldown  = 300 * time.Millisecond
+
 	defaultNetworkStartTimeout = 5 * time.Second
 	authKeyNetworkStartTimeout = 30 * time.Second
 
-	defaultWindowWidth      = 1400
-	defaultWindowHeight     = 810
-	maxWindowWidthRatio     = 0.96
-	maxWindowHeightRatio    = 0.92
-	smallScreenWidthCutoff  = 1800
-	smallScreenHeightCutoff = 1100
-	windowLayoutVersion     = 4
-	maxDisplayNameRunes     = 40
+	defaultWindowWidth       = 1400
+	defaultWindowHeight      = 810
+	maxWindowWidthRatio      = 0.96
+	maxWindowHeightRatio     = 0.92
+	smallScreenWidthCutoff   = 1800
+	smallScreenHeightCutoff  = 1100
+	windowLayoutVersion      = 4
+	maxDisplayNameRunes      = 40
+	gameCastMediaStopTimeout = 2 * time.Second
 )
 
 type App struct {
-	ctx                 context.Context
-	network             network.Network
-	room                *room.RoomImpl
-	hostVideoCapability video.BackendCapability
-	audioCapability     windowsaudio.Capability
-	cfg                 *config.Config
-	relayConfig         relaycfg.RuntimeConfig
-	audioShareSession   *audio.ShareSession
-	voiceChannel        voice.VoiceChannel
-	mediaManager        *media.Manager
-	mediaCancel         context.CancelFunc
-	mediaDone           chan struct{}
-	audioMediaCancel    context.CancelFunc
-	audioMediaDone      chan struct{}
-	mediaKeyFrameSeq    atomic.Int64
+	ctx                        context.Context
+	network                    network.Network
+	room                       *room.RoomImpl
+	hostVideoCapability        video.BackendCapability
+	audioCapability            windowsaudio.Capability
+	cfg                        *config.Config
+	relayConfig                relaycfg.RuntimeConfig
+	audioShareSession          *audio.ShareSession
+	voiceChannel               voice.VoiceChannel
+	mediaManager               *media.Manager
+	gamecastWS                 *gamecastws.Client
+	gamecastNativeHost         *nativehost.Host
+	gamecastNativeShare        *shareSession
+	gamecastJar                *session.Jar
+	gamecastRoomCancel         context.CancelFunc
+	gamecastPresenceCancel     context.CancelFunc
+	gamecastPresenceRoom       string
+	gamecastPresenceRole       string
+	gamecastPresenceOrigin     string
+	gamecastParticipantID      string
+	gamecastShareCancel        context.CancelFunc
+	gamecastShareLease         *gamecast.ShareLease
+	gamecastViewerIntentCancel context.CancelFunc
+	gamecastViewerIntentRoom   string
+	gamecastQualityFailureLog  time.Time
+	gamecastMediaCancel        context.CancelFunc
+	gamecastMediaDone          chan struct{}
+	mediaCancel                context.CancelFunc
+	mediaDone                  chan struct{}
+	audioMediaCancel           context.CancelFunc
+	audioMediaDone             chan struct{}
+	mediaKeyFrameSeq           atomic.Int64
+	gamecastRuntimeMu          sync.Mutex
 
 	mu                  sync.Mutex
 	senders             map[string]*room.StreamSender
@@ -83,12 +116,13 @@ type App struct {
 
 func NewApp(net network.Network) *App {
 	return &App{
-		network:             net,
-		senders:             make(map[string]*room.StreamSender),
-		receivers:           make(map[string]*room.StreamReceiver),
-		audioShareSelection: make(map[string]bool),
-		audioShareSession:   audio.NewShareSession(),
-		voiceVolume:         0.8,
+		network:               net,
+		senders:               make(map[string]*room.StreamSender),
+		receivers:             make(map[string]*room.StreamReceiver),
+		audioShareSelection:   make(map[string]bool),
+		audioShareSession:     audio.NewShareSession(),
+		voiceVolume:           0.8,
+		gamecastParticipantID: rooms.GenerateRoomID("client"),
 	}
 }
 
@@ -105,9 +139,55 @@ type UserPreferences struct {
 	DisplayName string `json:"displayName"`
 }
 
+type GameCastProfile struct {
+	BaseURL                  string `json:"baseUrl"`
+	DisplayName              string `json:"displayName,omitempty"`
+	TrustedCertificateSHA256 string `json:"trustedCertificateSha256,omitempty"`
+}
+
+type GameCastProbeResult = gamecast.ProbeResult
+type GameCastRoomState = gamecast.RoomState
+type GameCastStatus = gamecastws.Status
+type GameCastPresenceParticipant = gamecast.PresenceParticipant
+
+type GameCastSessionState struct {
+	User     string `json:"user"`
+	LoggedIn bool   `json:"loggedIn"`
+	AuthMode string `json:"authMode,omitempty"`
+	Version  string `json:"version,omitempty"`
+	RoomName string `json:"roomName,omitempty"`
+}
+
+type GameCastCredentials struct {
+	User string `json:"user"`
+	Pass string `json:"pass"`
+}
+
+type GameCastRoomSession struct {
+	RoomID string            `json:"roomId"`
+	Role   string            `json:"role"`
+	State  GameCastRoomState `json:"state"`
+}
+
+type GameCastHostShareRequest struct {
+	RoomID           string `json:"roomId"`
+	Sharing          bool   `json:"sharing"`
+	PeerID           string `json:"peerId,omitempty"`
+	SourceID         string `json:"sourceId,omitempty"`
+	SourceKind       string `json:"sourceKind,omitempty"`
+	SourceLabel      string `json:"sourceLabel,omitempty"`
+	Width            int    `json:"width,omitempty"`
+	Height           int    `json:"height,omitempty"`
+	FPS              int    `json:"fps,omitempty"`
+	AudioMode        string `json:"audioMode,omitempty"`
+	AudioProcessName string `json:"audioProcessName,omitempty"`
+	AudioProcessID   uint32 `json:"audioProcessId,omitempty"`
+}
+
 type audioCaptureTarget struct {
 	PID  uint32
 	Name string
+	Mode windowsaudio.CaptureMode
 }
 
 type VoiceStateSnapshot struct {
@@ -121,10 +201,40 @@ type VoiceStateSnapshot struct {
 }
 
 type shareSession struct {
+	roomID       string
+	peerID       string
 	displayIndex int
+	windowHandle uintptr
+	sourceKind   string
+	sourceLabel  string
 	width        int
 	height       int
 	fps          int
+	audioMode    string
+	ready        <-chan struct{}
+}
+
+func logVideoCapability(prefix string, capability video.BackendCapability) {
+	log.Printf(
+		"%s backend=%s status=%s supports_host=%t supports_view=%t adapter=%q driver=%q reason=%q",
+		prefix,
+		capability.Backend,
+		capability.Status,
+		capability.SupportsHost,
+		capability.SupportsView,
+		capability.Adapter,
+		capability.Driver,
+		capability.Reason,
+	)
+}
+
+func logAudioCapability(prefix string, capability windowsaudio.Capability) {
+	log.Printf(
+		"%s supports_process_capture=%t reason=%q",
+		prefix,
+		capability.SupportsProcessCapture,
+		capability.Reason,
+	)
 }
 
 func (s shareSession) captureConfig() video.CaptureConfig {
@@ -238,6 +348,8 @@ func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.hostVideoCapability = video.NewNativeRuntimeBackend().Capability()
 	a.audioCapability = windowsaudio.NewBridge().QueryCapability()
+	logVideoCapability("[video/capability] startup", a.hostVideoCapability)
+	logAudioCapability("[audio/capability] startup", a.audioCapability)
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -245,6 +357,9 @@ func (a *App) startup(ctx context.Context) {
 		cfg = config.DefaultConfig()
 	}
 	a.cfg = cfg
+	if err := a.ensureGameCastJar(gameCastProfileFromConfig(cfg)); err != nil {
+		log.Printf("load gamecast session jar failed: %v", err)
+	}
 	a.relayConfig = relaycfg.Resolve(cfg)
 	for _, line := range a.relayConfig.MediaHealthLines() {
 		log.Printf("[media/ice] %s", line)
@@ -283,7 +398,7 @@ func (a *App) startup(ctx context.Context) {
 		a.emitVideoCapability()
 		a.emitAudioCapability()
 		a.emitRuntimeStatus()
-		a.emitError(app.ErrCodeNetworkStart, "缃戠粶鍚姩澶辫触锛岃妫€鏌ョ綉缁滅幆澧冦€佽璇侀厤缃垨褰撳墠鏋勫缓妯″紡")
+		a.emitError(app.ErrCodeNetworkStart, "网络启动失败，请检查网络环境、认证配置或当前构建模式。")
 		return
 	}
 
@@ -305,15 +420,20 @@ func (a *App) domReady(ctx context.Context) {
 
 func (a *App) shutdown(ctx context.Context) {
 	a.persistConfig()
+	_ = a.releaseGameCastShareLease()
+	a.stopGameCastPresence(true)
+	a.stopGameCastRoomHeartbeat(true)
+	a.closeGameCastWS()
+	a.stopGameCastNativeHost()
 	if err := a.network.Stop(); err != nil {
 		log.Printf("network stop failed: %v", err)
-		a.emitError(app.ErrCodeNetworkStop, "缃戠粶鍏抽棴澶辫触")
+		a.emitError(app.ErrCodeNetworkStop, "网络关闭失败。")
 	}
 }
 
 func (a *App) CreateRoom(name, password string) error {
 	if a.room != nil {
-		return fmt.Errorf("宸插湪鎴块棿涓紝鏃犳硶閲嶅鍒涘缓")
+		return fmt.Errorf("已经在房间中，无法重复创建。")
 	}
 
 	r := room.NewRoomImpl(a.network)
@@ -354,11 +474,11 @@ func (a *App) CreateRoom(name, password string) error {
 
 func (a *App) JoinRoom(targetNodeID, password string) error {
 	if a.room != nil {
-		return fmt.Errorf("宸插湪鎴块棿涓紝鏃犳硶閲嶅鍔犲叆")
+		return fmt.Errorf("已经在房间中，无法重复加入。")
 	}
 	targetNodeID = normalizeJoinTarget(targetNodeID)
 	if targetNodeID == "" {
-		return fmt.Errorf("璇疯緭鍏ョ洰鏍囦富鏈鸿妭鐐?ID")
+		return fmt.Errorf("请输入目标主机节点 ID。")
 	}
 
 	log.Printf("[room/join-request] target=%s", targetNodeID)
@@ -463,6 +583,7 @@ func (a *App) StartSharing(displayIndex int, targetWidth int, targetHeight int, 
 	}
 
 	if !a.hostVideoCapability.SupportsHost || a.hostVideoCapability.Backend != video.BackendNative {
+		logVideoCapability("[video/capability] webrtc-share-rejected", a.hostVideoCapability)
 		log.Printf("screen sharing unavailable: %s", a.hostVideoCapability.Reason)
 		a.emitError(app.ErrCodeVideoCapability, "WebRTC sharing requires native H.264 host support; software-backend fallback is disabled")
 		return fmt.Errorf("WebRTC sharing requires native H.264 host support; software-backend fallback is disabled")
@@ -475,13 +596,13 @@ func (a *App) StartSharing(displayIndex int, targetWidth int, targetHeight int, 
 	a.mu.Lock()
 	if a.selfSharing {
 		a.mu.Unlock()
-		return fmt.Errorf("褰撳墠宸茬粡鍦ㄥ叡浜腑")
+		return fmt.Errorf("当前已经在共享中。")
 	}
 	a.mu.Unlock()
 
 	displays := video.ListDisplays()
 	if displayIndex < 0 || displayIndex >= len(displays) {
-		return fmt.Errorf("鎵€閫夋樉绀哄櫒鏃犳晥")
+		return fmt.Errorf("所选显示器无效。")
 	}
 
 	bounds := displays[displayIndex]
@@ -594,7 +715,21 @@ func (a *App) startWebRTCVideoLoop(manager *media.Manager, session *shareSession
 
 	encoder := video.NewNativeEncoder()
 	encoder.SetInputPixelFormat(video.NativePixelFormatBGRA)
-	encoder.SetCapturerHandle(capturer.Handle())
+	sourceBounds := video.ListDisplays()[session.displayIndex]
+	allowDirectNative := shouldUseDirectNativeEncode(sourceBounds.Dx(), sourceBounds.Dy(), session.width, session.height)
+	if allowDirectNative {
+		encoder.SetCapturerHandle(capturer.Handle())
+	} else {
+		encoder.SetCapturerHandle(0)
+		log.Printf(
+			"[media/webrtc] direct native encode bypassed source=%dx%d target=%dx%d reason=%q",
+			sourceBounds.Dx(),
+			sourceBounds.Dy(),
+			session.width,
+			session.height,
+			"target resolution requires resize",
+		)
+	}
 	if err := encoder.Configure(video.EncoderConfig{
 		Codec:     video.CodecH264,
 		Bitrate:   targetWebRTCBitrateKbps(session.width, session.height, session.fps),
@@ -619,15 +754,499 @@ func (a *App) startWebRTCVideoLoop(manager *media.Manager, session *shareSession
 	a.mediaDone = done
 	a.mu.Unlock()
 
-	go a.runWebRTCVideoLoop(loopCtx, manager, capturer, encoder, session.width, session.height, session.fps, done)
+	go a.runWebRTCVideoLoop(loopCtx, manager, a.room.SelfID(), capturer, encoder, session.width, session.height, session.fps, allowDirectNative, done)
 	return nil
+}
+
+type gameCastVideoEncoder struct {
+	layer   nativehost.VideoLayer
+	encoder *video.NativeEncoder
+}
+
+type gameCastKeyFrameGate struct {
+	startedAt time.Time
+	lastAt    time.Time
+}
+
+func newGameCastKeyFrameGate(startedAt time.Time) *gameCastKeyFrameGate {
+	return &gameCastKeyFrameGate{startedAt: startedAt}
+}
+
+func (g *gameCastKeyFrameGate) Allow(now time.Time) bool {
+	if g == nil {
+		return true
+	}
+	if g.startedAt.IsZero() {
+		g.startedAt = now
+	}
+	cooldown := gameCastSteadyKeyFrameCooldown
+	if now.Sub(g.startedAt) < gameCastStartupKeyFrameWindow {
+		cooldown = gameCastStartupKeyFrameCooldown
+	}
+	if !g.lastAt.IsZero() && now.Sub(g.lastAt) < cooldown {
+		return false
+	}
+	g.lastAt = now
+	return true
+}
+
+func chooseGameCastVideoFrame(lastFrame, latestFrame *video.Frame) *video.Frame {
+	if latestFrame != nil {
+		return latestFrame
+	}
+	return lastFrame
+}
+
+func offerLatestGameCastVideoFrame(frames chan *video.Frame, frame *video.Frame) {
+	if frame == nil {
+		return
+	}
+	select {
+	case frames <- frame:
+		return
+	default:
+	}
+	select {
+	case <-frames:
+	default:
+	}
+	select {
+	case frames <- frame:
+	default:
+	}
+}
+
+func newGameCastVideoEncoders(layers []nativehost.VideoLayer) ([]gameCastVideoEncoder, error) {
+	encoders := make([]gameCastVideoEncoder, 0, len(layers))
+	for _, layer := range layers {
+		encoder := video.NewNativeEncoder()
+		encoder.SetInputPixelFormat(video.NativePixelFormatBGRA)
+		if err := encoder.Configure(video.EncoderConfig{
+			Codec:     video.CodecH264,
+			Bitrate:   layer.BitrateKbps,
+			Width:     layer.Width,
+			Height:    layer.Height,
+			FrameRate: layer.FPS,
+		}); err != nil {
+			_ = encoder.Close()
+			closeGameCastVideoEncoders(encoders)
+			return nil, fmt.Errorf("configure %s single-track encoder: %w", layer.RID, err)
+		}
+		encoders = append(encoders, gameCastVideoEncoder{layer: layer, encoder: encoder})
+	}
+	return encoders, nil
+}
+
+func closeGameCastVideoEncoders(encoders []gameCastVideoEncoder) {
+	for _, entry := range encoders {
+		if entry.encoder != nil {
+			_ = entry.encoder.Close()
+		}
+	}
+}
+
+func (a *App) startGameCastNativeVideoLoop(host *nativehost.Host, session *shareSession) error {
+	if host == nil || session == nil {
+		return fmt.Errorf("GameCast native video loop requires an active host session")
+	}
+
+	a.stopGameCastMediaLoop()
+
+	capturer, err := newGameCastResilientDisplayCapturer(session, func(usingBackup bool) {
+		backend := "dxgi"
+		message := "原生全屏采集已恢复。"
+		if usingBackup {
+			backend = "screenshot"
+			message = "原生全屏采集异常，已切换备用采集。"
+		}
+		seq := a.mediaKeyFrameSeq.Add(1)
+		log.Printf("[gamecast/capture-health] switched backend=%s keyframe_seq=%d", backend, seq)
+		a.emitGameCastShareRuntime(app.GameCastShareRuntimeEvent{
+			Kind: "capture-backend", RoomID: session.roomID, PeerID: session.peerID,
+			AudioMode: session.audioMode, Message: message,
+		})
+	})
+	if err != nil {
+		return err
+	}
+
+	encoders, err := newGameCastVideoEncoders(nativehost.SingleVideoLayer(session.width, session.height, session.fps))
+	if err != nil {
+		_ = capturer.Stop()
+		return err
+	}
+
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	loopCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+
+	a.mu.Lock()
+	a.gamecastMediaCancel = cancel
+	a.gamecastMediaDone = done
+	a.mu.Unlock()
+
+	go a.runGameCastVideoLoop(
+		loopCtx,
+		host,
+		capturer.GetFrame,
+		capturer.Stop,
+		encoders,
+		session,
+		"display-capture",
+		shouldRetryGameCastDisplayCapture,
+		func(err error) {
+			log.Printf("[gamecast/display-capture] capture stopped: %v", err)
+			a.handleGameCastNativeVideoFailure(session, err)
+		},
+		done,
+	)
+	return nil
+}
+
+func (a *App) startGameCastWindowVideoLoop(host *nativehost.Host, session *shareSession) error {
+	if host == nil || session == nil || session.windowHandle == 0 {
+		return fmt.Errorf("GameCast window video loop requires a selected window")
+	}
+
+	a.stopGameCastMediaLoop()
+
+	capturer := hostwindowcapture.New(session.windowHandle, session.fps)
+	if err := capturer.Start(); err != nil {
+		return fmt.Errorf("start window capturer: %w", err)
+	}
+
+	encoders, err := newGameCastVideoEncoders(nativehost.SingleVideoLayer(session.width, session.height, session.fps))
+	if err != nil {
+		_ = capturer.Stop()
+		return err
+	}
+
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	loopCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+
+	a.mu.Lock()
+	a.gamecastMediaCancel = cancel
+	a.gamecastMediaDone = done
+	a.mu.Unlock()
+
+	go a.runGameCastNativeWindowVideoLoop(loopCtx, host, capturer, encoders, session, done)
+	return nil
+}
+
+func (a *App) startGameCastVideoLoop(host *nativehost.Host, session *shareSession) error {
+	if session == nil {
+		return fmt.Errorf("GameCast video loop requires an active host session")
+	}
+	if session.sourceKind == string(sharecatalog.SourceKindWindow) {
+		return a.startGameCastWindowVideoLoop(host, session)
+	}
+	return a.startGameCastNativeVideoLoop(host, session)
+}
+
+func (a *App) runGameCastVideoLoop(
+	ctx context.Context,
+	host *nativehost.Host,
+	getFrame func() (*video.Frame, error),
+	stopCapture func() error,
+	encoders []gameCastVideoEncoder,
+	session *shareSession,
+	mode string,
+	shouldRetry func(error) bool,
+	onFatalCaptureError func(error),
+	done chan<- struct{},
+) {
+	defer close(done)
+	if len(encoders) == 0 || encoders[0].encoder == nil {
+		log.Printf("[gamecast/%s] video loop has no encoder", mode)
+		return
+	}
+	captureCtx, cancelCapture := context.WithCancel(ctx)
+	latestFrames := make(chan *video.Frame, 1)
+	captureErrors := make(chan error, 1)
+	captureDone := make(chan struct{})
+	go func() {
+		defer close(captureDone)
+		lastTransientLog := time.Time{}
+		for {
+			if captureCtx.Err() != nil {
+				return
+			}
+			frame, err := getFrame()
+			if err != nil {
+				if shouldRetry != nil && shouldRetry(err) {
+					if time.Since(lastTransientLog) >= 5*time.Second {
+						log.Printf("[gamecast/%s] frame temporarily unavailable; keeping send clock active: %v", mode, err)
+						lastTransientLog = time.Now()
+					}
+					continue
+				}
+				select {
+				case captureErrors <- err:
+				default:
+				}
+				return
+			}
+			offerLatestGameCastVideoFrame(latestFrames, frame)
+		}
+	}()
+	activeEncoder := encoders[0]
+	for _, extra := range encoders[1:] {
+		if extra.encoder != nil {
+			_ = extra.encoder.Close()
+		}
+	}
+	var pendingSwitch <-chan gameCastEncoderPreparation
+	switchCtx, cancelSwitch := context.WithCancel(ctx)
+	defer func() {
+		cancelSwitch()
+		cancelCapture()
+		select {
+		case <-captureDone:
+		case <-time.After(500 * time.Millisecond):
+			log.Printf("[gamecast/%s] capture worker did not stop within 500ms", mode)
+		}
+		if stopCapture != nil {
+			_ = stopCapture()
+		}
+		if activeEncoder.encoder != nil {
+			_ = activeEncoder.encoder.Close()
+		}
+		if pendingSwitch != nil {
+			select {
+			case prepared := <-pendingSwitch:
+				if prepared.entry.encoder != nil {
+					_ = prepared.entry.encoder.Close()
+				}
+			default:
+			}
+		}
+	}()
+
+	requestedProfile := adaptiveProfileFromLayer(activeEncoder.layer)
+	controller := adaptive.NewController(requestedProfile, time.Now())
+	localMetrics := adaptive.NewLocalMetrics(time.Now())
+	qualityUpdates := make(chan gameCastQualityUpdate, 1)
+	a.mu.Lock()
+	participantID := a.gamecastParticipantID
+	a.mu.Unlock()
+	go a.runGameCastQualityPoller(ctx, session.roomID, participantID, qualityUpdates)
+	var qualityUpdate gameCastQualityUpdate
+	frameDuration := time.Second / time.Duration(maxInt(activeEncoder.layer.FPS, 1))
+	nextFrameAt := time.Now()
+	servedKeyFrameSeq := a.mediaKeyFrameSeq.Load()
+	keyFrameGate := newGameCastKeyFrameGate(time.Now())
+	txStats := newWebRTCVideoTxStats()
+	var lastFrame *video.Frame
+	budgetRetryAfter := time.Time{}
+
+	for {
+		frameDuration = time.Second / time.Duration(maxInt(activeEncoder.layer.FPS, 1))
+		if !waitForWebRTCFrameSlot(ctx, &nextFrameAt, frameDuration) {
+			return
+		}
+		select {
+		case err := <-captureErrors:
+			if err != nil && ctx.Err() == nil && onFatalCaptureError != nil {
+				go onFatalCaptureError(err)
+			}
+			return
+		default:
+		}
+		a.applyGameCastVideoKeyFrameRequest([]gameCastVideoEncoder{activeEncoder}, &servedKeyFrameSeq, keyFrameGate)
+		for {
+			select {
+			case update := <-qualityUpdates:
+				qualityUpdate = update
+			default:
+				goto qualityDrained
+			}
+		}
+	qualityDrained:
+
+		var latestFrame *video.Frame
+	drainLatest:
+		for {
+			select {
+			case latestFrame = <-latestFrames:
+			default:
+				break drainLatest
+			}
+		}
+		if latestFrame != nil {
+			localMetrics.RecordCapture(latestFrame.Timestamp, time.Now())
+		}
+		lastFrame = chooseGameCastVideoFrame(lastFrame, latestFrame)
+		if lastFrame == nil {
+			continue
+		}
+
+		sentPrepared := false
+		preparedBytes := 0
+		if pendingSwitch != nil {
+			select {
+			case prepared := <-pendingSwitch:
+				pendingSwitch = nil
+				if prepared.err != nil {
+					if prepared.decision != nil {
+						controller.Reject(*prepared.decision, time.Now(), "prepare-failed")
+					} else {
+						budgetRetryAfter = time.Now().Add(30 * time.Second)
+					}
+					log.Printf("[gamecast/adaptive] prepare failed target=%s: %v", formatAdaptiveProfile(prepared.profile), prepared.err)
+				} else {
+					preparedDuration := time.Second / time.Duration(maxInt(prepared.profile.FPS, 1))
+					writeErr := host.WriteH264LayerSample("f", prepared.encodedIDR, preparedDuration)
+					if writeErr != nil {
+						_ = prepared.entry.encoder.Close()
+						if prepared.decision != nil {
+							controller.Reject(*prepared.decision, time.Now(), "idr-write-failed")
+						} else {
+							budgetRetryAfter = time.Now().Add(30 * time.Second)
+						}
+						log.Printf("[gamecast/adaptive] prepared IDR write failed target=%s: %v", formatAdaptiveProfile(prepared.profile), writeErr)
+					} else {
+						old := activeEncoder
+						activeEncoder = prepared.entry
+						if old.encoder != nil {
+							_ = old.encoder.Close()
+						}
+						if prepared.decision != nil {
+							controller.Commit(*prepared.decision)
+						}
+						nextFrameAt = time.Now().Add(preparedDuration)
+						localMetrics.RecordEncode(prepared.encodeTime, len(prepared.encodedIDR), latestFrame == nil, true)
+						preparedBytes = len(prepared.encodedIDR)
+						log.Printf("[gamecast/adaptive] switched target=%s", formatAdaptiveProfile(prepared.profile))
+						sentPrepared = true
+					}
+				}
+			default:
+			}
+		}
+
+		encodedBytes := 0
+		if !sentPrepared {
+			encodeStarted := time.Now()
+			encoded, encodeErr := activeEncoder.encoder.Encode(prepareWebRTCFrameForEncode(lastFrame, activeEncoder.layer.Width, activeEncoder.layer.Height))
+			encodeDuration := time.Since(encodeStarted)
+			if encodeErr != nil {
+				localMetrics.RecordEncode(encodeDuration, 0, latestFrame == nil, false)
+				log.Printf("[gamecast/%s] encode layer=%s failed: %v", mode, activeEncoder.layer.RID, encodeErr)
+			} else if writeErr := host.WriteH264LayerSample(activeEncoder.layer.RID, encoded, frameDuration); writeErr != nil {
+				localMetrics.RecordEncode(encodeDuration, len(encoded), latestFrame == nil, false)
+				log.Printf("[gamecast/%s] write layer=%s failed: %v", mode, activeEncoder.layer.RID, writeErr)
+			} else {
+				encodedBytes = len(encoded)
+				localMetrics.RecordEncode(encodeDuration, encodedBytes, latestFrame == nil, true)
+			}
+		} else {
+			encodedBytes = preparedBytes
+		}
+		if encodedBytes > 0 {
+			a.emitLocalShareStats(txStats.record(encodedBytes, host.SessionCount(), "single-track-"+mode, activeEncoder.layer.Width, activeEncoder.layer.Height), "gamecast-host")
+		}
+
+		now := time.Now()
+		activeProfile := adaptiveProfileFromLayer(activeEncoder.layer)
+		localSample, sampleReady := localMetrics.Snapshot(now, activeProfile)
+		if !sampleReady {
+			continue
+		}
+		viewers := qualityViewerSamples(qualityUpdate)
+		decision := controller.Observe(now, &localSample, viewers)
+		status := controller.Status(now)
+		log.Printf(
+			"[gamecast/adaptive] state=%s current=%s fresh_fps=%.1f encoded_fps=%.1f repeated=%.2f encode_budget=%.2f viewers=%d weak=%d reason=%s",
+			status.State,
+			formatAdaptiveProfile(activeProfile),
+			localSample.FreshFPS,
+			localSample.EncodedFPS,
+			localSample.RepeatedRatio,
+			localSample.EncodeBudgetRatio,
+			status.ViewerCount,
+			status.WeakViewers,
+			status.Reason,
+		)
+		a.emitGameCastAdaptiveStats(localSample, status, activeProfile, host.SessionCount(), "single-track-"+mode)
+
+		if pendingSwitch == nil && decision != nil {
+			target := effectiveAdaptiveProfile(decision.To, qualityUpdate.snapshot.SafeVideoEgressKbps, maxInt(status.ViewerCount, host.SessionCount()))
+			copyDecision := *decision
+			log.Printf("[gamecast/adaptive] decision=%s reason=%s from=%s to=%s", decision.Type, decision.Reason, formatAdaptiveProfile(decision.From), formatAdaptiveProfile(target))
+			pendingSwitch = prepareGameCastEncoderAsync(switchCtx, target, &copyDecision, lastFrame)
+			continue
+		}
+		if pendingSwitch == nil && !now.Before(budgetRetryAfter) {
+			budgetTarget := effectiveAdaptiveProfile(controller.Current(), qualityUpdate.snapshot.SafeVideoEgressKbps, maxInt(status.ViewerCount, host.SessionCount()))
+			if !profilesEqual(budgetTarget, activeProfile) && budgetTarget.Width == activeProfile.Width && budgetTarget.Height == activeProfile.Height && budgetTarget.FPS == activeProfile.FPS {
+				log.Printf("[gamecast/adaptive] budget reconfigure from=%s to=%s", formatAdaptiveProfile(activeProfile), formatAdaptiveProfile(budgetTarget))
+				pendingSwitch = prepareGameCastEncoderAsync(switchCtx, budgetTarget, nil, lastFrame)
+			}
+		}
+	}
+}
+
+func (a *App) runGameCastNativeWindowVideoLoop(
+	ctx context.Context,
+	host *nativehost.Host,
+	capturer *hostwindowcapture.Capturer,
+	encoders []gameCastVideoEncoder,
+	session *shareSession,
+	done chan<- struct{},
+) {
+	a.runGameCastVideoLoop(
+		ctx,
+		host,
+		capturer.GetFrame,
+		capturer.Stop,
+		encoders,
+		session,
+		"window-capture",
+		shouldRetryGameCastWindowCapture,
+		func(err error) {
+			log.Printf("[gamecast/window-capture] capture stopped: %v", err)
+			a.handleGameCastNativeVideoFailure(session, err)
+		},
+		done,
+	)
+}
+
+func (a *App) applyGameCastVideoKeyFrameRequest(encoders []gameCastVideoEncoder, servedSeq *int64, gate *gameCastKeyFrameGate) {
+	if servedSeq == nil {
+		return
+	}
+	seq := a.mediaKeyFrameSeq.Load()
+	if seq == *servedSeq {
+		return
+	}
+	*servedSeq = seq
+	if gate != nil && !gate.Allow(time.Now()) {
+		log.Printf("[gamecast/native-host] coalesced H264 keyframe request seq=%d", seq)
+		return
+	}
+	for _, entry := range encoders {
+		if entry.encoder == nil {
+			continue
+		}
+		if err := entry.encoder.ForceKeyFrame(); err != nil {
+			log.Printf("[gamecast/native-host] force H264 keyframe layer=%s seq=%d failed: %v", entry.layer.RID, seq, err)
+		}
+	}
+	log.Printf("[gamecast/native-host] force H264 keyframe seq=%d", seq)
 }
 
 func (a *App) startWebRTCAudioLoop(manager *media.Manager, target audioCaptureTarget) error {
 	if manager == nil {
 		return fmt.Errorf("WebRTC audio loop requires an active media manager")
 	}
-	if target.PID == 0 {
+	if target.Mode != windowsaudio.CaptureSystemMix && target.PID == 0 {
 		return fmt.Errorf("WebRTC audio loop requires a process target")
 	}
 
@@ -651,7 +1270,7 @@ func (a *App) startWebRTCAudioLoop(manager *media.Manager, target audioCaptureTa
 	capturer := windowsaudio.NewProcessCapturer()
 	if err := capturer.Start(loopCtx, windowsaudio.ProcessCaptureConfig{
 		TargetProcessID: target.PID,
-		Mode:            windowsaudio.CaptureIncludeProcessTree,
+		Mode:            target.Mode,
 		SampleRate:      audio.DefaultOpusSampleRate,
 		Channels:        audio.DefaultOpusChannels,
 		FrameMillis:     audio.DefaultOpusFrameMillis,
@@ -667,8 +1286,59 @@ func (a *App) startWebRTCAudioLoop(manager *media.Manager, target audioCaptureTa
 	a.audioMediaDone = done
 	a.mu.Unlock()
 
-	log.Printf("[share/audio] started process-loopback audio target=%s:%d codec=opus", target.Name, target.PID)
+	log.Printf("[share/audio] started %s target=%s:%d codec=opus", audioCaptureModeLabel(target.Mode), target.Name, target.PID)
 	go a.runWebRTCAudioLoop(loopCtx, manager, capturer, opusEncoder, done)
+	return nil
+}
+
+func (a *App) startGameCastAudioLoop(host *nativehost.Host, session *shareSession, target audioCaptureTarget) error {
+	if host == nil {
+		return fmt.Errorf("GameCast audio loop requires an active host")
+	}
+	if target.Mode != windowsaudio.CaptureSystemMix && target.PID == 0 {
+		return fmt.Errorf("GameCast audio loop requires a process target")
+	}
+
+	a.stopAudioMediaLoop()
+
+	opusEncoder, err := audio.NewOpusEncoder(audio.OpusEncoderConfig{
+		SampleRate:  audio.DefaultOpusSampleRate,
+		Channels:    audio.DefaultOpusChannels,
+		FrameMillis: audio.DefaultOpusFrameMillis,
+	})
+	if err != nil {
+		return err
+	}
+
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	loopCtx, cancel := context.WithCancel(ctx)
+
+	capturer := windowsaudio.NewProcessCapturer()
+	if err := capturer.Start(loopCtx, windowsaudio.ProcessCaptureConfig{
+		TargetProcessID: target.PID,
+		Mode:            target.Mode,
+		SampleRate:      audio.DefaultOpusSampleRate,
+		Channels:        audio.DefaultOpusChannels,
+		FrameMillis:     audio.DefaultOpusFrameMillis,
+	}); err != nil {
+		cancel()
+		_ = opusEncoder.Close()
+		return err
+	}
+
+	done := make(chan struct{})
+	a.mu.Lock()
+	a.audioMediaCancel = cancel
+	a.audioMediaDone = done
+	a.mu.Unlock()
+
+	log.Printf("[gamecast/audio] started %s target=%s:%d codec=opus", audioCaptureModeLabel(target.Mode), target.Name, target.PID)
+	go a.runOpusAudioLoop(loopCtx, host, capturer, opusEncoder, done, func(err error) {
+		go a.handleGameCastNativeAudioFailure(session, err)
+	})
 	return nil
 }
 
@@ -679,12 +1349,48 @@ func (a *App) runWebRTCAudioLoop(
 	encoder *audio.OpusEncoder,
 	done chan<- struct{},
 ) {
+	a.runOpusAudioLoop(ctx, manager, capturer, encoder, done, nil)
+}
+
+type opusSampleSink interface {
+	WriteOpusSample(data []byte, duration time.Duration) error
+}
+
+type gameCastPCMSource interface {
+	Frames() <-chan windowsaudio.PCMFrame
+	Errors() <-chan error
+	Stop()
+}
+
+type gameCastOpusEncoder interface {
+	EncodePCM16(samples []int16) ([][]byte, error)
+	FrameDuration() time.Duration
+	Close() error
+}
+
+func (a *App) runOpusAudioLoop(
+	ctx context.Context,
+	sink opusSampleSink,
+	capturer gameCastPCMSource,
+	encoder gameCastOpusEncoder,
+	done chan<- struct{},
+	onFailure func(error),
+) {
 	defer close(done)
 	defer capturer.Stop()
 	defer encoder.Close()
 
 	frames := capturer.Frames()
 	errors := capturer.Errors()
+	ticker := time.NewTicker(audio.DefaultOpusFrameMillis * time.Millisecond)
+	defer ticker.Stop()
+	frameValues := audio.DefaultOpusSampleRate * audio.DefaultOpusFrameMillis / 1000 * audio.DefaultOpusChannels
+	pendingSamples := make([]int16, 0, frameValues*2)
+	reportFailure := func(err error) {
+		if err != nil && ctx.Err() == nil && onFailure != nil {
+			onFailure(err)
+		}
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -692,43 +1398,128 @@ func (a *App) runWebRTCAudioLoop(
 		case err, ok := <-errors:
 			if ok && err != nil {
 				log.Printf("[share/audio] capture failed: %v", err)
+				reportFailure(err)
+			} else if !ok && ctx.Err() == nil {
+				reportFailure(fmt.Errorf("shared audio capture ended unexpectedly"))
 			}
 			return
 		case frame, ok := <-frames:
 			if !ok {
+				reportFailure(fmt.Errorf("shared audio source stopped producing frames"))
 				return
 			}
-			if frame.SampleRate != audio.DefaultOpusSampleRate || frame.Channels != audio.DefaultOpusChannels {
-				log.Printf("[share/audio] dropping unexpected PCM format sample_rate=%d channels=%d", frame.SampleRate, frame.Channels)
+			samples, err := gameCastAudioSamplesFromFrame(&frame)
+			if err != nil {
+				log.Printf("[share/audio] dropping invalid PCM frame: %v", err)
 				continue
 			}
-			samples, err := audio.PCM16BytesToSamples(frame.Data)
+			pendingSamples = append(pendingSamples, samples...)
+		case <-ticker.C:
+			samples, nextPending, framesOpen, err := audioSamplesForOpusTick(frames, pendingSamples, frameValues)
+			pendingSamples = nextPending
 			if err != nil {
-				log.Printf("[share/audio] decode PCM16 frame failed: %v", err)
+				log.Printf("[share/audio] dropping invalid PCM frame: %v", err)
 				continue
+			}
+			if !framesOpen {
+				reportFailure(fmt.Errorf("shared audio source stopped producing frames"))
+				return
 			}
 			packets, err := encoder.EncodePCM16(samples)
 			if err != nil {
 				log.Printf("[share/audio] opus encode failed: %v", err)
+				reportFailure(fmt.Errorf("encode shared audio: %w", err))
 				return
 			}
 			for _, packet := range packets {
-				if err := manager.WriteOpusSample(packet, encoder.FrameDuration()); err != nil {
+				if err := sink.WriteOpusSample(packet, encoder.FrameDuration()); err != nil {
 					log.Printf("[share/audio] write opus sample failed: %v", err)
+					reportFailure(fmt.Errorf("send shared audio: %w", err))
+					return
 				}
 			}
 		}
 	}
 }
 
+func audioSamplesForOpusTick(
+	frames <-chan windowsaudio.PCMFrame,
+	pendingSamples []int16,
+	frameValues int,
+) ([]int16, []int16, bool, error) {
+	if frameValues <= 0 {
+		return nil, pendingSamples, true, fmt.Errorf("Opus frame size must be positive")
+	}
+	for len(pendingSamples) < frameValues {
+		select {
+		case frame, ok := <-frames:
+			if !ok {
+				return nil, pendingSamples, false, nil
+			}
+			samples, err := gameCastAudioSamplesFromFrame(&frame)
+			if err != nil {
+				return nil, pendingSamples, true, err
+			}
+			pendingSamples = append(pendingSamples, samples...)
+		default:
+			samples := make([]int16, frameValues)
+			return samples, pendingSamples, true, nil
+		}
+	}
+
+	samples := make([]int16, frameValues)
+	copy(samples, pendingSamples[:frameValues])
+	return samples, pendingSamples[frameValues:], true, nil
+}
+
+func gameCastAudioSamplesForTick(frame *windowsaudio.PCMFrame) ([]int16, error) {
+	if frame == nil {
+		frameValues := audio.DefaultOpusSampleRate * audio.DefaultOpusFrameMillis / 1000 * audio.DefaultOpusChannels
+		return make([]int16, frameValues), nil
+	}
+	return gameCastAudioSamplesFromFrame(frame)
+}
+
+func gameCastAudioSamplesFromFrame(frame *windowsaudio.PCMFrame) ([]int16, error) {
+	if frame == nil {
+		return nil, nil
+	}
+	if frame.SampleRate != audio.DefaultOpusSampleRate || frame.Channels != audio.DefaultOpusChannels {
+		return nil, fmt.Errorf(
+			"unexpected PCM format sample_rate=%d channels=%d",
+			frame.SampleRate,
+			frame.Channels,
+		)
+	}
+	return audio.PCM16BytesToSamples(frame.Data)
+}
+
+func audioCaptureModeLabel(mode windowsaudio.CaptureMode) string {
+	switch mode {
+	case windowsaudio.CaptureSystemMix:
+		return "system-loopback"
+	case windowsaudio.CaptureExcludeProcessTree:
+		return "process-exclude-tree"
+	default:
+		return "process-loopback"
+	}
+}
+
+type h264SampleSink interface {
+	WriteH264Sample(data []byte, duration time.Duration) error
+	SessionCount() int
+}
+
 func (a *App) runWebRTCVideoLoop(
 	ctx context.Context,
-	manager *media.Manager,
+	sink h264SampleSink,
+	statsPeerID string,
 	capturer *video.NativeCapturer,
 	encoder *video.NativeEncoder,
 	targetWidth int,
 	targetHeight int,
 	fps int,
+	allowDirectNative bool,
 	done chan<- struct{},
 ) {
 	defer close(done)
@@ -748,7 +1539,7 @@ func (a *App) runWebRTCVideoLoop(
 
 	nextFrameAt := time.Now()
 	servedKeyFrameSeq := a.mediaKeyFrameSeq.Load()
-	directNativePath := true
+	directNativePath := allowDirectNative
 	directFailures := 0
 	cpuEncodeFailures := 0
 	var lastFrame *video.Frame
@@ -770,10 +1561,10 @@ func (a *App) runWebRTCVideoLoop(
 			encoded, _, err := encoder.EncodeFromCapturer(capturer, timeoutMs)
 			if err == nil {
 				directFailures = 0
-				if err := manager.WriteH264Sample(encoded, frameDuration); err != nil {
+				if err := sink.WriteH264Sample(encoded, frameDuration); err != nil {
 					log.Printf("[media/webrtc] write H264 sample failed: %v", err)
 				}
-				txStats.record(len(encoded), manager.SessionCount(), "direct")
+				a.emitLocalShareStats(txStats.record(len(encoded), sink.SessionCount(), "direct", targetWidth, targetHeight), statsPeerID)
 				continue
 			}
 
@@ -823,11 +1614,201 @@ func (a *App) runWebRTCVideoLoop(
 			continue
 		}
 		cpuEncodeFailures = 0
-		if err := manager.WriteH264Sample(encoded, frameDuration); err != nil {
+		if err := sink.WriteH264Sample(encoded, frameDuration); err != nil {
 			log.Printf("[media/webrtc] write H264 sample failed: %v", err)
 		}
-		txStats.record(len(encoded), manager.SessionCount(), "cpu-resize")
+		a.emitLocalShareStats(txStats.record(len(encoded), sink.SessionCount(), "cpu-resize", targetWidth, targetHeight), statsPeerID)
 	}
+}
+
+func (a *App) runGameCastWindowVideoLoop(
+	ctx context.Context,
+	sink h264SampleSink,
+	capturer *hostwindowcapture.Capturer,
+	encoder *video.NativeEncoder,
+	session *shareSession,
+	done chan<- struct{},
+) {
+	defer close(done)
+	defer func() {
+		_ = encoder.Close()
+		_ = capturer.Stop()
+	}()
+
+	frameDuration := time.Second / time.Duration(maxInt(session.fps, 1))
+	nextFrameAt := time.Now()
+	servedKeyFrameSeq := a.mediaKeyFrameSeq.Load()
+	txStats := newWebRTCVideoTxStats()
+	lastTransientLog := time.Time{}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		if !waitForWebRTCFrameSlot(ctx, &nextFrameAt, frameDuration) {
+			return
+		}
+		a.applyWebRTCKeyFrameRequest(encoder, &servedKeyFrameSeq)
+
+		frame, err := capturer.GetFrame()
+		if err != nil {
+			if shouldRetryGameCastWindowCapture(err) {
+				if time.Since(lastTransientLog) >= 5*time.Second {
+					log.Printf("[gamecast/window-capture] frame temporarily unavailable; retrying: %v", err)
+					lastTransientLog = time.Now()
+				}
+				continue
+			}
+			if ctx.Err() == nil {
+				log.Printf("[gamecast/window-capture] capture stopped: %v", err)
+				go a.handleGameCastNativeVideoFailure(session, err)
+			}
+			return
+		}
+		frame = prepareWebRTCFrameForEncode(frame, session.width, session.height)
+
+		encoded, err := encoder.Encode(frame)
+		if err != nil {
+			log.Printf("[gamecast/window-capture] encode failed: %v", err)
+			continue
+		}
+		if err := sink.WriteH264Sample(encoded, frameDuration); err != nil {
+			log.Printf("[gamecast/window-capture] write sample failed: %v", err)
+		}
+		a.emitLocalShareStats(txStats.record(len(encoded), sink.SessionCount(), "window-capture", session.width, session.height), "gamecast-host")
+	}
+}
+
+func shouldRetryGameCastWindowCapture(err error) bool {
+	return errors.Is(err, hostwindowcapture.ErrFrameUnavailable)
+}
+
+func shouldRetryGameCastDisplayCapture(err error) bool {
+	return errors.Is(err, video.ErrCaptureFrameUnavailable)
+}
+
+func (a *App) currentGameCastNativeShare(session *shareSession) bool {
+	if session == nil {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.gamecastNativeShare == session
+}
+
+func waitForGameCastShareReady(session *shareSession) {
+	if session != nil && session.ready != nil {
+		<-session.ready
+	}
+}
+
+func (a *App) handleGameCastNativeVideoFailure(session *shareSession, cause error) {
+	waitForGameCastShareReady(session)
+	a.gamecastRuntimeMu.Lock()
+	defer a.gamecastRuntimeMu.Unlock()
+	if !a.currentGameCastNativeShare(session) {
+		return
+	}
+
+	sourceName := "窗口"
+	if session.sourceKind == string(sharecatalog.SourceKindDisplay) {
+		sourceName = "屏幕"
+	}
+	message := fmt.Sprintf("原生 GameCast %s捕获意外停止，共享已自动结束。", sourceName)
+	if errors.Is(cause, hostwindowcapture.ErrWindowClosed) {
+		message = "共享窗口已关闭，原生 GameCast 共享已自动停止。"
+	}
+	log.Printf("[gamecast/native-host] stopping failed %s share room=%s: %v", sourceName, session.roomID, cause)
+	a.stopGameCastNativeHost()
+	if _, err := a.SetGameCastHostSharing(GameCastHostShareRequest{
+		RoomID:    session.roomID,
+		Sharing:   false,
+		PeerID:    session.peerID,
+		Width:     session.width,
+		Height:    session.height,
+		FPS:       session.fps,
+		AudioMode: "off",
+	}); err != nil {
+		log.Printf("[gamecast/native-host] publish stopped room state failed: %v", err)
+	}
+	a.emitGameCastShareRuntime(app.GameCastShareRuntimeEvent{
+		Kind:      "video-stopped",
+		RoomID:    session.roomID,
+		PeerID:    session.peerID,
+		AudioMode: "off",
+		Message:   message,
+	})
+}
+
+func (a *App) handleGameCastNativeAudioFailure(session *shareSession, cause error) {
+	waitForGameCastShareReady(session)
+	a.gamecastRuntimeMu.Lock()
+	defer a.gamecastRuntimeMu.Unlock()
+	if !a.currentGameCastNativeShare(session) {
+		return
+	}
+
+	log.Printf("[gamecast/audio] disabling failed audio source room=%s mode=%s: %v", session.roomID, session.audioMode, cause)
+	a.stopAudioMediaLoop()
+	if !a.currentGameCastNativeShare(session) {
+		return
+	}
+	a.mu.Lock()
+	session.audioMode = "off"
+	a.mu.Unlock()
+	if _, err := a.SetGameCastHostSharing(GameCastHostShareRequest{
+		RoomID:    session.roomID,
+		Sharing:   true,
+		PeerID:    session.peerID,
+		Width:     session.width,
+		Height:    session.height,
+		FPS:       session.fps,
+		AudioMode: "off",
+	}); err != nil {
+		log.Printf("[gamecast/audio] publish audio-disabled room state failed: %v", err)
+	}
+	a.emitGameCastShareRuntime(app.GameCastShareRuntimeEvent{
+		Kind:      "audio-disabled",
+		RoomID:    session.roomID,
+		PeerID:    session.peerID,
+		AudioMode: "off",
+		Message:   "共享音频源已失效，音频已自动关闭，视频共享仍在继续。",
+	})
+}
+
+func (a *App) emitGameCastShareRuntime(event app.GameCastShareRuntimeEvent) {
+	if a.ctx == nil {
+		return
+	}
+	runtime.EventsEmit(a.ctx, string(app.EventGameCastShareRuntime), event)
+}
+
+func (a *App) emitLocalShareStats(snapshot *webRTCVideoTxSnapshot, peerID string) {
+	if a.ctx == nil || snapshot == nil || peerID == "" {
+		return
+	}
+	runtime.EventsEmit(a.ctx, string(app.EventStreamStats), app.StreamStatsEvent{
+		PeerID:             peerID,
+		Width:              snapshot.Width,
+		Height:             snapshot.Height,
+		Mode:               snapshot.Mode,
+		EncodedFPS:         snapshot.EncodedFPS,
+		EstimatedSourceFPS: snapshot.EstimatedSourceFPS,
+		BitrateKbps:        snapshot.BitrateKbps,
+		Sessions:           snapshot.Sessions,
+	})
+}
+
+func shouldUseDirectNativeEncode(sourceWidth, sourceHeight, targetWidth, targetHeight int) bool {
+	return sourceWidth > 0 &&
+		sourceHeight > 0 &&
+		targetWidth > 0 &&
+		targetHeight > 0 &&
+		sourceWidth == targetWidth &&
+		sourceHeight == targetHeight
 }
 
 func waitForWebRTCFrameSlot(ctx context.Context, nextFrameAt *time.Time, frameDuration time.Duration) bool {
@@ -890,7 +1871,17 @@ func newWebRTCVideoTxStats() *webRTCVideoTxStats {
 	return &webRTCVideoTxStats{lastLog: time.Now()}
 }
 
-func (s *webRTCVideoTxStats) record(encodedBytes int, sessions int, mode string) {
+type webRTCVideoTxSnapshot struct {
+	Mode               string
+	Width              int
+	Height             int
+	EncodedFPS         float64
+	EstimatedSourceFPS float64
+	BitrateKbps        float64
+	Sessions           int
+}
+
+func (s *webRTCVideoTxStats) record(encodedBytes int, sessions int, mode string, width int, height int) *webRTCVideoTxSnapshot {
 	s.encodedFrames++
 	s.encodedBytes += encodedBytes
 	s.lastSessions = sessions
@@ -901,8 +1892,9 @@ func (s *webRTCVideoTxStats) record(encodedBytes int, sessions int, mode string)
 	}
 
 	if time.Since(s.lastLog) < 2*time.Second {
-		return
+		return nil
 	}
+	snapshot := s.snapshot(mode, width, height)
 	log.Printf("[media/webrtc] video tx mode=%s encoded_frames=%d encoded_kb=%.1f sample_writes=%d sessions=%d dropped_no_session=%d",
 		mode,
 		s.encodedFrames,
@@ -916,6 +1908,24 @@ func (s *webRTCVideoTxStats) record(encodedBytes int, sessions int, mode string)
 	s.encodedBytes = 0
 	s.sampleWrites = 0
 	s.noSessionSamples = 0
+	return snapshot
+}
+
+func (s *webRTCVideoTxStats) snapshot(mode string, width int, height int) *webRTCVideoTxSnapshot {
+	elapsed := time.Since(s.lastLog).Seconds()
+	if elapsed <= 0 || s.encodedFrames == 0 {
+		return nil
+	}
+	encodedFPS := float64(s.encodedFrames) / elapsed
+	return &webRTCVideoTxSnapshot{
+		Mode:               mode,
+		Width:              width,
+		Height:             height,
+		EncodedFPS:         encodedFPS,
+		EstimatedSourceFPS: encodedFPS,
+		BitrateKbps:        float64(s.encodedBytes*8) / elapsed / 1000.0,
+		Sessions:           s.lastSessions,
+	}
 }
 
 func shouldDisableDirectWebRTCEncode(err error, failures int) bool {
@@ -995,8 +2005,60 @@ func (a *App) stopAudioMediaLoop() {
 		return
 	}
 	cancel()
-	if done != nil {
+	if !waitForMediaLoopDone(done, gameCastMediaStopTimeout) {
+		log.Printf("[share/audio] stop timed out after %s; continuing shutdown", gameCastMediaStopTimeout)
+	}
+}
+
+func (a *App) stopGameCastMediaLoop() {
+	a.mu.Lock()
+	cancel := a.gamecastMediaCancel
+	done := a.gamecastMediaDone
+	a.gamecastMediaCancel = nil
+	a.gamecastMediaDone = nil
+	a.mu.Unlock()
+
+	if cancel == nil {
+		return
+	}
+	cancel()
+	if !waitForMediaLoopDone(done, gameCastMediaStopTimeout) {
+		log.Printf("[gamecast/native-host] video loop stop timed out after %s; continuing shutdown", gameCastMediaStopTimeout)
+	}
+}
+
+func waitForMediaLoopDone(done <-chan struct{}, timeout time.Duration) bool {
+	if done == nil {
+		return true
+	}
+	if timeout <= 0 {
 		<-done
+		return true
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
+
+func (a *App) stopGameCastNativeHost() {
+	a.stopGameCastMediaLoop()
+	a.stopAudioMediaLoop()
+
+	a.mu.Lock()
+	host := a.gamecastNativeHost
+	a.gamecastNativeHost = nil
+	a.gamecastNativeShare = nil
+	a.mu.Unlock()
+
+	if host != nil {
+		if err := host.Close(); err != nil {
+			log.Printf("[gamecast/native-host] close failed: %v", err)
+		}
 	}
 }
 
@@ -1161,6 +2223,13 @@ func minInt(a, b int) int {
 	return b
 }
 
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 func (a *App) GetPeers() []room.PeerInfo {
 	if a.room == nil {
 		return nil
@@ -1186,6 +2255,10 @@ func (a *App) GetRuntimeStatus() app.RuntimeStatusEvent {
 
 func (a *App) GetAvailableNodes() []network.NodeInfo {
 	return a.network.ListNodes()
+}
+
+func (a *App) GetShareSources() []sharecatalog.Source {
+	return sharecatalog.ListSources()
 }
 
 func (a *App) GetAudioShareCandidates() []AudioShareCandidate {
@@ -1387,6 +2460,7 @@ func selectedAudioCaptureTargetsFromProcesses(processes []ps.Process, selectedNa
 		out = append(out, audioCaptureTarget{
 			PID:  uint32(proc.Pid()),
 			Name: name,
+			Mode: windowsaudio.CaptureIncludeProcessTree,
 		})
 	}
 
@@ -1425,6 +2499,7 @@ func selectedAudioCaptureTargetsFromAudioSources(sources []windowsaudio.AudioSou
 		out = append(out, audioCaptureTarget{
 			PID:  source.ProcessID,
 			Name: source.Name,
+			Mode: windowsaudio.CaptureIncludeProcessTree,
 		})
 	}
 
@@ -1746,13 +2821,1661 @@ func (a *App) SetTailscaleAuthKey(authKey string) error {
 	}
 
 	if a.room != nil {
-		return fmt.Errorf("璇峰厛绂诲紑鎴块棿锛屽啀閲嶆柊搴旂敤璁よ瘉瀵嗛挜")
+		return fmt.Errorf("请先离开房间，再重新应用认证密钥。")
 	}
 
 	if err := a.restartNetwork(authKey); err != nil {
 		return fmt.Errorf("restart network: %w", err)
 	}
 	return nil
+}
+
+func (a *App) GetGameCastProfile() GameCastProfile {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return gameCastProfileForUI(a.cfg)
+}
+
+func (a *App) SaveGameCastProfile(profile GameCastProfile) (GameCastProfile, error) {
+	normalized, err := gamecast.NormalizeBaseURL(profile.BaseURL)
+	if err != nil {
+		return GameCastProfile{}, err
+	}
+
+	a.mu.Lock()
+	if a.cfg == nil {
+		a.cfg = config.DefaultConfig()
+	}
+	oldBaseURL, _ := gamecast.NormalizeBaseURL(a.cfg.GameCast.BaseURL)
+	a.cfg.GameCast.BaseURL = normalized
+	a.cfg.GameCast.DisplayName = normalizeDisplayName(profile.DisplayName)
+	if strings.TrimSpace(profile.TrustedCertificateSHA256) != "" {
+		a.cfg.GameCast.TrustedCertificateSHA256 = gamecast.NormalizeFingerprint(profile.TrustedCertificateSHA256)
+	} else if oldBaseURL != normalized {
+		a.cfg.GameCast.TrustedCertificateSHA256 = ""
+	}
+	cfg := a.cfg
+	next := gameCastProfileForUI(cfg)
+	a.mu.Unlock()
+
+	if err := config.Save(cfg); err != nil {
+		return GameCastProfile{}, fmt.Errorf("save gamecast profile: %w", err)
+	}
+	if oldBaseURL != normalized {
+		if err := a.ensureGameCastJar(gameCastProfileFromConfig(cfg)); err != nil {
+			log.Printf("reload gamecast session jar failed: %v", err)
+		}
+	}
+	return next, nil
+}
+
+func (a *App) ProbeGameCastServer(baseURL string) GameCastProbeResult {
+	profile := a.gameCastProfileForRequest(baseURL)
+	client, err := a.gameCastClient(profile)
+	if err != nil {
+		return GameCastProbeResult{
+			OK:      false,
+			Status:  "error",
+			BaseURL: profile.BaseURL,
+			Message: err.Error(),
+		}
+	}
+
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	return client.Probe(probeCtx)
+}
+
+func (a *App) TrustGameCastServerCertificate(baseURL, fingerprint string) (GameCastProfile, error) {
+	normalized, err := gamecast.NormalizeBaseURL(baseURL)
+	if err != nil {
+		return GameCastProfile{}, err
+	}
+
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	actual, err := gamecast.FetchCertificateFingerprint(probeCtx, normalized)
+	if err != nil {
+		return GameCastProfile{}, err
+	}
+	if actual == "" {
+		return a.SaveGameCastProfile(GameCastProfile{BaseURL: normalized})
+	}
+	if fingerprint != "" && !gamecast.EqualFingerprint(actual, fingerprint) {
+		return GameCastProfile{}, fmt.Errorf("certificate fingerprint changed while trusting server")
+	}
+
+	a.mu.Lock()
+	if a.cfg == nil {
+		a.cfg = config.DefaultConfig()
+	}
+	a.cfg.GameCast.BaseURL = normalized
+	a.cfg.GameCast.TrustedCertificateSHA256 = actual
+	cfg := a.cfg
+	next := gameCastProfileForUI(cfg)
+	a.mu.Unlock()
+
+	if err := config.Save(cfg); err != nil {
+		return GameCastProfile{}, fmt.Errorf("save gamecast trust: %w", err)
+	}
+	if err := a.ensureGameCastJar(gameCastProfileFromConfig(cfg)); err != nil {
+		log.Printf("reload gamecast session jar failed: %v", err)
+	}
+	return next, nil
+}
+
+func (a *App) GetGameCastSession() (GameCastSessionState, error) {
+	client, err := a.gameCastClient(a.gameCastProfileForRequest(""))
+	if err != nil {
+		return GameCastSessionState{}, err
+	}
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	cfg, err := client.GetServerConfig(requestCtx)
+	if err != nil {
+		return GameCastSessionState{}, err
+	}
+	return gameCastSessionStateFromConfig(cfg), nil
+}
+
+func (a *App) LoginGameCast(credentials GameCastCredentials) (GameCastSessionState, error) {
+	if strings.TrimSpace(credentials.User) == "" || credentials.Pass == "" {
+		return GameCastSessionState{}, fmt.Errorf("username and password are required")
+	}
+	profile := a.gameCastProfileForRequest("")
+	client, err := a.gameCastClient(profile)
+	if err != nil {
+		return GameCastSessionState{}, err
+	}
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	cfg, err := client.Login(requestCtx, credentials.User, credentials.Pass)
+	if err != nil {
+		return GameCastSessionState{}, err
+	}
+	if err := a.saveGameCastJar(profile); err != nil {
+		log.Printf("save gamecast session jar failed: %v", err)
+	}
+	return gameCastSessionStateFromConfig(cfg), nil
+}
+
+func (a *App) RegisterGameCast(credentials GameCastCredentials) (GameCastSessionState, error) {
+	if strings.TrimSpace(credentials.User) == "" || credentials.Pass == "" {
+		return GameCastSessionState{}, fmt.Errorf("username and password are required")
+	}
+	profile := a.gameCastProfileForRequest("")
+	client, err := a.gameCastClient(profile)
+	if err != nil {
+		return GameCastSessionState{}, err
+	}
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := client.Register(requestCtx, credentials.User, credentials.Pass); err != nil {
+		return GameCastSessionState{}, err
+	}
+	cfg, err := client.Login(requestCtx, credentials.User, credentials.Pass)
+	if err != nil {
+		return GameCastSessionState{}, err
+	}
+	if err := a.saveGameCastJar(profile); err != nil {
+		log.Printf("save gamecast session jar failed: %v", err)
+	}
+	return gameCastSessionStateFromConfig(cfg), nil
+}
+
+func (a *App) LogoutGameCast() error {
+	profile := a.gameCastProfileForRequest("")
+	client, err := a.gameCastClient(profile)
+	if err != nil {
+		return err
+	}
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	if err := client.Logout(requestCtx); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	jar := a.gamecastJar
+	a.mu.Unlock()
+	if jar != nil {
+		if err := jar.Clear(profile.BaseURL); err != nil {
+			log.Printf("clear gamecast session jar failed: %v", err)
+		}
+	}
+	return nil
+}
+
+func (a *App) GetGameCastRoomState(roomID string) (GameCastRoomState, error) {
+	client, err := a.gameCastClient(a.gameCastProfileForRequest(""))
+	if err != nil {
+		return GameCastRoomState{}, err
+	}
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	return client.GetRoomState(requestCtx, roomID)
+}
+
+func (a *App) GetGameCastRooms() ([]GameCastRoomState, error) {
+	client, err := a.gameCastClient(a.gameCastProfileForRequest(""))
+	if err != nil {
+		return nil, err
+	}
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	return client.ListRooms(requestCtx)
+}
+
+func (a *App) GetGameCastParticipantID() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.gamecastParticipantID
+}
+
+func (a *App) GetGameCastPresence(roomID string) ([]GameCastPresenceParticipant, error) {
+	client, err := a.gameCastClient(a.gameCastProfileForRequest(""))
+	if err != nil {
+		return nil, err
+	}
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	participants, _, err := client.ListPresence(requestCtx, roomID)
+	return participants, err
+}
+
+func (a *App) GetGameCastHistory() ([]gamecast.HistoryEntry, error) {
+	profile := a.gameCastProfileForRequest("")
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+
+	a.mu.Lock()
+	local := localGameCastHistoryLocked(a.cfg)
+	a.mu.Unlock()
+
+	client, err := a.gameCastClient(profile)
+	if err != nil {
+		return local, nil
+	}
+	remote, err := client.GetHistory(requestCtx)
+	if err != nil {
+		return local, nil
+	}
+	merged := rooms.MergeHistory(local, remote)
+	a.persistGameCastHistory(merged, true)
+	return merged, nil
+}
+
+func (a *App) AddGameCastHistory(roomID string) ([]gamecast.HistoryEntry, error) {
+	roomID = strings.TrimSpace(roomID)
+	if roomID == "" {
+		return a.GetGameCastHistory()
+	}
+	a.mu.Lock()
+	current := localGameCastHistoryLocked(a.cfg)
+	next := rooms.AddHistory(current, roomID, time.Now())
+	a.mu.Unlock()
+	a.persistGameCastHistory(next, true)
+	return next, nil
+}
+
+func (a *App) RemoveGameCastHistory(roomID string) ([]gamecast.HistoryEntry, error) {
+	roomID = strings.TrimSpace(roomID)
+	a.mu.Lock()
+	current := localGameCastHistoryLocked(a.cfg)
+	next := make([]gamecast.HistoryEntry, 0, len(current))
+	for _, entry := range current {
+		if !strings.EqualFold(entry.ID, roomID) {
+			next = append(next, entry)
+		}
+	}
+	a.mu.Unlock()
+	a.persistGameCastHistory(next, true)
+	return next, nil
+}
+
+func (a *App) CreateGameCastRoom() (GameCastRoomSession, error) {
+	sessionState, err := a.GetGameCastSession()
+	if err != nil {
+		return GameCastRoomSession{}, err
+	}
+	if !sessionState.LoggedIn {
+		return GameCastRoomSession{}, fmt.Errorf("please log in before creating a GameCast room")
+	}
+	roomID := rooms.PersonalRoomID(sessionState.User)
+	if roomID == "" {
+		return GameCastRoomSession{}, fmt.Errorf("current GameCast user cannot be used as a room id")
+	}
+	return a.enterGameCastHostRoom(roomID)
+}
+
+func (a *App) EnterGameCastHostRoom(roomID string) (GameCastRoomSession, error) {
+	roomID = strings.TrimSpace(roomID)
+	if roomID == "" {
+		return GameCastRoomSession{}, fmt.Errorf("room id is required")
+	}
+	return a.enterGameCastHostRoom(roomID)
+}
+
+func (a *App) LeaveGameCastRoom() error {
+	_ = a.releaseGameCastShareLease()
+	a.stopGameCastPresence(true)
+	a.stopGameCastRoomHeartbeat(true)
+	a.stopGameCastViewerIntent(true)
+	a.stopGameCastNativeHost()
+	a.closeGameCastWS()
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, string(app.EventRoomLeft), nil)
+	}
+	return nil
+}
+
+func (a *App) ConnectGameCastHost(roomID string) error {
+	roomID = strings.TrimSpace(roomID)
+	if roomID == "" {
+		return fmt.Errorf("room id is required")
+	}
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	a.closeGameCastWS()
+	a.stopGameCastViewerIntent(true)
+	a.stopGameCastNativeHost()
+	client := a.newGameCastWSClient(roomID, "host", "")
+	if err := client.Connect(ctx); err != nil {
+		return err
+	}
+	if _, err := a.AddGameCastHistory(roomID); err != nil {
+		log.Printf("add gamecast history failed: %v", err)
+	}
+
+	a.mu.Lock()
+	a.gamecastWS = client
+	a.mu.Unlock()
+	return nil
+}
+
+func (a *App) SetGameCastHostSharing(request GameCastHostShareRequest) (GameCastRoomState, error) {
+	roomID := strings.TrimSpace(request.RoomID)
+	if roomID == "" {
+		a.mu.Lock()
+		if a.cfg != nil {
+			roomID = a.cfg.LastRoomID
+		}
+		a.mu.Unlock()
+	}
+	if roomID == "" {
+		return GameCastRoomState{}, fmt.Errorf("room id is required")
+	}
+	if a.gameCastPresenceManagesRoom(roomID) {
+		posted, err := a.setPresenceManagedGameCastSharing(roomID, request.Sharing, request.AudioMode)
+		if err != nil {
+			return GameCastRoomState{}, err
+		}
+		a.emitGameCastStreamState(request)
+		return posted, nil
+	}
+	if !request.Sharing {
+		if err := a.releaseGameCastShareLease(); err != nil && !isGameCastLeaseGone(err) {
+			log.Printf("[gamecast/share-lease] release failed room=%s: %v", roomID, err)
+		}
+	}
+	audioMode := strings.TrimSpace(request.AudioMode)
+	if audioMode == "" {
+		audioMode = "off"
+	}
+	state := GameCastRoomState{
+		Room:      roomID,
+		Active:    true,
+		Origin:    "client",
+		Sharing:   request.Sharing,
+		SFU:       request.Sharing,
+		AudioMode: audioMode,
+		User:      a.gameCastUserLabel(),
+		TTL:       15,
+	}
+	posted, err := a.postGameCastRoomState(state)
+	if err != nil {
+		return GameCastRoomState{}, err
+	}
+	a.stopGameCastRoomHeartbeat(false)
+	a.startGameCastRoomHeartbeat(posted)
+
+	a.emitGameCastStreamState(request)
+	return posted, nil
+}
+
+func (a *App) gameCastPresenceManagesRoom(roomID string) bool {
+	a.mu.Lock()
+	active := a.gamecastPresenceCancel != nil
+	presenceRoom := a.gamecastPresenceRoom
+	a.mu.Unlock()
+	return presenceManagesGameCastRoom(active, presenceRoom, roomID)
+}
+
+func presenceManagesGameCastRoom(active bool, presenceRoom, roomID string) bool {
+	return active && strings.EqualFold(strings.TrimSpace(presenceRoom), strings.TrimSpace(roomID))
+}
+
+func (a *App) setPresenceManagedGameCastSharing(roomID string, sharing bool, audioMode string) (GameCastRoomState, error) {
+	audioMode = strings.TrimSpace(audioMode)
+	if audioMode == "" {
+		audioMode = "off"
+	}
+	if !sharing {
+		if err := a.releaseGameCastShareLease(); err != nil && !isGameCastLeaseGone(err) {
+			return GameCastRoomState{}, err
+		}
+		return a.GetGameCastRoomState(roomID)
+	}
+
+	a.mu.Lock()
+	hasLease := a.gamecastShareLease != nil && strings.EqualFold(a.gamecastShareLease.Room, roomID)
+	a.mu.Unlock()
+	var lease gamecast.ShareLease
+	var state GameCastRoomState
+	var err error
+	if hasLease {
+		lease, state, err = a.heartbeatGameCastShare(roomID, true, audioMode)
+	} else {
+		lease, state, err = a.claimGameCastShare(roomID, true, audioMode)
+	}
+	if err != nil {
+		return GameCastRoomState{}, err
+	}
+	a.startGameCastShareHeartbeat(lease, true, audioMode)
+	return state, nil
+}
+
+func (a *App) emitGameCastStreamState(request GameCastHostShareRequest) {
+	if a.ctx == nil {
+		return
+	}
+	event := app.StreamEvent{
+		PeerID: gameCastSharePeerID(request),
+		Width:  request.Width,
+		Height: request.Height,
+		FPS:    request.FPS,
+	}
+	if request.Sharing {
+		runtime.EventsEmit(a.ctx, string(app.EventStreamStarted), event)
+		return
+	}
+	runtime.EventsEmit(a.ctx, string(app.EventStreamStopped), event)
+}
+
+func gameCastSharePeerID(request GameCastHostShareRequest) string {
+	if peerID := strings.TrimSpace(request.PeerID); peerID != "" {
+		return peerID
+	}
+	return "gamecast-host"
+}
+
+func (a *App) StartNativeGameCastSharing(request GameCastHostShareRequest) (GameCastRoomState, error) {
+	roomID := strings.TrimSpace(request.RoomID)
+	if roomID == "" {
+		a.mu.Lock()
+		if a.cfg != nil {
+			roomID = a.cfg.LastRoomID
+		}
+		a.mu.Unlock()
+	}
+	if roomID == "" {
+		return GameCastRoomState{}, fmt.Errorf("room id is required")
+	}
+	if !a.hostVideoCapability.SupportsHost || a.hostVideoCapability.Backend != video.BackendNative {
+		logVideoCapability("[video/capability] gamecast-native-share-rejected", a.hostVideoCapability)
+		return GameCastRoomState{}, fmt.Errorf("native GameCast sharing requires DXGI/NVENC support: %s", a.hostVideoCapability.Reason)
+	}
+
+	sourceKind := strings.TrimSpace(request.SourceKind)
+	if sourceKind == "" {
+		sourceKind = string(sharecatalog.SourceKindDisplay)
+	}
+	displays := video.ListDisplays()
+	displayIndex := 0
+	windowHandle := uintptr(0)
+	sourceWidth := 0
+	sourceHeight := 0
+
+	switch sourceKind {
+	case string(sharecatalog.SourceKindDisplay):
+		var err error
+		displayIndex, err = resolveDisplayShareSelection(request.SourceID, request.SourceKind, len(displays))
+		if err != nil {
+			return GameCastRoomState{}, err
+		}
+		if displayIndex < 0 || displayIndex >= len(displays) {
+			return GameCastRoomState{}, fmt.Errorf("selected display is unavailable")
+		}
+		bounds := displays[displayIndex]
+		sourceWidth = bounds.Dx()
+		sourceHeight = bounds.Dy()
+	case string(sharecatalog.SourceKindWindow):
+		var err error
+		windowHandle, sourceWidth, sourceHeight, err = resolveWindowShareSelection(request.SourceID)
+		if err != nil {
+			return GameCastRoomState{}, err
+		}
+	default:
+		return GameCastRoomState{}, fmt.Errorf("unsupported share source type")
+	}
+
+	width, height := resolveShareResolution(sourceWidth, sourceHeight, request.Width, request.Height)
+	fps := normalizeShareFPS(request.FPS)
+	ready := make(chan struct{})
+	session := &shareSession{
+		roomID:       roomID,
+		peerID:       gameCastSharePeerID(request),
+		displayIndex: displayIndex,
+		windowHandle: windowHandle,
+		sourceKind:   sourceKind,
+		sourceLabel:  strings.TrimSpace(request.SourceLabel),
+		width:        width,
+		height:       height,
+		fps:          fps,
+		audioMode:    "off",
+		ready:        ready,
+	}
+	readyClosed := false
+	defer func() {
+		if !readyClosed {
+			close(ready)
+		}
+	}()
+
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	a.closeGameCastWS()
+	a.stopGameCastViewerIntent(true)
+	a.stopGameCastNativeHost()
+	_, _, err := a.claimGameCastShare(roomID, false, "off")
+	if err != nil {
+		return GameCastRoomState{}, fmt.Errorf("claim gamecast share: %w", err)
+	}
+	leaseCommitted := false
+	defer func() {
+		if !leaseCommitted {
+			_ = a.releaseGameCastShareLease()
+		}
+	}()
+
+	audioTarget, audioEnabled, audioMode := a.resolveGameCastAudioCaptureTarget(request, session)
+
+	host := nativehost.New(nativehost.Config{
+		Profile:      a.gameCastProfileForRequest(""),
+		RoomID:       roomID,
+		Name:         a.gameCastUserLabel(),
+		Width:        width,
+		Height:       height,
+		FPS:          fps,
+		AudioEnabled: audioEnabled,
+		OnAuxMessage: func(message json.RawMessage) {
+			a.emitGameCastSignal(message)
+		},
+		OnStatus: func(status gamecastws.Status) {
+			a.emitGameCastStatus(status)
+		},
+		OnKeyFrameRequest: func(reason string) {
+			seq := a.mediaKeyFrameSeq.Add(1)
+			log.Printf("[gamecast/native-host] keyframe requested reason=%s seq=%d", reason, seq)
+		},
+	})
+	if err := host.Start(ctx); err != nil {
+		return GameCastRoomState{}, err
+	}
+	a.mu.Lock()
+	a.gamecastNativeHost = host
+	a.gamecastNativeShare = session
+	a.mu.Unlock()
+	if err := a.startGameCastVideoLoop(host, session); err != nil {
+		a.stopGameCastNativeHost()
+		return GameCastRoomState{}, err
+	}
+	var audioStartErr error
+	if audioEnabled {
+		audioMode, audioEnabled, audioStartErr = a.startGameCastAudioLoopOrDisable(host, session, audioTarget, audioMode)
+	}
+	session.audioMode = audioMode
+
+	posted, err := a.SetGameCastHostSharing(GameCastHostShareRequest{
+		RoomID:    roomID,
+		Sharing:   true,
+		PeerID:    session.peerID,
+		Width:     width,
+		Height:    height,
+		FPS:       fps,
+		AudioMode: audioMode,
+	})
+	if err != nil {
+		a.stopGameCastNativeHost()
+		return GameCastRoomState{}, err
+	}
+	leaseCommitted = true
+	close(ready)
+	readyClosed = true
+	if audioStartErr != nil {
+		a.emitGameCastShareRuntime(app.GameCastShareRuntimeEvent{
+			Kind:      "audio-disabled",
+			RoomID:    session.roomID,
+			PeerID:    session.peerID,
+			AudioMode: "off",
+			Message:   "无法启动选定的共享音频源，已继续使用无音频的视频共享。",
+		})
+	}
+	return posted, nil
+}
+
+func (a *App) startGameCastAudioLoopOrDisable(
+	host *nativehost.Host,
+	session *shareSession,
+	primary audioCaptureTarget,
+	audioMode string,
+) (string, bool, error) {
+	mode, enabled, err := startGameCastAudioTarget(func(target audioCaptureTarget) error {
+		return a.startGameCastAudioLoop(host, session, target)
+	}, primary, audioMode)
+	if err != nil {
+		log.Printf(
+			"[gamecast/audio] selected audio start failed; continuing video-only mode=%s target=%s:%d: %v",
+			audioCaptureModeLabel(primary.Mode),
+			primary.Name,
+			primary.PID,
+			err,
+		)
+	}
+	return mode, enabled, err
+}
+
+func startGameCastAudioTarget(
+	start func(audioCaptureTarget) error,
+	target audioCaptureTarget,
+	audioMode string,
+) (string, bool, error) {
+	if err := start(target); err != nil {
+		return "off", false, err
+	}
+	return audioMode, true, nil
+}
+
+func resolveDisplayShareSelection(sourceID, sourceKind string, displayCount int) (int, error) {
+	normalizedKind := strings.TrimSpace(sourceKind)
+	if normalizedKind == "" || normalizedKind == string(sharecatalog.SourceKindDisplay) {
+		if strings.TrimSpace(sourceID) == "" {
+			return 0, nil
+		}
+		var displayIndex int
+		if _, err := fmt.Sscanf(strings.TrimSpace(sourceID), "display:%d", &displayIndex); err != nil {
+			return 0, fmt.Errorf("invalid display source selection")
+		}
+		if displayIndex < 0 || displayIndex >= displayCount {
+			return 0, fmt.Errorf("selected display is unavailable")
+		}
+		return displayIndex, nil
+	}
+	if normalizedKind == string(sharecatalog.SourceKindWindow) {
+		return 0, fmt.Errorf("窗口共享界面已就绪，但原生窗口捕获仍在接入中；请先选择整个屏幕共享。")
+	}
+	return 0, fmt.Errorf("unsupported share source type")
+}
+
+func resolveWindowShareSelection(sourceID string) (uintptr, int, int, error) {
+	if strings.TrimSpace(sourceID) == "" {
+		return 0, 0, 0, fmt.Errorf("window share source is required")
+	}
+	var handle uint64
+	if _, err := fmt.Sscanf(strings.TrimSpace(sourceID), "window:%d", &handle); err != nil || handle == 0 {
+		return 0, 0, 0, fmt.Errorf("invalid window source selection")
+	}
+	capturer := hostwindowcapture.New(uintptr(handle), defaultShareFPS)
+	bounds, err := capturer.Bounds()
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	return uintptr(handle), bounds.Dx(), bounds.Dy(), nil
+}
+
+func (a *App) resolveGameCastAudioCaptureTarget(request GameCastHostShareRequest, session *shareSession) (audioCaptureTarget, bool, string) {
+	audioMode := strings.TrimSpace(request.AudioMode)
+	if audioMode == "" {
+		audioMode = "off"
+	}
+	if audioMode == "off" {
+		return audioCaptureTarget{}, false, "off"
+	}
+	if !a.audioCapability.SupportsProcessCapture {
+		log.Printf("[gamecast/audio] process/system loopback unavailable: %s", a.audioCapability.Reason)
+		return audioCaptureTarget{}, false, "off"
+	}
+	opusCapability := audio.QueryOpusCapability()
+	if !opusCapability.Available {
+		log.Printf("[gamecast/audio] opus unavailable: %s", opusCapability.Reason)
+		return audioCaptureTarget{}, false, "off"
+	}
+
+	switch audioMode {
+	case "system":
+		return audioCaptureTarget{
+			PID:  0,
+			Name: "system-audio",
+			Mode: windowsaudio.CaptureSystemMix,
+		}, true, "system"
+	case "process":
+		processName := strings.TrimSpace(request.AudioProcessName)
+		if processName == "" {
+			selectedNames := a.audioShareSession.Selected()
+			if len(selectedNames) > 0 {
+				processName = selectedNames[0]
+			}
+		}
+		if target, ok := selectGameCastProcessAudioTarget(request.AudioProcessID, processName, a.resolveAudioCaptureTargetByName); ok {
+			return target, true, "process"
+		}
+		log.Printf("[gamecast/audio] process target unavailable pid=%d name=%q", request.AudioProcessID, processName)
+	}
+
+	if session != nil && session.sourceKind == string(sharecatalog.SourceKindDisplay) {
+		return audioCaptureTarget{
+			PID:  0,
+			Name: "system-audio",
+			Mode: windowsaudio.CaptureSystemMix,
+		}, true, "system"
+	}
+	return audioCaptureTarget{}, false, "off"
+}
+
+func selectGameCastProcessAudioTarget(
+	processID uint32,
+	processName string,
+	resolveByName func(string) (audioCaptureTarget, bool),
+) (audioCaptureTarget, bool) {
+	processName = strings.TrimSpace(processName)
+	if processID != 0 {
+		if processName == "" {
+			processName = fmt.Sprintf("PID %d", processID)
+		}
+		return audioCaptureTarget{
+			PID:  processID,
+			Name: processName,
+			Mode: windowsaudio.CaptureIncludeProcessTree,
+		}, true
+	}
+	if resolveByName == nil {
+		return audioCaptureTarget{}, false
+	}
+	return resolveByName(processName)
+}
+
+func (a *App) resolveAudioCaptureTargetByName(name string) (audioCaptureTarget, bool) {
+	canonical := canonicalAudioProcessName(name)
+	if canonical == "" {
+		return audioCaptureTarget{}, false
+	}
+	sources, err := windowsaudio.ListActiveAudioSources()
+	if err == nil {
+		targets := selectedAudioCaptureTargetsFromAudioSources(sources, []string{canonical})
+		if len(targets) > 0 {
+			return targets[0], true
+		}
+	}
+	processes, err := ps.Processes()
+	if err == nil {
+		targets := selectedAudioCaptureTargetsFromProcesses(processes, []string{canonical})
+		if len(targets) > 0 {
+			return targets[0], true
+		}
+	}
+	return audioCaptureTarget{}, false
+}
+
+func (a *App) ConnectGameCastViewer(roomID, layer string) error {
+	roomID = strings.TrimSpace(roomID)
+	if roomID == "" {
+		return fmt.Errorf("room id is required")
+	}
+	layer = normalizeGameCastLayer(layer)
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	a.mu.Lock()
+	presenceRoom := a.gamecastPresenceRoom
+	presenceActive := a.gamecastPresenceCancel != nil
+	a.mu.Unlock()
+	presenceStarted := false
+	if !presenceActive || !strings.EqualFold(presenceRoom, roomID) {
+		if _, err := a.startGameCastPresence(roomID, "member", ""); err != nil {
+			return fmt.Errorf("join gamecast presence: %w", err)
+		}
+		presenceStarted = true
+	}
+
+	a.closeGameCastWS()
+	a.startGameCastViewerIntent(roomID)
+	select {
+	case <-ctx.Done():
+		a.stopGameCastViewerIntent(true)
+		if presenceStarted {
+			a.stopGameCastPresence(true)
+		}
+		return ctx.Err()
+	case <-time.After(1500 * time.Millisecond):
+	}
+	client := a.newGameCastWSClient(roomID, "viewer", layer)
+	if err := client.Connect(ctx); err != nil {
+		a.stopGameCastViewerIntent(true)
+		if presenceStarted {
+			a.stopGameCastPresence(true)
+		}
+		return err
+	}
+	if _, err := a.AddGameCastHistory(roomID); err != nil {
+		log.Printf("add gamecast history failed: %v", err)
+	}
+
+	a.mu.Lock()
+	a.gamecastWS = client
+	a.mu.Unlock()
+	return nil
+}
+
+func (a *App) PostGameCastPlaybackStats(payload map[string]interface{}) error {
+	if payload == nil {
+		payload = map[string]interface{}{}
+	}
+	qualityReport, hasQualityReport := gameCastQualityReportFromPayload(payload)
+	payload["client"] = "partylan"
+	payload["user"] = a.gameCastUserLabel()
+	payload["reportedAt"] = time.Now().UTC().Format(time.RFC3339Nano)
+
+	client, err := a.gameCastClient(a.gameCastProfileForRequest(""))
+	if err != nil {
+		return err
+	}
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if hasQualityReport {
+		if err := client.ReportQuality(requestCtx, qualityReport); err != nil {
+			a.mu.Lock()
+			shouldLog := time.Since(a.gamecastQualityFailureLog) >= 10*time.Second
+			if shouldLog {
+				a.gamecastQualityFailureLog = time.Now()
+			}
+			a.mu.Unlock()
+			if shouldLog {
+				log.Printf("[gamecast/quality] report failed room=%s participant=%s: %v", qualityReport.Room, qualityReport.ParticipantID, err)
+			}
+		}
+	}
+	return client.PostStats(requestCtx, payload)
+}
+
+func gameCastQualityReportFromPayload(payload map[string]interface{}) (gamecast.QualityReport, bool) {
+	if payload == nil || payload["valid"] != true || strings.TrimSpace(fmt.Sprint(payload["role"])) != "viewer" {
+		return gamecast.QualityReport{}, false
+	}
+	text := func(key string) string {
+		value, ok := payload[key].(string)
+		if !ok {
+			return ""
+		}
+		return strings.TrimSpace(value)
+	}
+	number := func(key string) (float64, bool) {
+		value, ok := payload[key]
+		if !ok {
+			return 0, false
+		}
+		switch typed := value.(type) {
+		case float64:
+			return typed, !math.IsNaN(typed) && !math.IsInf(typed, 0)
+		case float32:
+			converted := float64(typed)
+			return converted, !math.IsNaN(converted) && !math.IsInf(converted, 0)
+		case int:
+			return float64(typed), true
+		case int64:
+			return float64(typed), true
+		default:
+			return 0, false
+		}
+	}
+	room := text("room")
+	participantID := text("participantId")
+	generation := text("generation")
+	pairID := text("pairId")
+	received, receivedOK := number("packetsReceivedDelta")
+	lost, lostOK := number("packetsLostDelta")
+	dropped, droppedOK := number("framesDroppedDelta")
+	decodedFPS, decodedOK := number("decodedFps")
+	bitrate, bitrateOK := number("incomingBitrateKbps")
+	jitter, jitterOK := number("jitterMs")
+	if room == "" || participantID == "" || generation == "" || pairID == "" ||
+		!receivedOK || !lostOK || !droppedOK || !decodedOK || !bitrateOK || !jitterOK ||
+		received < 0 || lost < 0 || dropped < 0 || decodedFPS < 0 || bitrate < 0 || jitter < 0 {
+		return gamecast.QualityReport{}, false
+	}
+	return gamecast.QualityReport{
+		Room:                 room,
+		ParticipantID:        participantID,
+		Generation:           generation,
+		PairID:               pairID,
+		PacketsReceivedDelta: int64(received),
+		PacketsLostDelta:     int64(lost),
+		FramesDroppedDelta:   int64(dropped),
+		DecodedFPS:           decodedFPS,
+		IncomingBitrateKbps:  bitrate,
+		JitterMS:             jitter,
+	}, true
+}
+
+func (a *App) newGameCastWSClient(roomID, role, layer string) *gamecastws.Client {
+	return gamecastws.NewClient(gamecastws.Options{
+		Profile: a.gameCastProfileForRequest(""),
+		RoomID:  roomID,
+		Role:    role,
+		Layer:   layer,
+		Name:    a.gameCastUserLabel(),
+		OnMessage: func(message json.RawMessage) {
+			a.emitGameCastSignal(message)
+		},
+		OnStatus: func(status gamecastws.Status) {
+			a.emitGameCastStatus(status)
+		},
+	})
+}
+
+func (a *App) DisconnectGameCast() error {
+	a.stopGameCastNativeHost()
+	a.closeGameCastWS()
+	a.stopGameCastViewerIntent(true)
+	return nil
+}
+
+func (a *App) SendGameCastSignal(signal map[string]interface{}) error {
+	payload, err := json.Marshal(signal)
+	if err != nil {
+		return fmt.Errorf("marshal gamecast signal: %w", err)
+	}
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	sendCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	a.mu.Lock()
+	client := a.gamecastWS
+	a.mu.Unlock()
+	if client == nil {
+		return fmt.Errorf("gamecast sfu is not connected")
+	}
+	return client.Send(sendCtx, payload)
+}
+
+func (a *App) closeGameCastWS() {
+	a.mu.Lock()
+	client := a.gamecastWS
+	a.gamecastWS = nil
+	a.mu.Unlock()
+	if client != nil {
+		if err := client.Close(); err != nil {
+			log.Printf("[gamecast/ws] close failed: %v", err)
+		}
+	}
+}
+
+func (a *App) enterGameCastHostRoom(roomID string) (GameCastRoomSession, error) {
+	roomID = strings.TrimSpace(roomID)
+	if roomID == "" {
+		return GameCastRoomSession{}, fmt.Errorf("room id is required")
+	}
+	a.stopGameCastRoomHeartbeat(false)
+	presenceState, err := a.startGameCastPresence(roomID, "owner", "client")
+	if err != nil {
+		return GameCastRoomSession{}, fmt.Errorf("join gamecast presence: %w", err)
+	}
+
+	posted := presenceState
+	posted.Room = roomID
+	posted.Active = true
+	if strings.TrimSpace(posted.Origin) == "" {
+		posted.Origin = "client"
+	}
+	if strings.TrimSpace(posted.User) == "" {
+		posted.User = a.gameCastUserLabel()
+	}
+	if posted.TTL <= 0 {
+		posted.TTL = 15
+	}
+	a.rememberGameCastRoom(roomID)
+	if _, err := a.AddGameCastHistory(roomID); err != nil {
+		log.Printf("add gamecast history failed: %v", err)
+	}
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, string(app.EventRoomJoined), map[string]interface{}{
+			"roomId":     roomID,
+			"selfPeerId": "gamecast-host",
+		})
+	}
+	return GameCastRoomSession{
+		RoomID: roomID,
+		Role:   "host",
+		State:  posted,
+	}, nil
+}
+
+func (a *App) startGameCastRoomHeartbeat(state GameCastRoomState) {
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	heartbeatCtx, cancel := context.WithCancel(ctx)
+	a.mu.Lock()
+	a.gamecastRoomCancel = cancel
+	a.mu.Unlock()
+
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-heartbeatCtx.Done():
+				return
+			case <-ticker.C:
+				if _, err := a.postGameCastRoomState(state); err != nil {
+					log.Printf("[gamecast/room] heartbeat failed room=%s: %v", state.Room, err)
+				}
+			}
+		}
+	}()
+}
+
+func (a *App) stopGameCastRoomHeartbeat(markInactive bool) {
+	a.mu.Lock()
+	cancel := a.gamecastRoomCancel
+	a.gamecastRoomCancel = nil
+	a.mu.Unlock()
+	if cancel == nil {
+		return
+	}
+	cancel()
+	if !markInactive {
+		return
+	}
+	roomID := ""
+	a.mu.Lock()
+	if a.cfg != nil {
+		roomID = a.cfg.LastRoomID
+	}
+	a.mu.Unlock()
+	if strings.TrimSpace(roomID) == "" {
+		return
+	}
+	_, err := a.postGameCastRoomState(GameCastRoomState{
+		Room:    roomID,
+		Active:  false,
+		Sharing: false,
+		SFU:     false,
+		User:    a.gameCastUserLabel(),
+		TTL:     15,
+	})
+	if err != nil {
+		log.Printf("[gamecast/room] inactive post failed room=%s: %v", roomID, err)
+	}
+}
+
+func (a *App) startGameCastViewerIntent(roomID string) {
+	roomID = strings.TrimSpace(roomID)
+	if roomID == "" {
+		return
+	}
+	a.stopGameCastViewerIntent(true)
+
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	heartbeatCtx, cancel := context.WithCancel(ctx)
+	a.mu.Lock()
+	a.gamecastViewerIntentCancel = cancel
+	a.gamecastViewerIntentRoom = roomID
+	a.mu.Unlock()
+
+	if err := a.postGameCastViewerIntent(roomID, true); err != nil {
+		log.Printf("[gamecast/viewer-intent] initial post failed room=%s: %v", roomID, err)
+	}
+
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-heartbeatCtx.Done():
+				return
+			case <-ticker.C:
+				if err := a.postGameCastViewerIntent(roomID, true); err != nil {
+					log.Printf("[gamecast/viewer-intent] heartbeat failed room=%s: %v", roomID, err)
+				}
+			}
+		}
+	}()
+}
+
+func (a *App) stopGameCastViewerIntent(markInactive bool) {
+	a.mu.Lock()
+	cancel := a.gamecastViewerIntentCancel
+	roomID := a.gamecastViewerIntentRoom
+	a.gamecastViewerIntentCancel = nil
+	a.gamecastViewerIntentRoom = ""
+	a.mu.Unlock()
+	if cancel == nil && strings.TrimSpace(roomID) == "" {
+		return
+	}
+	if cancel != nil {
+		cancel()
+	}
+	if !markInactive || strings.TrimSpace(roomID) == "" {
+		return
+	}
+	if err := a.postGameCastViewerIntent(roomID, false); err != nil {
+		log.Printf("[gamecast/viewer-intent] inactive post failed room=%s: %v", roomID, err)
+	}
+}
+
+func (a *App) postGameCastViewerIntent(roomID string, active bool) error {
+	client, err := a.gameCastClient(a.gameCastProfileForRequest(""))
+	if err != nil {
+		return err
+	}
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	return client.PostViewerIntent(requestCtx, gamecast.ViewerIntent{
+		Room:     roomID,
+		Active:   active,
+		WantsSFU: active,
+		Client:   "partylan",
+		User:     a.gameCastUserLabel(),
+		TTL:      15,
+	})
+}
+
+func (a *App) gameCastPresenceRequest(roomID, role, origin string) gamecast.PresenceRequest {
+	a.mu.Lock()
+	participantID := a.gamecastParticipantID
+	a.mu.Unlock()
+	return gamecast.PresenceRequest{
+		Room:          strings.TrimSpace(roomID),
+		ParticipantID: participantID,
+		ClientType:    "client",
+		Origin:        strings.TrimSpace(origin),
+		Role:          strings.TrimSpace(role),
+		Name:          a.gameCastUserLabel(),
+		TTL:           15,
+	}
+}
+
+func (a *App) startGameCastPresence(roomID, role, origin string) (GameCastRoomState, error) {
+	roomID = strings.TrimSpace(roomID)
+	if roomID == "" {
+		return GameCastRoomState{}, fmt.Errorf("room id is required")
+	}
+	a.stopGameCastPresence(true)
+	client, err := a.gameCastClient(a.gameCastProfileForRequest(""))
+	if err != nil {
+		return GameCastRoomState{}, err
+	}
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	request := a.gameCastPresenceRequest(roomID, role, origin)
+	requestCtx, cancelRequest := context.WithTimeout(ctx, 5*time.Second)
+	_, roomState, err := client.JoinPresence(requestCtx, request)
+	cancelRequest()
+	if err != nil {
+		return GameCastRoomState{}, err
+	}
+	heartbeatCtx, cancel := context.WithCancel(ctx)
+	a.mu.Lock()
+	a.gamecastPresenceCancel = cancel
+	a.gamecastPresenceRoom = roomID
+	a.gamecastPresenceRole = role
+	a.gamecastPresenceOrigin = origin
+	a.mu.Unlock()
+	go a.runGameCastPresenceHeartbeat(heartbeatCtx, request)
+	return roomState, nil
+}
+
+func (a *App) runGameCastPresenceHeartbeat(ctx context.Context, request gamecast.PresenceRequest) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	request.Name = ""
+	request.Origin = ""
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			client, err := a.gameCastClient(a.gameCastProfileForRequest(""))
+			if err != nil {
+				log.Printf("[gamecast/presence] client unavailable room=%s: %v", request.Room, err)
+				continue
+			}
+			requestCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			_, err = client.HeartbeatPresence(requestCtx, request)
+			cancel()
+			if err != nil && ctx.Err() == nil {
+				log.Printf("[gamecast/presence] heartbeat failed room=%s: %v", request.Room, err)
+			}
+		}
+	}
+}
+
+func (a *App) stopGameCastPresence(markInactive bool) {
+	a.mu.Lock()
+	cancel := a.gamecastPresenceCancel
+	roomID := a.gamecastPresenceRoom
+	role := a.gamecastPresenceRole
+	a.gamecastPresenceCancel = nil
+	a.gamecastPresenceRoom = ""
+	a.gamecastPresenceRole = ""
+	a.gamecastPresenceOrigin = ""
+	a.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if !markInactive || strings.TrimSpace(roomID) == "" {
+		return
+	}
+	client, err := a.gameCastClient(a.gameCastProfileForRequest(""))
+	if err != nil {
+		log.Printf("[gamecast/presence] leave client unavailable room=%s: %v", roomID, err)
+		return
+	}
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	request := a.gameCastPresenceRequest(roomID, role, "")
+	request.Name = ""
+	requestCtx, cancelRequest := context.WithTimeout(ctx, 5*time.Second)
+	_, err = client.LeavePresence(requestCtx, request)
+	cancelRequest()
+	if err != nil {
+		log.Printf("[gamecast/presence] leave failed room=%s: %v", roomID, err)
+	}
+}
+
+func (a *App) gameCastShareLeaseRequest(roomID string, sfu bool, audioMode string) gamecast.ShareLeaseRequest {
+	a.mu.Lock()
+	participantID := a.gamecastParticipantID
+	lease := a.gamecastShareLease
+	a.mu.Unlock()
+	request := gamecast.ShareLeaseRequest{
+		Room:          strings.TrimSpace(roomID),
+		ParticipantID: participantID,
+		SFU:           sfu,
+		AudioMode:     strings.TrimSpace(audioMode),
+		TTL:           15,
+	}
+	if lease != nil && strings.EqualFold(lease.Room, request.Room) {
+		request.LeaseID = lease.LeaseID
+	}
+	return request
+}
+
+func (a *App) claimGameCastShare(roomID string, sfu bool, audioMode string) (gamecast.ShareLease, GameCastRoomState, error) {
+	client, err := a.gameCastClient(a.gameCastProfileForRequest(""))
+	if err != nil {
+		return gamecast.ShareLease{}, GameCastRoomState{}, err
+	}
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	lease, roomState, err := client.ClaimShare(requestCtx, a.gameCastShareLeaseRequest(roomID, sfu, audioMode))
+	if err != nil {
+		return gamecast.ShareLease{}, GameCastRoomState{}, err
+	}
+	a.mu.Lock()
+	a.gamecastShareLease = &lease
+	a.mu.Unlock()
+	return lease, roomState, nil
+}
+
+func (a *App) heartbeatGameCastShare(roomID string, sfu bool, audioMode string) (gamecast.ShareLease, GameCastRoomState, error) {
+	client, err := a.gameCastClient(a.gameCastProfileForRequest(""))
+	if err != nil {
+		return gamecast.ShareLease{}, GameCastRoomState{}, err
+	}
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	lease, roomState, err := client.HeartbeatShare(requestCtx, a.gameCastShareLeaseRequest(roomID, sfu, audioMode))
+	if err != nil {
+		return gamecast.ShareLease{}, GameCastRoomState{}, err
+	}
+	a.mu.Lock()
+	a.gamecastShareLease = &lease
+	a.mu.Unlock()
+	return lease, roomState, nil
+}
+
+func (a *App) startGameCastShareHeartbeat(lease gamecast.ShareLease, sfu bool, audioMode string) {
+	a.mu.Lock()
+	if a.gamecastShareCancel != nil {
+		a.gamecastShareCancel()
+	}
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	heartbeatCtx, cancel := context.WithCancel(ctx)
+	a.gamecastShareCancel = cancel
+	a.gamecastShareLease = &lease
+	a.mu.Unlock()
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-heartbeatCtx.Done():
+				return
+			case <-ticker.C:
+				client, err := a.gameCastClient(a.gameCastProfileForRequest(""))
+				if err != nil {
+					log.Printf("[gamecast/share-lease] client unavailable room=%s: %v", lease.Room, err)
+					continue
+				}
+				requestCtx, cancelRequest := context.WithTimeout(heartbeatCtx, 5*time.Second)
+				updated, _, err := client.HeartbeatShare(requestCtx, a.gameCastShareLeaseRequest(lease.Room, sfu, audioMode))
+				cancelRequest()
+				if err != nil {
+					if heartbeatCtx.Err() == nil {
+						log.Printf("[gamecast/share-lease] heartbeat failed room=%s: %v", lease.Room, err)
+					}
+					continue
+				}
+				a.mu.Lock()
+				a.gamecastShareLease = &updated
+				a.mu.Unlock()
+			}
+		}
+	}()
+}
+
+func (a *App) releaseGameCastShareLease() error {
+	a.mu.Lock()
+	cancel := a.gamecastShareCancel
+	lease := a.gamecastShareLease
+	a.gamecastShareCancel = nil
+	a.gamecastShareLease = nil
+	a.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if lease == nil || strings.TrimSpace(lease.LeaseID) == "" {
+		return nil
+	}
+	client, err := a.gameCastClient(a.gameCastProfileForRequest(""))
+	if err != nil {
+		return err
+	}
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	requestCtx, cancelRequest := context.WithTimeout(ctx, 5*time.Second)
+	defer cancelRequest()
+	_, _, err = client.ReleaseShare(requestCtx, gamecast.ShareLeaseRequest{
+		Room:          lease.Room,
+		ParticipantID: lease.ParticipantID,
+		LeaseID:       lease.LeaseID,
+		TTL:           15,
+	})
+	return err
+}
+
+func isGameCastLeaseGone(err error) bool {
+	var apiError *gamecast.APIError
+	return errors.As(err, &apiError) && apiError.Code == "share_lease_expired"
+}
+
+func (a *App) postGameCastRoomState(state GameCastRoomState) (GameCastRoomState, error) {
+	client, err := a.gameCastClient(a.gameCastProfileForRequest(""))
+	if err != nil {
+		return GameCastRoomState{}, err
+	}
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	posted, err := client.PostRoomState(requestCtx, state)
+	if err != nil {
+		return GameCastRoomState{}, err
+	}
+	a.rememberGameCastRoom(state.Room)
+	return posted, nil
+}
+
+func (a *App) rememberGameCastRoom(roomID string) {
+	roomID = strings.TrimSpace(roomID)
+	if roomID == "" {
+		return
+	}
+	a.mu.Lock()
+	if a.cfg == nil {
+		a.cfg = config.DefaultConfig()
+	}
+	a.cfg.LastRoomID = roomID
+	cfg := a.cfg
+	a.mu.Unlock()
+	if err := config.Save(cfg); err != nil {
+		log.Printf("save last gamecast room failed: %v", err)
+	}
+}
+
+func (a *App) gameCastClient(profile gamecast.Profile) (*gamecast.Client, error) {
+	if err := a.ensureGameCastJar(profile); err != nil {
+		return nil, err
+	}
+	a.mu.Lock()
+	jar := a.gamecastJar
+	a.mu.Unlock()
+	return gamecast.NewClientWithJar(profile, jar)
+}
+
+func (a *App) ensureGameCastJar(profile gamecast.Profile) error {
+	a.mu.Lock()
+	jar := a.gamecastJar
+	a.mu.Unlock()
+	if jar == nil {
+		nextJar, err := session.New("")
+		if err != nil {
+			return err
+		}
+		jar = nextJar
+		a.mu.Lock()
+		a.gamecastJar = jar
+		a.mu.Unlock()
+	}
+	return jar.Load(profile.BaseURL)
+}
+
+func (a *App) saveGameCastJar(profile gamecast.Profile) error {
+	a.mu.Lock()
+	jar := a.gamecastJar
+	a.mu.Unlock()
+	if jar == nil {
+		return nil
+	}
+	return jar.Save(profile.BaseURL)
+}
+
+func (a *App) persistGameCastHistory(history []gamecast.HistoryEntry, syncRemote bool) {
+	history = rooms.NormalizeHistory(history)
+	a.mu.Lock()
+	if a.cfg == nil {
+		a.cfg = config.DefaultConfig()
+	}
+	a.cfg.GameCast.RoomHistory = make([]config.GameCastRoomHistoryEntry, 0, len(history))
+	for _, entry := range history {
+		a.cfg.GameCast.RoomHistory = append(a.cfg.GameCast.RoomHistory, config.GameCastRoomHistoryEntry{
+			ID:   entry.ID,
+			Time: entry.Time,
+		})
+	}
+	cfg := a.cfg
+	a.mu.Unlock()
+	if err := config.Save(cfg); err != nil {
+		log.Printf("save gamecast history failed: %v", err)
+	}
+	if !syncRemote {
+		return
+	}
+	client, err := a.gameCastClient(a.gameCastProfileForRequest(""))
+	if err != nil {
+		return
+	}
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	if err := client.SaveHistory(requestCtx, history); err != nil {
+		log.Printf("sync gamecast history failed: %v", err)
+	}
+}
+
+func localGameCastHistoryLocked(cfg *config.Config) []gamecast.HistoryEntry {
+	if cfg == nil {
+		return nil
+	}
+	out := make([]gamecast.HistoryEntry, 0, len(cfg.GameCast.RoomHistory))
+	for _, entry := range cfg.GameCast.RoomHistory {
+		out = append(out, gamecast.HistoryEntry{
+			ID:   entry.ID,
+			Time: entry.Time,
+		})
+	}
+	return rooms.NormalizeHistory(out)
+}
+
+func (a *App) gameCastUserLabel() string {
+	sessionState, err := a.GetGameCastSession()
+	if err == nil && sessionState.User != "" && sessionState.User != "guest" {
+		return sessionState.User
+	}
+	if name := a.configuredDisplayName(); name != "" {
+		return name
+	}
+	return "PartyLAN"
+}
+
+func gameCastSessionStateFromConfig(cfg gamecast.ServerConfig) GameCastSessionState {
+	return GameCastSessionState{
+		User:     cfg.User,
+		LoggedIn: cfg.LoggedIn,
+		AuthMode: cfg.AuthMode,
+		Version:  cfg.Version,
+		RoomName: cfg.RoomName,
+	}
+}
+
+func (a *App) gameCastProfileForRequest(baseURL string) gamecast.Profile {
+	a.mu.Lock()
+	cfg := a.cfg
+	a.mu.Unlock()
+	profile := gameCastProfileFromConfig(cfg)
+	if strings.TrimSpace(baseURL) != "" {
+		normalized, err := gamecast.NormalizeBaseURL(baseURL)
+		if err == nil && normalized != profile.BaseURL {
+			profile.BaseURL = normalized
+			profile.TrustedCertificateSHA256 = ""
+		} else if err == nil {
+			profile.BaseURL = normalized
+		}
+	}
+	return profile
+}
+
+func gameCastProfileFromConfig(cfg *config.Config) gamecast.Profile {
+	if cfg == nil {
+		cfg = config.DefaultConfig()
+	}
+	baseURL := cfg.GameCast.BaseURL
+	if strings.TrimSpace(baseURL) == "" {
+		baseURL = gamecast.DefaultBaseURL
+	}
+	normalized, err := gamecast.NormalizeBaseURL(baseURL)
+	if err != nil {
+		normalized = gamecast.DefaultBaseURL
+	}
+	displayName := normalizeDisplayName(cfg.GameCast.DisplayName)
+	if displayName == "" {
+		displayName = normalizeDisplayName(cfg.DisplayName)
+	}
+	return gamecast.Profile{
+		BaseURL:                  normalized,
+		DisplayName:              displayName,
+		TrustedCertificateSHA256: gamecast.NormalizeFingerprint(cfg.GameCast.TrustedCertificateSHA256),
+	}
+}
+
+func gameCastProfileForUI(cfg *config.Config) GameCastProfile {
+	profile := gameCastProfileFromConfig(cfg)
+	return GameCastProfile{
+		BaseURL:                  profile.BaseURL,
+		DisplayName:              profile.DisplayName,
+		TrustedCertificateSHA256: profile.TrustedCertificateSHA256,
+	}
+}
+
+func normalizeGameCastLayer(layer string) string {
+	switch strings.ToLower(strings.TrimSpace(layer)) {
+	case "q", "h", "f", "auto":
+		return strings.ToLower(strings.TrimSpace(layer))
+	default:
+		return "auto"
+	}
+}
+
+func (a *App) emitGameCastSignal(message json.RawMessage) {
+	if a.ctx == nil {
+		return
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(message, &payload); err != nil {
+		log.Printf("[gamecast/ws] invalid signal payload: %v", err)
+		return
+	}
+	runtime.EventsEmit(a.ctx, string(app.EventGameCastSignal), payload)
+}
+
+func (a *App) emitGameCastStatus(status gamecastws.Status) {
+	if a.ctx == nil {
+		return
+	}
+	runtime.EventsEmit(a.ctx, string(app.EventGameCastStatus), status)
 }
 
 func (a *App) configuredDisplayName() string {
@@ -1962,7 +4685,7 @@ func (a *App) setupRoomCallbacks(r *room.RoomImpl) {
 		a.room = nil
 		runtime.EventsEmit(a.ctx, string(app.EventRoomLeft), nil)
 		a.emitRuntimeStatus()
-		a.emitError(app.ErrCodeRoomInvalidated, "褰撳墠鎴块棿杩炴帴宸插け鏁堬紝璇烽噸鏂板垱寤烘垨鍔犲叆鎴块棿")
+		a.emitError(app.ErrCodeRoomInvalidated, "当前房间连接已失效，请重新创建或加入房间。")
 	})
 }
 
@@ -2073,10 +4796,14 @@ func (a *App) emitRuntimeStatus() {
 func (a *App) runtimeStatusEvent() app.RuntimeStatusEvent {
 	runtimeInfo := a.network.GetRuntimeInfo()
 	mediaHealth := a.mediaRuntimeHealth()
+	networkBackend := describeNetworkBackend(a.network)
+	if appmode.ResolveMode() == appmode.ModeGameCastClient {
+		networkBackend = string(appmode.ModeGameCastClient)
+	}
 
 	return app.RuntimeStatusEvent{
 		Mode:           string(appmode.ResolveMode()),
-		NetworkBackend: describeNetworkBackend(a.network),
+		NetworkBackend: networkBackend,
 		NetworkState:   runtimeInfo.BackendState,
 		NetworkAuthURL: runtimeInfo.AuthURL,
 		NetworkHealth:  runtimeInfo.Health,

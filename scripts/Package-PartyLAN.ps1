@@ -1,6 +1,6 @@
 param(
-  [ValidateSet('loopback', 'lan', 'networked', 'tailscale-system')]
-  [string]$Mode = 'tailscale-system',
+  [ValidateSet('gamecast-client', 'loopback', 'lan', 'networked', 'tailscale-system')]
+  [string]$Mode = 'gamecast-client',
 
   [switch]$UseTsnet,
   [switch]$UseNativeMedia = $true,

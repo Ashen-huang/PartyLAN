@@ -35,7 +35,7 @@
   padding: 10px 12px;
   border-radius: 14px;
   border: 1px solid rgba(87, 128, 164, 0.18);
-  background: rgba(255, 255, 255, 0.54);
+  background: var(--surface-muted);
   color: var(--text-secondary);
   font-size: 11px;
   line-height: 1.45;
@@ -62,18 +62,20 @@
 }
 
 .room-btn.create {
-  background: linear-gradient(135deg, var(--accent-strong), var(--accent-soft));
-  color: #f5ffff;
-  box-shadow: 0 14px 24px rgba(19, 110, 135, 0.18);
+  background: var(--accent-bg);
+  color: var(--on-accent);
+  border-color: var(--border-highlight);
+  box-shadow: 0 10px 24px var(--highlight-glow);
 }
 
 .room-btn.create:hover {
-  background: linear-gradient(135deg, #0e7f99, #3fd7c0);
+  background: var(--accent-hover);
 }
 
 .room-btn.join {
   background: var(--accent-bg);
-  color: var(--text-primary);
+  color: var(--on-accent);
+  border-color: var(--border-highlight);
   white-space: nowrap;
 }
 
@@ -97,13 +99,13 @@
 }
 
 .room-btn.share-start {
-  background: linear-gradient(135deg, var(--success-strong), #67dbc4);
-  color: #07242a;
-  box-shadow: 0 16px 28px rgba(57, 208, 183, 0.2);
+  background: var(--accent-bg);
+  color: var(--on-accent);
+  box-shadow: 0 10px 24px var(--highlight-glow);
 }
 
 .room-btn.share-start:hover {
-  background: linear-gradient(135deg, #1bc5a7, #7be7d5);
+  background: var(--accent-hover);
 }
 
 .room-btn.share-stop {
