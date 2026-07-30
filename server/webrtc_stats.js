@@ -9,6 +9,315 @@
     return typeof value === 'number' && Number.isFinite(value) ? value : 0;
   }
 
+  function finiteCounter(value) {
+    return typeof value === 'number' && Number.isFinite(value) && value >= 0
+      ? value
+      : undefined;
+  }
+
+  function isDiagnosticVideoRtp(item, type) {
+    return !!item &&
+      item.type === type &&
+      (item.kind === 'video' || item.mediaType === 'video') &&
+      item.active !== false;
+  }
+
+  function sortedIds(items) {
+    return items.map(function (item) { return String(item.id || ''); }).sort();
+  }
+
+  function sameIds(left, right) {
+    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) {
+      return false;
+    }
+    for (var index = 0; index < left.length; index += 1) {
+      if (left[index] !== right[index]) return false;
+    }
+    return true;
+  }
+
+  function collectMetric(items, field, scale) {
+    if (!items.length) return undefined;
+    var multiplier = scale || 1;
+    var byId = Object.create(null);
+    var total = 0;
+    for (var index = 0; index < items.length; index += 1) {
+      var item = items[index];
+      var value = finiteCounter(item[field]);
+      var id = String(item.id || '');
+      if (value === undefined || !id) return undefined;
+      value *= multiplier;
+      byId[id] = value;
+      total += value;
+    }
+    return {total: total, byId: byId};
+  }
+
+  function collectMediaSource(stats, outbound) {
+    if (!outbound.length) return {ids: [], framesCaptured: undefined};
+    var seen = Object.create(null);
+    var ids = [];
+    for (var index = 0; index < outbound.length; index += 1) {
+      var sourceId = String(outbound[index].mediaSourceId || '');
+      if (!sourceId) return {ids: [], framesCaptured: undefined};
+      if (!seen[sourceId]) {
+        seen[sourceId] = true;
+        ids.push(sourceId);
+      }
+    }
+    ids.sort();
+
+    var byId = Object.create(null);
+    var total = 0;
+    for (var sourceIndex = 0; sourceIndex < ids.length; sourceIndex += 1) {
+      var id = ids[sourceIndex];
+      var source = stats.get(id);
+      var frames = finiteCounter(source && source.frames);
+      if (
+        !source || source.type !== 'media-source' ||
+        (source.kind !== 'video' && source.mediaType !== 'video') ||
+        frames === undefined
+      ) {
+        return {ids: ids, framesCaptured: undefined};
+      }
+      byId[id] = frames;
+      total += frames;
+    }
+    return {ids: ids, framesCaptured: {total: total, byId: byId}};
+  }
+
+  function collectDiagnosticSnapshot(stats) {
+    var outbound = [];
+    var inbound = [];
+    stats.forEach(function (item) {
+      if (isDiagnosticVideoRtp(item, 'outbound-rtp')) outbound.push(item);
+      if (isDiagnosticVideoRtp(item, 'inbound-rtp')) inbound.push(item);
+    });
+    outbound.sort(function (left, right) {
+      return String(left.id || '').localeCompare(String(right.id || ''));
+    });
+    inbound.sort(function (left, right) {
+      return String(left.id || '').localeCompare(String(right.id || ''));
+    });
+
+    var mediaSource = collectMediaSource(stats, outbound);
+    return {
+      outboundIds: sortedIds(outbound),
+      inboundIds: sortedIds(inbound),
+      mediaSourceIds: mediaSource.ids,
+      outbound: {
+        framesEncoded: collectMetric(outbound, 'framesEncoded'),
+        framesSent: collectMetric(outbound, 'framesSent'),
+        keyFramesEncoded: collectMetric(outbound, 'keyFramesEncoded'),
+        pliCount: collectMetric(outbound, 'pliCount'),
+        nackCount: collectMetric(outbound, 'nackCount'),
+        retransmittedPacketsSent: collectMetric(outbound, 'retransmittedPacketsSent'),
+        retransmittedBytesSent: collectMetric(outbound, 'retransmittedBytesSent'),
+        totalPacketSendDelayMs: collectMetric(outbound, 'totalPacketSendDelay', 1000),
+        packetsSent: collectMetric(outbound, 'packetsSent')
+      },
+      inbound: {
+        pliCount: collectMetric(inbound, 'pliCount'),
+        nackCount: collectMetric(inbound, 'nackCount')
+      },
+      mediaSource: {
+        framesCaptured: mediaSource.framesCaptured
+      }
+    };
+  }
+
+  function deltaMetric(current, previous) {
+    if (!current || !previous) return {available: false, reset: false};
+    var currentIds = Object.keys(current.byId).sort();
+    var previousIds = Object.keys(previous.byId).sort();
+    if (!sameIds(currentIds, previousIds)) return {available: false, reset: false};
+    var total = 0;
+    for (var index = 0; index < currentIds.length; index += 1) {
+      var id = currentIds[index];
+      var value = current.byId[id] - previous.byId[id];
+      if (value < 0) return {available: false, reset: true};
+      total += value;
+    }
+    return {available: true, reset: false, value: total};
+  }
+
+  function setMetricTotal(sample, metric, field) {
+    if (metric) sample[field] = metric.total;
+  }
+
+  function applyMetricDelta(sample, current, previous, field, fpsField, elapsedMs, allowed, reasons) {
+    var result = deltaMetric(current, previous);
+    if (result.reset) reasons['optional-counter-reset'] = true;
+    if (!allowed || !result.available) return result;
+    sample[field] = result.value;
+    if (fpsField) sample[fpsField] = result.value * 1000 / elapsedMs;
+    return result;
+  }
+
+  function applyDiagnosticTelemetry(sample, current, previous, elapsedMs) {
+    var currentOutbound = current.outbound;
+    var currentInbound = current.inbound;
+    var currentMediaSource = current.mediaSource;
+
+    setMetricTotal(sample, currentMediaSource.framesCaptured, 'framesCaptured');
+    setMetricTotal(sample, currentOutbound.framesEncoded, 'framesEncoded');
+    setMetricTotal(sample, currentOutbound.framesSent, 'framesSent');
+    setMetricTotal(sample, currentOutbound.keyFramesEncoded, 'keyFramesEncoded');
+    setMetricTotal(sample, currentOutbound.pliCount, 'outboundPliCount');
+    setMetricTotal(sample, currentOutbound.nackCount, 'outboundNackCount');
+    setMetricTotal(sample, currentInbound.pliCount, 'inboundPliCount');
+    setMetricTotal(sample, currentInbound.nackCount, 'inboundNackCount');
+    setMetricTotal(sample, currentOutbound.retransmittedPacketsSent, 'retransmittedPacketsSent');
+    setMetricTotal(sample, currentOutbound.retransmittedBytesSent, 'retransmittedBytesSent');
+    setMetricTotal(sample, currentOutbound.totalPacketSendDelayMs, 'totalPacketSendDelayMs');
+
+    if (!previous || !previous.diagnostic) return;
+    var previousDiagnostic = previous.diagnostic;
+    var outboundSame = sameIds(current.outboundIds, previousDiagnostic.outboundIds);
+    var inboundSame = sameIds(current.inboundIds, previousDiagnostic.inboundIds);
+    var mediaSourceSame = sameIds(current.mediaSourceIds, previousDiagnostic.mediaSourceIds);
+    var reasons = Object.create(null);
+    if (!outboundSame) reasons['outbound-identity-changed'] = true;
+    if (!inboundSame) reasons['inbound-identity-changed'] = true;
+    if (!mediaSourceSame) reasons['media-source-identity-changed'] = true;
+
+    var previousOutbound = previousDiagnostic.outbound || {};
+    var previousInbound = previousDiagnostic.inbound || {};
+    var previousMediaSource = previousDiagnostic.mediaSource || {};
+    var hasElapsedWindow = elapsedMs > 0;
+    var canUseOutbound = hasElapsedWindow && outboundSame;
+    var canUseInbound = hasElapsedWindow && inboundSame;
+    var canUseMediaSource = hasElapsedWindow && mediaSourceSame;
+
+    applyMetricDelta(
+      sample,
+      currentMediaSource.framesCaptured,
+      previousMediaSource.framesCaptured,
+      'framesCapturedDelta',
+      'capturedFps',
+      elapsedMs,
+      canUseMediaSource,
+      reasons
+    );
+    applyMetricDelta(
+      sample,
+      currentOutbound.framesEncoded,
+      previousOutbound.framesEncoded,
+      'framesEncodedDelta',
+      'encodedFps',
+      elapsedMs,
+      canUseOutbound,
+      reasons
+    );
+    applyMetricDelta(
+      sample,
+      currentOutbound.framesSent,
+      previousOutbound.framesSent,
+      'framesSentDelta',
+      'sentFps',
+      elapsedMs,
+      canUseOutbound,
+      reasons
+    );
+    applyMetricDelta(
+      sample,
+      currentOutbound.keyFramesEncoded,
+      previousOutbound.keyFramesEncoded,
+      'keyFramesEncodedDelta',
+      '',
+      elapsedMs,
+      canUseOutbound,
+      reasons
+    );
+    applyMetricDelta(
+      sample,
+      currentOutbound.pliCount,
+      previousOutbound.pliCount,
+      'outboundPliCountDelta',
+      '',
+      elapsedMs,
+      canUseOutbound,
+      reasons
+    );
+    applyMetricDelta(
+      sample,
+      currentOutbound.nackCount,
+      previousOutbound.nackCount,
+      'outboundNackCountDelta',
+      '',
+      elapsedMs,
+      canUseOutbound,
+      reasons
+    );
+    applyMetricDelta(
+      sample,
+      currentInbound.pliCount,
+      previousInbound.pliCount,
+      'inboundPliCountDelta',
+      '',
+      elapsedMs,
+      canUseInbound,
+      reasons
+    );
+    applyMetricDelta(
+      sample,
+      currentInbound.nackCount,
+      previousInbound.nackCount,
+      'inboundNackCountDelta',
+      '',
+      elapsedMs,
+      canUseInbound,
+      reasons
+    );
+    applyMetricDelta(
+      sample,
+      currentOutbound.retransmittedPacketsSent,
+      previousOutbound.retransmittedPacketsSent,
+      'retransmittedPacketsSentDelta',
+      '',
+      elapsedMs,
+      canUseOutbound,
+      reasons
+    );
+    applyMetricDelta(
+      sample,
+      currentOutbound.retransmittedBytesSent,
+      previousOutbound.retransmittedBytesSent,
+      'retransmittedBytesSentDelta',
+      '',
+      elapsedMs,
+      canUseOutbound,
+      reasons
+    );
+    var delay = applyMetricDelta(
+      sample,
+      currentOutbound.totalPacketSendDelayMs,
+      previousOutbound.totalPacketSendDelayMs,
+      'totalPacketSendDelayDeltaMs',
+      '',
+      elapsedMs,
+      canUseOutbound,
+      reasons
+    );
+    var sentPackets = deltaMetric(currentOutbound.packetsSent, previousOutbound.packetsSent);
+    if (sentPackets.reset) reasons['optional-counter-reset'] = true;
+    if (
+      canUseOutbound && delay.available && sentPackets.available &&
+      sentPackets.value > 0
+    ) {
+      sample.averagePacketSendDelayMs = delay.value / sentPackets.value;
+    }
+
+    var reasonOrder = [
+      'outbound-identity-changed',
+      'inbound-identity-changed',
+      'media-source-identity-changed',
+      'optional-counter-reset'
+    ];
+    var resetReasons = reasonOrder.filter(function (reason) { return reasons[reason]; });
+    if (resetReasons.length) sample.telemetryResetReason = resetReasons.join(',');
+  }
+
   function addressFamily(candidate) {
     var address = String(candidate && (candidate.address || candidate.ip) || '');
     if (!address) return 'unknown';
@@ -118,10 +427,12 @@
     var pairDescription = describeSelectedPair(stats);
     var pair = pairDescription.pairId ? stats.get(pairDescription.pairId) || {} : {};
     var currentTotals = totals(stats);
+    var diagnostic = collectDiagnosticSnapshot(stats);
     var snapshot = Object.assign({}, currentTotals, {
       now: now,
       pairId: pairDescription.pairId,
-      generation: number(context.generation)
+      generation: number(context.generation),
+      diagnostic: diagnostic
     });
     var sample = Object.assign({}, pairDescription, {
       now: now,
@@ -173,7 +484,6 @@
         sample.packetsSentDelta = sent;
         sample.framesDecodedDelta = decoded;
         sample.framesDroppedDelta = dropped;
-        sample.framesEncodedDelta = encoded;
         sample.lossPercent = received + lost > 0 ? lost * 100 / (received + lost) : 0;
         sample.downKbps = recvBytes * 8 / elapsedMs;
         sample.upKbps = sentBytes * 8 / elapsedMs;
@@ -185,6 +495,15 @@
         }
       }
     }
+    var diagnosticElapsedMs = previous && typeof previous.now === 'number'
+      ? now - previous.now
+      : 0;
+    applyDiagnosticTelemetry(
+      sample,
+      diagnostic,
+      previous,
+      diagnosticElapsedMs
+    );
     return sample;
   }
 
