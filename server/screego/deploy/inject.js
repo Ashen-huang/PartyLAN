@@ -2928,12 +2928,18 @@
 
   function reportStats(data) {
     try {
-      fetch(STATS_URL, {
+      return fetch(STATS_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
-      }).catch(function () {});
-    } catch (e) {}
+      }).then(function (response) {
+        return !!response.ok;
+      }, function () {
+        return false;
+      });
+    } catch (e) {
+      return Promise.resolve(false);
+    }
   }
 
   function updateStats(overlay, descriptor, showOverlay) {
@@ -2992,6 +2998,21 @@
           resolutionChanged: !!pc._gcResolutionChanged
         });
         pc._gcStatsSnapshot = diagnosticSample.snapshot;
+        if (
+          !pc._gcTelemetryReasonLatch &&
+          typeof GameCastWebRTCStats.createTelemetryReasonLatch === 'function'
+        ) {
+          pc._gcTelemetryReasonLatch = GameCastWebRTCStats.createTelemetryReasonLatch();
+        }
+        if (
+          pc._gcTelemetryReasonLatch && diagnosticSample.telemetryResetReason &&
+          typeof GameCastWebRTCStats.recordTelemetryResetReasons === 'function'
+        ) {
+          GameCastWebRTCStats.recordTelemetryResetReasons(
+            pc._gcTelemetryReasonLatch,
+            diagnosticSample.telemetryResetReason
+          );
+        }
         pc._gcSourceChanged = false;
         pc._gcResolutionChanged = false;
         if (typeof GameCastWebRTCQuality !== 'undefined') {
@@ -3169,7 +3190,19 @@
             'invalidReason', 'rttMs', 'jitterMs', 'lossPercent', 'upKbps',
             'downKbps', 'availableOutgoingBitrate', 'targetBitrate',
             'packetsReceivedDelta', 'packetsLostDelta', 'packetsSentDelta',
-            'framesDecodedDelta', 'framesDroppedDelta', 'framesEncodedDelta',
+            'framesDecodedDelta', 'framesDroppedDelta',
+            'framesCaptured', 'framesCapturedDelta', 'capturedFps',
+            'framesEncoded', 'framesEncodedDelta', 'encodedFps',
+            'framesSent', 'framesSentDelta', 'sentFps',
+            'keyFramesEncoded', 'keyFramesEncodedDelta',
+            'outboundPliCount', 'outboundPliCountDelta',
+            'outboundNackCount', 'outboundNackCountDelta',
+            'inboundPliCount', 'inboundPliCountDelta',
+            'inboundNackCount', 'inboundNackCountDelta',
+            'retransmittedPacketsSent', 'retransmittedPacketsSentDelta',
+            'retransmittedBytesSent', 'retransmittedBytesSentDelta',
+            'totalPacketSendDelayMs', 'totalPacketSendDelayDeltaMs',
+            'averagePacketSendDelayMs',
             'qualityLimitationReason'
           ].forEach(function (key) {
             if (diagnosticSample[key] !== undefined) reportPayload[key] = diagnosticSample[key];
@@ -3190,7 +3223,19 @@
             adaptiveMaxBitrate: adaptiveProfile.maxBitrate
           });
         }
-        reportStats(reportPayload);
+        if (
+          pc._gcTelemetryReasonLatch &&
+          typeof GameCastWebRTCStats !== 'undefined' &&
+          typeof GameCastWebRTCStats.sendTelemetryReport === 'function'
+        ) {
+          GameCastWebRTCStats.sendTelemetryReport(
+            pc._gcTelemetryReasonLatch,
+            reportPayload,
+            reportStats
+          );
+        } else {
+          reportStats(reportPayload);
+        }
         if (adaptiveDecision) pc._gcAdaptivePendingDecision = '';
       }
     }).catch(function (err) {

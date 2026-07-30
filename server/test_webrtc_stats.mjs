@@ -4,7 +4,14 @@ import {createRequire} from 'node:module';
 import test from 'node:test';
 
 const require = createRequire(import.meta.url);
-const {buildViewerQualityReport, buildWebRTCSample, describeSelectedPair} = require('./webrtc_stats.js');
+const {
+  buildViewerQualityReport,
+  buildWebRTCSample,
+  createTelemetryReasonLatch,
+  describeSelectedPair,
+  recordTelemetryResetReasons,
+  sendTelemetryReport,
+} = require('./webrtc_stats.js');
 
 const report = (entries) => new Map(entries.map((item) => [item.id, item]));
 const connectedReport = (entries) => report([
@@ -21,6 +28,14 @@ const connectedReport = (entries) => report([
   {id: 'remote', type: 'remote-candidate', candidateType: 'host', protocol: 'udp', address: '10.0.0.3'},
   ...entries,
 ]);
+
+const deferred = () => {
+  let resolve;
+  const promise = new Promise((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return {promise, resolve};
+};
 
 test('selected candidates distinguish direct, TURN UDP, TURN TCP and address family', () => {
   const direct = report([
@@ -466,6 +481,95 @@ test('legacy aggregate framesEncoded reset still invalidates the core sample', (
   assert.equal(next.framesEncoded, 30);
   assert.equal(next.framesEncodedDelta, undefined);
   assert.equal(next.telemetryResetReason, 'optional-counter-reset');
+});
+
+test('telemetry reason latch filters, deduplicates and orders tokens', async () => {
+  const latch = createTelemetryReasonLatch();
+  recordTelemetryResetReasons(
+    latch,
+    'optional-counter-reset,unknown,outbound-identity-changed,' +
+      'media-source-identity-changed,outbound-identity-changed,inbound-identity-changed',
+  );
+  let sentPayload;
+
+  const sent = await sendTelemetryReport(
+    latch,
+    {event: 'webrtc_sample', telemetryResetReason: 'untrusted'},
+    async (payload) => {
+      sentPayload = payload;
+      return true;
+    },
+  );
+
+  assert.equal(sent, true);
+  assert.equal(
+    sentPayload.telemetryResetReason,
+    'outbound-identity-changed,inbound-identity-changed,' +
+      'media-source-identity-changed,optional-counter-reset',
+  );
+
+  let clearedPayload;
+  assert.equal(await sendTelemetryReport(latch, {event: 'next'}, (payload) => {
+    clearedPayload = payload;
+    return true;
+  }), true);
+  assert.equal(clearedPayload.telemetryResetReason, undefined);
+});
+
+test('telemetry failures retain reasons and normalize false, reject and throw', async () => {
+  const latch = createTelemetryReasonLatch();
+  recordTelemetryResetReasons(latch, 'optional-counter-reset');
+
+  assert.equal(await sendTelemetryReport(latch, {}, () => false), false);
+  assert.equal(await sendTelemetryReport(latch, {}, () => Promise.reject(new Error('offline'))), false);
+  assert.equal(await sendTelemetryReport(latch, {}, () => {
+    throw new Error('sync failure');
+  }), false);
+
+  let retryPayload;
+  assert.equal(await sendTelemetryReport(latch, {}, (payload) => {
+    retryPayload = payload;
+    return true;
+  }), true);
+  assert.equal(retryPayload.telemetryResetReason, 'optional-counter-reset');
+});
+
+test('telemetry success cannot clear newer different or same-token reasons', async () => {
+  const latch = createTelemetryReasonLatch();
+  const firstResponse = deferred();
+  recordTelemetryResetReasons(latch, 'outbound-identity-changed');
+  let firstPayload;
+  const firstRequest = sendTelemetryReport(latch, {request: 1}, (payload) => {
+    firstPayload = payload;
+    return firstResponse.promise;
+  });
+  await Promise.resolve();
+
+  recordTelemetryResetReasons(
+    latch,
+    'inbound-identity-changed,outbound-identity-changed',
+  );
+  firstResponse.resolve(true);
+  assert.equal(await firstRequest, true);
+  assert.equal(firstPayload.telemetryResetReason, 'outbound-identity-changed');
+
+  let retryPayload;
+  assert.equal(await sendTelemetryReport(latch, {request: 2}, (payload) => {
+    retryPayload = payload;
+    return true;
+  }), true);
+  assert.equal(
+    retryPayload.telemetryResetReason,
+    'outbound-identity-changed,inbound-identity-changed',
+  );
+
+  recordTelemetryResetReasons(latch, 'media-source-identity-changed');
+  let reappearedPayload;
+  assert.equal(await sendTelemetryReport(latch, {request: 3}, (payload) => {
+    reappearedPayload = payload;
+    return true;
+  }), true);
+  assert.equal(reappearedPayload.telemetryResetReason, 'media-source-identity-changed');
 });
 
 test('source and deployed WebRTC stats modules stay byte-identical', () => {

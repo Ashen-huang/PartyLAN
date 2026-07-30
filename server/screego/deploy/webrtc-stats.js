@@ -5,6 +5,13 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
+  var TELEMETRY_RESET_REASON_ORDER = [
+    'outbound-identity-changed',
+    'inbound-identity-changed',
+    'media-source-identity-changed',
+    'optional-counter-reset'
+  ];
+
   function number(value) {
     return typeof value === 'number' && Number.isFinite(value) ? value : 0;
   }
@@ -13,6 +20,71 @@
     return typeof value === 'number' && Number.isFinite(value) && value >= 0
       ? value
       : undefined;
+  }
+
+  function createTelemetryReasonLatch() {
+    return {nextVersion: 0, reasons: Object.create(null)};
+  }
+
+  function recordTelemetryResetReasons(latch, reasonText) {
+    if (!latch || typeof latch !== 'object') return false;
+    if (!latch.reasons || typeof latch.reasons !== 'object') {
+      latch.reasons = Object.create(null);
+    }
+    if (!Number.isFinite(latch.nextVersion) || latch.nextVersion < 0) {
+      latch.nextVersion = 0;
+    }
+    var recorded = false;
+    String(reasonText || '').split(',').forEach(function (reason) {
+      var token = reason.trim();
+      if (TELEMETRY_RESET_REASON_ORDER.indexOf(token) < 0) return;
+      latch.nextVersion += 1;
+      latch.reasons[token] = latch.nextVersion;
+      recorded = true;
+    });
+    return recorded;
+  }
+
+  function telemetryReasonBatch(latch) {
+    var versions = Object.create(null);
+    var reasons = [];
+    var source = latch && latch.reasons && typeof latch.reasons === 'object'
+      ? latch.reasons
+      : {};
+    TELEMETRY_RESET_REASON_ORDER.forEach(function (reason) {
+      var version = source[reason];
+      if (typeof version !== 'number' || !Number.isFinite(version)) return;
+      versions[reason] = version;
+      reasons.push(reason);
+    });
+    return {versions: versions, text: reasons.join(',')};
+  }
+
+  function acknowledgeTelemetryReasonBatch(latch, batch) {
+    if (!latch || !latch.reasons) return;
+    Object.keys(batch.versions).forEach(function (reason) {
+      if (latch.reasons[reason] === batch.versions[reason]) {
+        delete latch.reasons[reason];
+      }
+    });
+  }
+
+  function sendTelemetryReport(latch, payload, send) {
+    var batch = telemetryReasonBatch(latch);
+    var reportPayload = Object.assign({}, payload || {});
+    delete reportPayload.telemetryResetReason;
+    if (batch.text) reportPayload.telemetryResetReason = batch.text;
+
+    return Promise.resolve().then(function () {
+      if (typeof send !== 'function') return false;
+      return send(reportPayload);
+    }).then(function (sent) {
+      if (sent !== true) return false;
+      acknowledgeTelemetryReasonBatch(latch, batch);
+      return true;
+    }, function () {
+      return false;
+    });
   }
 
   function isDiagnosticVideoRtp(item, type) {
@@ -308,13 +380,9 @@
       sample.averagePacketSendDelayMs = delay.value / sentPackets.value;
     }
 
-    var reasonOrder = [
-      'outbound-identity-changed',
-      'inbound-identity-changed',
-      'media-source-identity-changed',
-      'optional-counter-reset'
-    ];
-    var resetReasons = reasonOrder.filter(function (reason) { return reasons[reason]; });
+    var resetReasons = TELEMETRY_RESET_REASON_ORDER.filter(function (reason) {
+      return reasons[reason];
+    });
     if (resetReasons.length) sample.telemetryResetReason = resetReasons.join(',');
   }
 
@@ -536,6 +604,9 @@
   return {
     describeSelectedPair: describeSelectedPair,
     buildWebRTCSample: buildWebRTCSample,
-    buildViewerQualityReport: buildViewerQualityReport
+    buildViewerQualityReport: buildViewerQualityReport,
+    createTelemetryReasonLatch: createTelemetryReasonLatch,
+    recordTelemetryResetReasons: recordTelemetryResetReasons,
+    sendTelemetryReport: sendTelemetryReport
   };
 });
