@@ -118,6 +118,47 @@ test('viewer close releases its peer connection', async () => {
   assert.equal(states.at(-1), 'closed');
 });
 
+test('viewer ignores a remote track delivered after close', async () => {
+  installWebRTCFakes();
+  const streams = [];
+  const receiver = new GameCastReceiver({
+    serverBaseUrl: 'https://gamecast.test',
+    onSignal: () => undefined,
+    onRemoteStream: (stream) => streams.push(stream),
+  });
+
+  await receiver.handleSignal({ type: 'offer', sdp: 'v=0\r\n' });
+  const pc = FakePeerConnection.instances[0];
+  receiver.close('test complete');
+  pc.ontrack({ track: { id: 'late-video', kind: 'video' } });
+
+  assert.equal(streams.length, 0);
+});
+
+test('viewer ignores an in-flight stats result after close', async () => {
+  installWebRTCFakes();
+  const stats = [];
+  let resolveStats;
+  const receiver = new GameCastReceiver({
+    serverBaseUrl: 'https://gamecast.test',
+    onSignal: () => undefined,
+    onStats: (sample) => stats.push(sample),
+  });
+
+  await receiver.handleSignal({ type: 'offer', sdp: 'v=0\r\n' });
+  const pc = FakePeerConnection.instances[0];
+  pc.getStats = () => new Promise((resolve) => {
+    resolveStats = resolve;
+  });
+
+  const pending = receiver.emitStats();
+  receiver.close('test complete');
+  resolveStats(new Map());
+  await pending;
+
+  assert.equal(stats.length, 0);
+});
+
 test('viewer stats convert cumulative WebRTC counters into valid deltas', () => {
   const previous = {
     bytesReceived: 100000,

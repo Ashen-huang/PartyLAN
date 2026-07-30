@@ -90,4 +90,11 @@
 
 ## 执行记录
 
-- 待实施。
+- 已先建立红灯证据：Go 目标测试因缺少 WebSocket generation 门控而无法编译；Receiver 测试证明关闭后仍会接收迟到轨道并上报在途统计；观看者先进入场景证明 `status=connected + receiver=idle` 时旧判断不会恢复。
+- Go 层已加入单调递增 generation，并以 generation 与 client 实例双重校验消息/状态回调；连接替换先失效、再关闭，旧连接完成不能清除新连接。
+- 前端已加入令牌化 `GameCastViewerLifecycle`、单航班门控和有界三次恢复；WebSocket 拨号成功保留 attempt，只有当前 Receiver 收到远端媒体流后才清零。
+- 房间 `sharing=false`、当前信令关闭/报错、离开房间和角色切换均会先使令牌失效，再关闭并置空 Receiver，同时清理流与统计；Receiver 自身也拒绝关闭后的迟到轨道和异步统计结果。
+- 全部 34 项前端 Node 测试、前端生产构建、`go test ./...` 和 `go test -tags partylan_native_media ./...` 均通过。
+- `go vet . ./internal/gamecast/...` 通过；`go vet ./...` 仍会报告未改动 Windows 原生音视频桥接中的既有 `unsafe.Pointer` 告警。
+- 正式脚本已生成 `build/bin/PartyLAN.exe`，大小 20,383,232 字节，SHA-256 为 `A6B2EDFF9564B12FF54B191FF2386B4B0CD6356EBA9BC92732DBC83262C9D4C6`；原生媒体构建元数据校验及 `gamecast-client` 启动冒烟通过。
+- 本轮未部署或重启云端服务，也未推送远端。真实双机的“观看者先进入、主播后共享”和连续停止/重开共享验收仍需使用该 EXE 执行。

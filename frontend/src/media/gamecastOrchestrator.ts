@@ -44,6 +44,68 @@ export interface GameCastViewerReconnectInput {
   maxAttempts?: number;
 }
 
+export type GameCastViewerReconnectEvent =
+  | 'connection-started'
+  | 'attempt-started'
+  | 'websocket-connected'
+  | 'media-connected'
+  | 'sharing-stopped';
+
+export class GameCastViewerLifecycle {
+  private generation = 0;
+  private reconnectGeneration: number | null = null;
+
+  beginConnection(): number {
+    this.generation += 1;
+    this.reconnectGeneration = null;
+    return this.generation;
+  }
+
+  beginReconnect(): number | null {
+    if (this.reconnectGeneration !== null) {
+      return null;
+    }
+    this.generation += 1;
+    this.reconnectGeneration = this.generation;
+    return this.generation;
+  }
+
+  finishReconnect(generation: number | null): boolean {
+    if (generation === null || generation !== this.generation || generation !== this.reconnectGeneration) {
+      return false;
+    }
+    this.reconnectGeneration = null;
+    return true;
+  }
+
+  invalidate(): number {
+    this.generation += 1;
+    this.reconnectGeneration = null;
+    return this.generation;
+  }
+
+  current(): number {
+    return this.generation;
+  }
+
+  isCurrent(generation: number | null | undefined): boolean {
+    return typeof generation === 'number' && generation === this.generation;
+  }
+}
+
+export function reduceGameCastViewerReconnectAttempt(
+  current: number,
+  event: GameCastViewerReconnectEvent,
+): number {
+  if (event === 'attempt-started') {
+    return current + 1;
+  }
+  if (event === 'connection-started' || event === 'media-connected' || event === 'sharing-stopped') {
+    return 0;
+  }
+  return current;
+}
+
 export interface GameCastShareRuntimeEventInput {
   activeSharePath: GameCastSharePath | null;
   currentRoomId: string | null | undefined;
@@ -203,11 +265,13 @@ export async function promoteGameCastViewerToHost(
 
 export function shouldReconnectGameCastViewer(input: GameCastViewerReconnectInput): boolean {
   const maxAttempts = input.maxAttempts ?? 3;
-  const disconnected =
-    input.statusState === 'closed' ||
-    input.statusState === 'error' ||
+  const receiverUnavailable =
+    input.receiverState === 'idle' ||
     input.receiverState === 'closed' ||
     input.receiverState === 'error';
+  const signalingDisconnected =
+    input.statusState === 'closed' ||
+    input.statusState === 'error';
 
   return (
     input.role === 'viewer' &&
@@ -217,7 +281,9 @@ export function shouldReconnectGameCastViewer(input: GameCastViewerReconnectInpu
     input.roomSharing &&
     input.activeSharePath === null &&
     input.attempt < maxAttempts &&
-    disconnected
+    input.receiverState !== 'connecting' &&
+    input.receiverState !== 'connected' &&
+    (receiverUnavailable || signalingDisconnected)
   );
 }
 

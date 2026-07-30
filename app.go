@@ -79,6 +79,7 @@ type App struct {
 	voiceChannel               voice.VoiceChannel
 	mediaManager               *media.Manager
 	gamecastWS                 *gamecastws.Client
+	gamecastWSGeneration       uint64
 	gamecastNativeHost         *nativehost.Host
 	gamecastNativeShare        *shareSession
 	gamecastJar                *session.Jar
@@ -3179,19 +3180,24 @@ func (a *App) ConnectGameCastHost(roomID string) error {
 	}
 
 	a.closeGameCastWS()
+	generation := a.nextGameCastWSGeneration()
 	a.stopGameCastViewerIntent(true)
 	a.stopGameCastNativeHost()
-	client := a.newGameCastWSClient(roomID, "host", "")
+	client := a.newGameCastWSClient(roomID, "host", "", generation)
+	if !a.setGameCastWSIfCurrent(generation, client) {
+		return fmt.Errorf("gamecast websocket connection was superseded")
+	}
 	if err := client.Connect(ctx); err != nil {
+		a.clearGameCastWSIfCurrent(generation, client)
 		return err
+	}
+	if !a.gameCastWSIsCurrent(generation, client) {
+		_ = client.Close()
+		return fmt.Errorf("gamecast websocket connection was superseded")
 	}
 	if _, err := a.AddGameCastHistory(roomID); err != nil {
 		log.Printf("add gamecast history failed: %v", err)
 	}
-
-	a.mu.Lock()
-	a.gamecastWS = client
-	a.mu.Unlock()
 	return nil
 }
 
@@ -3653,6 +3659,7 @@ func (a *App) ConnectGameCastViewer(roomID, layer string) error {
 	}
 
 	a.closeGameCastWS()
+	generation := a.nextGameCastWSGeneration()
 	a.startGameCastViewerIntent(roomID)
 	select {
 	case <-ctx.Done():
@@ -3663,21 +3670,29 @@ func (a *App) ConnectGameCastViewer(roomID, layer string) error {
 		return ctx.Err()
 	case <-time.After(1500 * time.Millisecond):
 	}
-	client := a.newGameCastWSClient(roomID, "viewer", layer)
+	if !a.isCurrentGameCastWSGeneration(generation) {
+		return fmt.Errorf("gamecast websocket connection was superseded")
+	}
+	client := a.newGameCastWSClient(roomID, "viewer", layer, generation)
+	if !a.setGameCastWSIfCurrent(generation, client) {
+		return fmt.Errorf("gamecast websocket connection was superseded")
+	}
 	if err := client.Connect(ctx); err != nil {
-		a.stopGameCastViewerIntent(true)
-		if presenceStarted {
-			a.stopGameCastPresence(true)
+		if a.clearGameCastWSIfCurrent(generation, client) {
+			a.stopGameCastViewerIntent(true)
+			if presenceStarted {
+				a.stopGameCastPresence(true)
+			}
 		}
 		return err
+	}
+	if !a.gameCastWSIsCurrent(generation, client) {
+		_ = client.Close()
+		return fmt.Errorf("gamecast websocket connection was superseded")
 	}
 	if _, err := a.AddGameCastHistory(roomID); err != nil {
 		log.Printf("add gamecast history failed: %v", err)
 	}
-
-	a.mu.Lock()
-	a.gamecastWS = client
-	a.mu.Unlock()
 	return nil
 }
 
@@ -3775,20 +3790,89 @@ func gameCastQualityReportFromPayload(payload map[string]interface{}) (gamecast.
 	}, true
 }
 
-func (a *App) newGameCastWSClient(roomID, role, layer string) *gamecastws.Client {
-	return gamecastws.NewClient(gamecastws.Options{
+func (a *App) newGameCastWSClient(roomID, role, layer string, generation uint64) *gamecastws.Client {
+	var client *gamecastws.Client
+	client = gamecastws.NewClient(gamecastws.Options{
 		Profile: a.gameCastProfileForRequest(""),
 		RoomID:  roomID,
 		Role:    role,
 		Layer:   layer,
 		Name:    a.gameCastUserLabel(),
 		OnMessage: func(message json.RawMessage) {
-			a.emitGameCastSignal(message)
+			a.withCurrentGameCastWSClient(generation, client, func() {
+				a.emitGameCastSignal(message)
+			})
 		},
 		OnStatus: func(status gamecastws.Status) {
-			a.emitGameCastStatus(status)
+			a.withCurrentGameCastWSClient(generation, client, func() {
+				a.emitGameCastStatus(status)
+			})
 		},
 	})
+	return client
+}
+
+func (a *App) nextGameCastWSGeneration() uint64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.gamecastWSGeneration++
+	return a.gamecastWSGeneration
+}
+
+func (a *App) isCurrentGameCastWSGeneration(generation uint64) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.gamecastWSGeneration == generation
+}
+
+func (a *App) withCurrentGameCastWSGeneration(generation uint64, callback func()) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.gamecastWSGeneration != generation {
+		return false
+	}
+	callback()
+	return true
+}
+
+func (a *App) withCurrentGameCastWSClient(
+	generation uint64,
+	client *gamecastws.Client,
+	callback func(),
+) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.gamecastWSGeneration != generation || a.gamecastWS != client {
+		return false
+	}
+	callback()
+	return true
+}
+
+func (a *App) setGameCastWSIfCurrent(generation uint64, client *gamecastws.Client) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.gamecastWSGeneration != generation || a.gamecastWS != nil {
+		return false
+	}
+	a.gamecastWS = client
+	return true
+}
+
+func (a *App) clearGameCastWSIfCurrent(generation uint64, client *gamecastws.Client) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.gamecastWSGeneration != generation || a.gamecastWS != client {
+		return false
+	}
+	a.gamecastWS = nil
+	return true
+}
+
+func (a *App) gameCastWSIsCurrent(generation uint64, client *gamecastws.Client) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.gamecastWSGeneration == generation && a.gamecastWS == client
 }
 
 func (a *App) DisconnectGameCast() error {
@@ -3821,6 +3905,7 @@ func (a *App) SendGameCastSignal(signal map[string]interface{}) error {
 
 func (a *App) closeGameCastWS() {
 	a.mu.Lock()
+	a.gamecastWSGeneration++
 	client := a.gamecastWS
 	a.gamecastWS = nil
 	a.mu.Unlock()

@@ -177,7 +177,7 @@ export class GameCastReceiver {
     this.generation = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
     pc.onicecandidate = (event) => {
-      if (!event.candidate) {
+      if (this.pc !== pc || !event.candidate) {
         return;
       }
       void this.options.onSignal({
@@ -187,6 +187,9 @@ export class GameCastReceiver {
     };
 
     pc.ontrack = (event) => {
+      if (this.pc !== pc) {
+        return;
+      }
       const stream = this.remoteStream || new MediaStream();
       this.remoteStream = stream;
       if (!stream.getTracks().some((track) => track.id === event.track.id)) {
@@ -197,6 +200,9 @@ export class GameCastReceiver {
     };
 
     pc.onconnectionstatechange = () => {
+      if (this.pc !== pc) {
+        return;
+      }
       if (pc.connectionState === 'connected') {
         this.options.onStateChange?.('connected');
         this.startStats();
@@ -227,9 +233,21 @@ export class GameCastReceiver {
     this.options.onStateChange?.('connecting');
     const pc = this.createPeerConnection();
     await pc.setRemoteDescription(offer);
-    await this.flushPendingIce();
+    if (this.pc !== pc) {
+      return;
+    }
+    await this.flushPendingIce(pc);
+    if (this.pc !== pc) {
+      return;
+    }
     const answer = await pc.createAnswer();
+    if (this.pc !== pc) {
+      return;
+    }
     await pc.setLocalDescription(answer);
+    if (this.pc !== pc) {
+      return;
+    }
     await this.options.onSignal({
       type: 'answer',
       sdp: answer.sdp,
@@ -237,9 +255,10 @@ export class GameCastReceiver {
   }
 
   private closePeer(): void {
-    if (this.pc) {
-      this.pc.close();
-      this.pc = null;
+    const pc = this.pc;
+    this.pc = null;
+    if (pc) {
+      pc.close();
     }
   }
 
@@ -255,14 +274,17 @@ export class GameCastReceiver {
     await this.pc.addIceCandidate(candidate);
   }
 
-  private async flushPendingIce(): Promise<void> {
-    if (!this.pc || !this.pc.remoteDescription || this.pendingIce.length === 0) {
+  private async flushPendingIce(pc: RTCPeerConnection): Promise<void> {
+    if (this.pc !== pc || !pc.remoteDescription || this.pendingIce.length === 0) {
       return;
     }
     const queue = this.pendingIce.slice();
     this.pendingIce = [];
     for (const candidate of queue) {
-      await this.pc.addIceCandidate(candidate);
+      if (this.pc !== pc) {
+        return;
+      }
+      await pc.addIceCandidate(candidate);
     }
   }
 
@@ -281,11 +303,16 @@ export class GameCastReceiver {
   }
 
   private async emitStats(): Promise<void> {
-    if (!this.pc) {
+    const pc = this.pc;
+    if (!pc) {
       return;
     }
 
-    const report = await this.pc.getStats();
+    const generation = this.generation;
+    const report = await pc.getStats();
+    if (this.pc !== pc || this.generation !== generation) {
+      return;
+    }
     const result = computeGameCastVideoStats(report, this.lastVideoStats, this.generation);
     this.lastVideoStats = result.counters;
     this.options.onStats?.(result.stats);

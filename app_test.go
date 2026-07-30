@@ -17,6 +17,7 @@ import (
 	"PartyLAN/internal/gamecast/adaptive"
 	hostwindowcapture "PartyLAN/internal/gamecast/host/windowcapture"
 	"PartyLAN/internal/gamecast/session"
+	gamecastws "PartyLAN/internal/gamecast/ws"
 	"PartyLAN/internal/native/windowsaudio"
 	"PartyLAN/internal/network"
 	"PartyLAN/internal/video"
@@ -36,6 +37,105 @@ func TestNewAppAssignsStableGameCastParticipantID(t *testing.T) {
 	}
 	if first.gamecastParticipantID == second.gamecastParticipantID {
 		t.Fatalf("separate App instances shared participant id %q", first.gamecastParticipantID)
+	}
+}
+
+func TestGameCastWSGenerationRejectsStaleCallbacks(t *testing.T) {
+	application := &App{}
+	first := application.nextGameCastWSGeneration()
+	called := 0
+	if !application.withCurrentGameCastWSGeneration(first, func() {
+		called++
+	}) {
+		t.Fatal("expected current GameCast websocket generation to be accepted")
+	}
+
+	second := application.nextGameCastWSGeneration()
+	if second <= first {
+		t.Fatalf("generation did not increase: first=%d second=%d", first, second)
+	}
+	if application.withCurrentGameCastWSGeneration(first, func() {
+		called++
+	}) {
+		t.Fatal("expected stale GameCast websocket generation to be rejected")
+	}
+	if !application.withCurrentGameCastWSGeneration(second, func() {
+		called++
+	}) {
+		t.Fatal("expected replacement GameCast websocket generation to be accepted")
+	}
+	if called != 2 {
+		t.Fatalf("accepted callback count = %d, want 2", called)
+	}
+}
+
+func TestCloseGameCastWSInvalidatesCallbacksBeforeClientClose(t *testing.T) {
+	application := &App{}
+	generation := application.nextGameCastWSGeneration()
+	staleCallbackAccepted := false
+	client := gamecastws.NewClient(gamecastws.Options{
+		OnStatus: func(gamecastws.Status) {
+			staleCallbackAccepted = application.withCurrentGameCastWSGeneration(generation, func() {})
+		},
+	})
+	if !application.setGameCastWSIfCurrent(generation, client) {
+		t.Fatal("failed to install test GameCast websocket client")
+	}
+
+	application.closeGameCastWS()
+
+	if staleCallbackAccepted {
+		t.Fatal("expected close to invalidate the previous GameCast websocket generation")
+	}
+}
+
+func TestStaleGameCastWSCompletionCannotClearReplacement(t *testing.T) {
+	application := &App{}
+	firstGeneration := application.nextGameCastWSGeneration()
+	first := gamecastws.NewClient(gamecastws.Options{})
+	if !application.setGameCastWSIfCurrent(firstGeneration, first) {
+		t.Fatal("failed to install first GameCast websocket client")
+	}
+
+	application.closeGameCastWS()
+	secondGeneration := application.nextGameCastWSGeneration()
+	second := gamecastws.NewClient(gamecastws.Options{})
+	if !application.setGameCastWSIfCurrent(secondGeneration, second) {
+		t.Fatal("failed to install replacement GameCast websocket client")
+	}
+
+	if application.clearGameCastWSIfCurrent(firstGeneration, first) {
+		t.Fatal("stale connection cleared the replacement GameCast websocket")
+	}
+	if !application.gameCastWSIsCurrent(secondGeneration, second) {
+		t.Fatal("replacement GameCast websocket lost ownership")
+	}
+	application.closeGameCastWS()
+}
+
+func TestGameCastWSCallbacksRequireCurrentClientIdentity(t *testing.T) {
+	application := &App{}
+	generation := application.nextGameCastWSGeneration()
+	current := gamecastws.NewClient(gamecastws.Options{})
+	other := gamecastws.NewClient(gamecastws.Options{})
+	if !application.setGameCastWSIfCurrent(generation, current) {
+		t.Fatal("failed to install current GameCast websocket client")
+	}
+
+	if application.withCurrentGameCastWSClient(generation, other, func() {
+		t.Fatal("callback from non-current client ran")
+	}) {
+		t.Fatal("expected same-generation callback from a different client to be rejected")
+	}
+	if !application.withCurrentGameCastWSClient(generation, current, func() {}) {
+		t.Fatal("expected callback from the current generation and client to be accepted")
+	}
+
+	application.clearGameCastWSIfCurrent(generation, current)
+	if application.withCurrentGameCastWSClient(generation, current, func() {
+		t.Fatal("callback ran after current client was cleared")
+	}) {
+		t.Fatal("expected callback to be rejected after the current client was cleared")
 	}
 }
 

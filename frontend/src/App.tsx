@@ -95,6 +95,7 @@ import type {
 import { GameCastReceiver } from './media/gamecastReceiver';
 import { GameCastHost } from './media/gamecastHost';
 import {
+  GameCastViewerLifecycle,
   GAMECAST_HOST_SELF_PEER_ID as GAMECAST_HOST_PEER_ID,
   GAMECAST_VIEWER_SELF_PEER_ID as GAMECAST_SELF_PEER_ID,
   canStartGameCastSharing,
@@ -103,6 +104,7 @@ import {
   mergeGameCastPresenceMembers,
   nativeGameCastAudioRequest,
   promoteGameCastViewerToHost,
+  reduceGameCastViewerReconnectAttempt,
   selectOwnGameCastRoomAction,
   selectGameCastSharePath,
   selectGameCastJoinAction,
@@ -909,6 +911,7 @@ export default function App() {
   const gameCastParticipantIdRef = useRef('');
   const lastGameCastStatsPostRef = useRef(0);
   const gameCastViewerReconnectTimerRef = useRef<number | null>(null);
+  const gameCastViewerLifecycleRef = useRef(new GameCastViewerLifecycle());
   const gameCastAutoViewerRoomRef = useRef('');
   const t = useMemo(() => createTranslator(language), [language]);
 
@@ -923,6 +926,29 @@ export default function App() {
       (candidate) => detail.includes(candidate),
     );
     return code ? t(gameCastControlErrorMessageKey(code)) : null;
+  }
+
+  function clearGameCastViewerReconnectTimer() {
+    if (gameCastViewerReconnectTimerRef.current !== null) {
+      window.clearTimeout(gameCastViewerReconnectTimerRef.current);
+      gameCastViewerReconnectTimerRef.current = null;
+    }
+  }
+
+  function closeGameCastReceiver(detail: string) {
+    const receiver = gameCastReceiverRef.current;
+    gameCastReceiverRef.current = null;
+    receiver?.close(detail);
+    setRemoteMediaStream(null);
+    setWebrtcStats(null);
+    lastGameCastStatsPostRef.current = 0;
+    dispatch({ type: 'STREAM_STOPPED', peerId: GAMECAST_HOST_PEER_ID });
+  }
+
+  function invalidateGameCastViewer(detail: string) {
+    clearGameCastViewerReconnectTimer();
+    gameCastViewerLifecycleRef.current.invalidate();
+    closeGameCastReceiver(detail);
   }
 
   function recordWebRTCStats(stats: WebRTCPlaybackStats) {
@@ -992,11 +1018,16 @@ export default function App() {
     gameCastParticipantIdRef.current = gameCast.participantId;
   }, [gameCast.participantId]);
 
+  useEffect(() => () => {
+    clearGameCastViewerReconnectTimer();
+    gameCastViewerLifecycleRef.current.invalidate();
+    const receiver = gameCastReceiverRef.current;
+    gameCastReceiverRef.current = null;
+    receiver?.close('application unmounted');
+  }, []);
+
   useEffect(() => {
-    if (gameCastViewerReconnectTimerRef.current !== null) {
-      window.clearTimeout(gameCastViewerReconnectTimerRef.current);
-      gameCastViewerReconnectTimerRef.current = null;
-    }
+    clearGameCastViewerReconnectTimer();
 
     const shouldReconnect = shouldReconnectGameCastViewer({
       roomId: gameCast.roomDraft,
@@ -1015,8 +1046,15 @@ export default function App() {
     }
 
     const roomId = gameCast.roomDraft.trim();
-    const attempt = gameCast.viewerReconnectAttempt + 1;
+    const attempt = reduceGameCastViewerReconnectAttempt(gameCast.viewerReconnectAttempt, 'attempt-started');
     gameCastViewerReconnectTimerRef.current = window.setTimeout(() => {
+      gameCastViewerReconnectTimerRef.current = null;
+      const lifecycle = gameCastViewerLifecycleRef.current;
+      const token = lifecycle.beginReconnect();
+      if (token === null) {
+        return;
+      }
+      closeGameCastReceiver('reconnecting viewer');
       setGameCast((current) => ({
         ...current,
         receiverState: 'connecting',
@@ -1026,16 +1064,28 @@ export default function App() {
       }));
       void ConnectGameCastViewer(roomId, preferredViewerLayer())
         .then(() => {
+          if (!lifecycle.finishReconnect(token)) {
+            return;
+          }
           setGameCast((current) => ({
             ...current,
             receiverState: 'connecting',
-            status: { state: 'connecting', detail: `reconnecting viewer ${roomId}` },
+            status:
+              current.status?.state === 'connected'
+                ? current.status
+                : { state: 'connecting', detail: `reconnecting viewer ${roomId}` },
             operationError: null,
-            viewerReconnectAttempt: 0,
+            viewerReconnectAttempt: reduceGameCastViewerReconnectAttempt(
+              current.viewerReconnectAttempt,
+              'websocket-connected',
+            ),
           }));
           setError(null);
         })
         .catch((err) => {
+          if (!lifecycle.finishReconnect(token)) {
+            return;
+          }
           const detail = err instanceof Error ? err.message : String(err);
           const message = t(gameCastFailureMessageKey('viewer-reconnect'), {
             detail: detail.trim() || t('gamecast.errorUnknownDetail'),
@@ -1052,10 +1102,7 @@ export default function App() {
     }, Math.min(800 * attempt, 2400));
 
     return () => {
-      if (gameCastViewerReconnectTimerRef.current !== null) {
-        window.clearTimeout(gameCastViewerReconnectTimerRef.current);
-        gameCastViewerReconnectTimerRef.current = null;
-      }
+      clearGameCastViewerReconnectTimer();
     };
   }, [
     gameCast.role,
@@ -1079,6 +1126,7 @@ export default function App() {
         dispatch({ type: 'ROOM_JOINED', roomId: payload.roomId, selfPeerId: payload.selfPeerId ?? null });
       }),
       EventsOn('room:left', () => {
+        invalidateGameCastViewer('room left');
         dispatch({ type: 'ROOM_LEFT' });
         setRoomToolsOpen(false);
         setVoiceState(initialVoiceState);
@@ -1096,8 +1144,6 @@ export default function App() {
         }));
         mediaReceiverRef.current?.close('room left');
         mediaReceiverRef.current = null;
-        gameCastReceiverRef.current?.close('room left');
-        gameCastReceiverRef.current = null;
         gameCastHostRef.current?.stop('room left');
         gameCastHostRef.current = null;
       }),
@@ -1231,11 +1277,33 @@ export default function App() {
           return;
         }
         if (!gameCastReceiverRef.current) {
-          gameCastReceiverRef.current = new GameCastReceiver({
+          const lifecycle = gameCastViewerLifecycleRef.current;
+          const token = lifecycle.current();
+          let receiver: GameCastReceiver;
+          const ownsReceiver = () => lifecycle.isCurrent(token) && gameCastReceiverRef.current === receiver;
+          receiver = new GameCastReceiver({
             serverBaseUrl: gameCastProfileRef.current.baseUrl,
-            onSignal: (signal) => SendGameCastSignal(signal),
+            onSignal: (signal) => {
+              if (!ownsReceiver()) {
+                return;
+              }
+              return SendGameCastSignal(signal);
+            },
             onRemoteStream: (stream) => {
+              if (!ownsReceiver()) {
+                return;
+              }
               setRemoteMediaStream(stream);
+              setGameCast((current) => ({
+                ...current,
+                receiverState: 'connected',
+                operationError: null,
+                viewerReconnectAttempt: reduceGameCastViewerReconnectAttempt(
+                  current.viewerReconnectAttempt,
+                  'media-connected',
+                ),
+              }));
+              setError(null);
               dispatch({
                 type: 'STREAM_STARTED',
                 peerId: GAMECAST_HOST_PEER_ID,
@@ -1245,12 +1313,27 @@ export default function App() {
               });
             },
             onStats: (stats) => {
+              if (!ownsReceiver()) {
+                return;
+              }
               recordWebRTCStats(stats);
             },
             onStateChange: (receiverState, detail) => {
+              if (!ownsReceiver()) {
+                return;
+              }
               const failureDetail = detail || 'GameCast media connection failed';
               const failureMessage =
                 receiverState === 'error' ? formatGameCastFailure('viewer-reconnect', failureDetail) : '';
+              if (receiverState === 'closed' || receiverState === 'error') {
+                lifecycle.invalidate();
+                gameCastReceiverRef.current = null;
+                receiver.close(detail || `receiver ${receiverState}`);
+                setRemoteMediaStream(null);
+                setWebrtcStats(null);
+                lastGameCastStatsPostRef.current = 0;
+                dispatch({ type: 'STREAM_STOPPED', peerId: GAMECAST_HOST_PEER_ID });
+              }
               setGameCast((current) => ({
                 ...current,
                 receiverState,
@@ -1261,18 +1344,12 @@ export default function App() {
                       ? { state: receiverState, detail }
                       : current.status,
                 operationError:
-                  receiverState === 'connected'
-                    ? null
-                    : receiverState === 'error'
+                  receiverState === 'error'
                       ? { kind: 'viewer-reconnect', detail: failureDetail }
                       : current.operationError,
-                viewerReconnectAttempt: receiverState === 'connected' ? 0 : current.viewerReconnectAttempt,
               }));
               if (receiverState === 'error') {
                 setError(failureMessage);
-              }
-              if (receiverState === 'connected') {
-                setError(null);
               }
               if (receiverState === 'closed') {
                 setRemoteMediaStream(null);
@@ -1280,13 +1357,37 @@ export default function App() {
               }
             },
           });
+          gameCastReceiverRef.current = receiver;
         }
         void gameCastReceiverRef.current.handleSignal(payload);
       }),
       EventsOn('gamecast:status', (payload) => {
+        const status = payload as GameCastStatus;
+        if (
+          gameCastRoleRef.current === 'viewer' &&
+          (status.state === 'closed' || status.state === 'error')
+        ) {
+          invalidateGameCastViewer(status.detail || `signaling ${status.state}`);
+          const failureDetail = status.detail || 'GameCast signaling connection failed';
+          const failureMessage =
+            status.state === 'error' ? formatGameCastFailure('viewer-reconnect', failureDetail) : '';
+          setGameCast((current) => ({
+            ...current,
+            status,
+            receiverState: status.state,
+            operationError:
+              status.state === 'error'
+                ? { kind: 'viewer-reconnect', detail: failureDetail }
+                : current.operationError,
+          }));
+          if (failureMessage) {
+            setError(failureMessage);
+          }
+          return;
+        }
         setGameCast((current) => ({
           ...current,
-          status: payload as GameCastStatus,
+          status,
         }));
       }),
       EventsOn('gamecast:share-runtime', (payload) => {
@@ -1642,7 +1743,9 @@ export default function App() {
           setGameCast((current) => ({
             ...current,
             roomState,
-            viewerReconnectAttempt: roomState.sharing ? current.viewerReconnectAttempt : 0,
+            viewerReconnectAttempt: roomState.sharing
+              ? current.viewerReconnectAttempt
+              : reduceGameCastViewerReconnectAttempt(current.viewerReconnectAttempt, 'sharing-stopped'),
             operationError:
               !roomState.sharing && current.operationError?.kind === 'viewer-reconnect'
                 ? null
@@ -1707,23 +1810,28 @@ export default function App() {
 
   useEffect(() => {
     if (
-      gameCast.roomState?.origin !== 'client' ||
+      gameCast.role !== 'viewer' ||
+      !gameCast.roomState ||
       gameCast.roomState.sharing ||
-      !state.room.inRoom ||
-      !state.room.sharing ||
-      state.room.selfSharing
+      gameCast.activeSharePath !== null
     ) {
       return;
     }
-    setRemoteMediaStream(null);
-    setWebrtcStats(null);
-    dispatch({ type: 'STREAM_STOPPED', peerId: GAMECAST_HOST_PEER_ID });
+    invalidateGameCastViewer('sharing stopped');
+    setGameCast((current) => ({
+      ...current,
+      receiverState: 'idle',
+      operationError:
+        current.operationError?.kind === 'viewer-reconnect' ? null : current.operationError,
+      viewerReconnectAttempt: reduceGameCastViewerReconnectAttempt(
+        current.viewerReconnectAttempt,
+        'sharing-stopped',
+      ),
+    }));
   }, [
-    gameCast.roomState?.origin,
+    gameCast.activeSharePath,
+    gameCast.role,
     gameCast.roomState?.sharing,
-    state.room.inRoom,
-    state.room.selfSharing,
-    state.room.sharing,
   ]);
 
   useEffect(() => {
@@ -1786,6 +1894,7 @@ export default function App() {
     withBusy(async () => {
       if (state.room.selfPeerId === GAMECAST_SELF_PEER_ID || state.room.selfPeerId === GAMECAST_HOST_PEER_ID) {
         const wasHost = state.room.selfPeerId === GAMECAST_HOST_PEER_ID;
+        invalidateGameCastViewer('room left');
         gameCastHostRef.current?.stop('room left');
         gameCastHostRef.current = null;
         if (state.room.selfPeerId === GAMECAST_HOST_PEER_ID) {
@@ -1793,10 +1902,6 @@ export default function App() {
         } else {
           await LeaveGameCastRoom();
         }
-        gameCastReceiverRef.current?.close('viewer disconnected');
-        gameCastReceiverRef.current = null;
-        setRemoteMediaStream(null);
-        setWebrtcStats(null);
         setGameCast((current) => ({
           ...current,
           status: { state: 'closed', detail: wasHost ? 'host room closed' : 'viewer disconnected' },
@@ -1953,8 +2058,7 @@ export default function App() {
 
         if (sharePath === 'web-compat') {
           gameCastActiveSharePathRef.current = 'web-compat';
-          gameCastReceiverRef.current?.close('switching viewer to compat share');
-          gameCastReceiverRef.current = null;
+          invalidateGameCastViewer('switching viewer to compat share');
           gameCastHostRef.current?.stop('restarting');
           gameCastHostRef.current = null;
           let compatFailureHandled = false;
@@ -2043,6 +2147,7 @@ export default function App() {
           }
         }
 
+        invalidateGameCastViewer('switching viewer to native share');
         gameCastHostRef.current?.stop('restarting');
         gameCastHostRef.current = null;
         gameCastActiveSharePathRef.current = 'native';
@@ -2442,6 +2547,17 @@ export default function App() {
       if (!roomId) {
         throw new Error(t('gamecast.roomRequired'));
       }
+      clearGameCastViewerReconnectTimer();
+      const lifecycle = gameCastViewerLifecycleRef.current;
+      const token = lifecycle.beginConnection();
+      closeGameCastReceiver('starting viewer connection');
+      setGameCast((current) => ({
+        ...current,
+        viewerReconnectAttempt: reduceGameCastViewerReconnectAttempt(
+          current.viewerReconnectAttempt,
+          'connection-started',
+        ),
+      }));
       const saved = await SaveGameCastProfile({
         ...gameCast.profile,
         baseUrl: gameCast.serverDraft.trim(),
@@ -2455,11 +2571,13 @@ export default function App() {
         // A room selected from the live room list already has a usable state snapshot.
       }
 
-      gameCastReceiverRef.current?.close('reconnecting');
-      gameCastReceiverRef.current = null;
-      setRemoteMediaStream(null);
-      setWebrtcStats(null);
+      if (!lifecycle.isCurrent(token)) {
+        return;
+      }
       await ConnectGameCastViewer(roomId, preferredViewerLayer());
+      if (!lifecycle.isCurrent(token)) {
+        return;
+      }
 
       setGameCast((current) => ({
         ...current,
@@ -2472,7 +2590,10 @@ export default function App() {
         roomEntry: 'client-joined-viewer',
         activeSharePath: null,
         operationError: null,
-        viewerReconnectAttempt: 0,
+        viewerReconnectAttempt: reduceGameCastViewerReconnectAttempt(
+          current.viewerReconnectAttempt,
+          'websocket-connected',
+        ),
       }));
       dispatch({ type: 'ROOM_JOINED', roomId, selfPeerId: GAMECAST_SELF_PEER_ID });
       dispatch({
@@ -2529,12 +2650,9 @@ export default function App() {
   const handleDisconnectGameCast = () =>
     withBusy(async () => {
       await LeaveGameCastRoom();
+      invalidateGameCastViewer('viewer disconnected');
       gameCastHostRef.current?.stop('viewer disconnected');
       gameCastHostRef.current = null;
-      gameCastReceiverRef.current?.close('viewer disconnected');
-      gameCastReceiverRef.current = null;
-      setRemoteMediaStream(null);
-      setWebrtcStats(null);
       setGameCast((current) => ({
         ...current,
         status: { state: 'closed', detail: 'viewer disconnected' },

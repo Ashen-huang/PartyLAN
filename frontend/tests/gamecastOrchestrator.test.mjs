@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  GameCastViewerLifecycle,
   GAMECAST_HOST_SELF_PEER_ID,
   GAMECAST_VIEWER_SELF_PEER_ID,
   canStartGameCastSharing,
@@ -11,6 +12,7 @@ import {
   mergeGameCastPresenceMembers,
   nativeGameCastAudioRequest,
   promoteGameCastViewerToHost,
+  reduceGameCastViewerReconnectAttempt,
   shouldApplyGameCastShareRuntimeEvent,
   selectOwnGameCastRoomAction,
   shouldListGameCastRoom,
@@ -18,6 +20,37 @@ import {
   selectGameCastJoinAction,
   shouldReconnectGameCastViewer,
 } from '../src/media/gamecastOrchestrator.ts';
+
+test('viewer reconnect lifecycle permits only one in-flight attempt', () => {
+  const lifecycle = new GameCastViewerLifecycle();
+
+  const first = lifecycle.beginReconnect();
+  assert.equal(typeof first, 'number');
+  assert.equal(lifecycle.beginReconnect(), null);
+  assert.equal(lifecycle.finishReconnect(first), true);
+
+  const second = lifecycle.beginReconnect();
+  assert.equal(typeof second, 'number');
+  assert.notEqual(second, first);
+});
+
+test('viewer reconnect lifecycle rejects callbacks after invalidation', () => {
+  const lifecycle = new GameCastViewerLifecycle();
+  const stale = lifecycle.beginReconnect();
+
+  lifecycle.invalidate();
+
+  assert.equal(lifecycle.isCurrent(stale), false);
+  assert.equal(lifecycle.finishReconnect(stale), false);
+  assert.equal(typeof lifecycle.beginReconnect(), 'number');
+});
+
+test('viewer websocket completion preserves attempts until a new session or media arrives', () => {
+  assert.equal(reduceGameCastViewerReconnectAttempt(2, 'connection-started'), 0);
+  assert.equal(reduceGameCastViewerReconnectAttempt(1, 'websocket-connected'), 1);
+  assert.equal(reduceGameCastViewerReconnectAttempt(1, 'media-connected'), 0);
+  assert.equal(reduceGameCastViewerReconnectAttempt(2, 'sharing-stopped'), 0);
+});
 
 test('native process audio request carries the selected window PID', () => {
   assert.deepEqual(
@@ -277,6 +310,32 @@ test('viewer reconnect is bounded and only runs for an active remote share', () 
   assert.equal(shouldReconnectGameCastViewer({ ...base, attempt: 0 }), true);
   assert.equal(shouldReconnectGameCastViewer({ ...base, attempt: 3 }), false);
   assert.equal(shouldReconnectGameCastViewer({ ...base, attempt: 0, roomSharing: false }), false);
+});
+
+test('viewer reconnects once sharing starts after the original signaling wait expired', () => {
+  const viewerBeforeHost = {
+    roomId: 'late-host-room',
+    selfPeerId: GAMECAST_VIEWER_SELF_PEER_ID,
+    role: 'viewer',
+    roomActive: true,
+    roomSharing: false,
+    activeSharePath: null,
+    statusState: 'connected',
+    receiverState: 'idle',
+    attempt: 0,
+  };
+
+  assert.equal(shouldReconnectGameCastViewer(viewerBeforeHost), false);
+  assert.equal(shouldReconnectGameCastViewer({ ...viewerBeforeHost, roomSharing: true }), true);
+  assert.equal(
+    shouldReconnectGameCastViewer({
+      ...viewerBeforeHost,
+      roomSharing: true,
+      statusState: 'connecting',
+      receiverState: 'connecting',
+    }),
+    false,
+  );
 });
 
 test('failure kinds have distinct user-facing message keys', () => {
