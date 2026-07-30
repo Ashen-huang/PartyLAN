@@ -17,6 +17,36 @@ import register
 from gamecast_control import ControlPlane
 
 
+DIAGNOSTIC_NUMBER_FIELDS = (
+    "framesCaptured",
+    "framesCapturedDelta",
+    "capturedFps",
+    "framesEncoded",
+    "framesEncodedDelta",
+    "encodedFps",
+    "framesSent",
+    "framesSentDelta",
+    "sentFps",
+    "keyFramesEncoded",
+    "keyFramesEncodedDelta",
+    "outboundPliCount",
+    "outboundPliCountDelta",
+    "outboundNackCount",
+    "outboundNackCountDelta",
+    "inboundPliCount",
+    "inboundPliCountDelta",
+    "inboundNackCount",
+    "inboundNackCountDelta",
+    "retransmittedPacketsSent",
+    "retransmittedPacketsSentDelta",
+    "retransmittedBytesSent",
+    "retransmittedBytesSentDelta",
+    "totalPacketSendDelayMs",
+    "totalPacketSendDelayDeltaMs",
+    "averagePacketSendDelayMs",
+)
+
+
 class RegisterControlAPITest(unittest.TestCase):
     def setUp(self):
         register.control_plane = ControlPlane(lease_id_factory=lambda: "lease-api")
@@ -244,49 +274,106 @@ class RegisterControlAPITest(unittest.TestCase):
         self.assertTrue(response["state"]["sfu"])
 
     def test_webrtc_stats_payload_is_bounded_and_drops_sensitive_fields(self):
-        payload = register.sanitize_stats_payload(
-            {
-                "event": "webrtc_sample",
-                "policyVersion": "ice-shadow-v1",
-                "room": "stats-room",
-                "peer": "pc-1",
-                "path": "turn",
-                "transport": "tcp",
-                "localCandidateType": "relay",
-                "remoteCandidateType": "srflx",
-                "localAddressFamily": "ipv4",
-                "remoteAddressFamily": "ipv4",
-                "lossPercent": 8.2,
-                "jitterMs": 150,
-                "rttMs": 120,
-                "upKbps": 320,
-                "downKbps": 280,
-                "packetsReceivedDelta": 100,
-                "packetsLostDelta": 9,
-                "qualityStatus": "degraded-suspected",
-                "shadowAction": "would_restart_ice",
-                "adaptivePolicyVersion": "adaptive-per-peer-v1",
-                "adaptiveDecision": "downshift:0->1",
-                "adaptiveLevel": 1,
-                "adaptiveScale": 1.5,
-                "adaptiveMaxBitrate": 3000000,
-                "candidateAddress": "10.0.0.2",
-                "credential": "secret",
-                "sdp": "v=0",
-                "nested": {"secret": True},
-                "serverNote": "x" * 500,
-            }
-        )
+        diagnostic_values = {
+            field: index + 0.25 for index, field in enumerate(DIAGNOSTIC_NUMBER_FIELDS)
+        }
+        submitted = {
+            "event": "webrtc_sample",
+            "policyVersion": "ice-shadow-v1",
+            "room": "stats-room",
+            "peer": "pc-1",
+            "path": "turn",
+            "transport": "tcp",
+            "localCandidateType": "relay",
+            "remoteCandidateType": "srflx",
+            "localAddressFamily": "ipv4",
+            "remoteAddressFamily": "ipv4",
+            "lossPercent": 8.2,
+            "jitterMs": 150,
+            "rttMs": 120,
+            "upKbps": 320,
+            "downKbps": 280,
+            "packetsReceivedDelta": 100,
+            "packetsLostDelta": 9,
+            "qualityStatus": "degraded-suspected",
+            "shadowAction": "would_restart_ice",
+            "adaptivePolicyVersion": "adaptive-per-peer-v1",
+            "adaptiveDecision": "downshift:0->1",
+            "adaptiveLevel": 1,
+            "adaptiveScale": 1.5,
+            "adaptiveMaxBitrate": 3000000,
+            "telemetryResetReason": "outbound-identity-changed,optional-counter-reset",
+            "candidateAddress": "10.0.0.2",
+            "credential": "secret",
+            "sdp": "v=0",
+            "nested": {"secret": True},
+            "unknownTelemetry": 999,
+            "diagnosticPacketsSentDelta": 77,
+            "serverNote": "x" * 500,
+        }
+        submitted.update(diagnostic_values)
+
+        payload = register.sanitize_stats_payload(submitted)
+
         self.assertEqual(payload["transport"], "tcp")
         self.assertEqual(payload["shadowAction"], "would_restart_ice")
         self.assertEqual(payload["adaptiveDecision"], "downshift:0->1")
         self.assertEqual(payload["adaptiveLevel"], 1)
         self.assertEqual(payload["adaptiveScale"], 1.5)
+        self.assertEqual(
+            payload["telemetryResetReason"],
+            "outbound-identity-changed,optional-counter-reset",
+        )
+        for field, value in diagnostic_values.items():
+            self.assertEqual(payload[field], value, field)
         self.assertLessEqual(len(payload["serverNote"]), 160)
         self.assertNotIn("candidateAddress", payload)
         self.assertNotIn("credential", payload)
         self.assertNotIn("sdp", payload)
         self.assertNotIn("nested", payload)
+        self.assertNotIn("unknownTelemetry", payload)
+        self.assertNotIn("diagnosticPacketsSentDelta", payload)
+
+    def test_webrtc_stats_post_writes_public_telemetry_to_jsonl_only(self):
+        diagnostic_values = {
+            field: index + 1 for index, field in enumerate(DIAGNOSTIC_NUMBER_FIELDS)
+        }
+        submitted = {
+            "event": "webrtc_sample",
+            "room": "stats-room",
+            "telemetryResetReason": "media-source-identity-changed",
+            "candidateAddress": "10.0.0.2",
+            "credential": "secret",
+            "sdp": "v=0",
+            "nested": {"secret": True},
+            "unknownTelemetry": 999,
+            "diagnosticPacketsSentDelta": 77,
+        }
+        submitted.update(diagnostic_values)
+        stats_dir = Path(self.temp_dir.name) / "stats"
+        stats_dir.mkdir()
+
+        with mock.patch.object(register, "STATS_DIR", str(stats_dir)):
+            status, response = self.request("POST", "/api/stats", submitted)
+            records = [
+                json.loads(line)
+                for line in Path(register.get_stats_path()).read_text(encoding="utf-8").splitlines()
+            ]
+
+        self.assertEqual(status, 200)
+        self.assertTrue(response["ok"])
+        self.assertEqual(len(records), 1)
+        record = records[0]
+        self.assertEqual(record["telemetryResetReason"], "media-source-identity-changed")
+        for field, value in diagnostic_values.items():
+            self.assertEqual(record[field], value, field)
+        self.assertTrue(record["_ts"])
+        self.assertNotIn("candidateAddress", record)
+        self.assertNotIn("credential", record)
+        self.assertNotIn("sdp", record)
+        self.assertNotIn("nested", record)
+        self.assertNotIn("unknownTelemetry", record)
+        self.assertNotIn("diagnosticPacketsSentDelta", record)
 
     def test_register_succeeds_without_the_htpasswd_command_and_preserves_existing_users(self):
         with mock.patch.dict(os.environ, {"PATH": ""}):
@@ -346,6 +433,12 @@ class RegisterControlAPITest(unittest.TestCase):
         )
         self.assertIn("SCREEGO_USERS_FILE: /app/users/users.htpasswd", compose)
         self.assertNotIn("SCREEGO_USERS_FILE_HOST:-", compose)
+
+    def test_deployment_register_is_byte_identical_to_source(self):
+        source_path = Path(register.__file__).resolve()
+        deploy_path = source_path.parent / "screego" / "deploy" / "register.py"
+
+        self.assertEqual(source_path.read_bytes(), deploy_path.read_bytes())
 
     def test_nginx_proxies_quality_control_api(self):
         nginx_path = Path(__file__).parent / "screego" / "deploy" / "nginx-screego.conf"
