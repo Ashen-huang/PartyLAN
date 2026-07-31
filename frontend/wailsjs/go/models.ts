@@ -537,3 +537,28 @@ export namespace sharecatalog {
 
 }
 
+export namespace voice {
+
+	export class State {
+	    connection: string;
+	    microphone: string;
+	    playbackMuted: boolean;
+	    participantCount: number;
+	    errorCode?: string;
+
+	    static createFrom(source: any = {}) {
+	        return new State(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection = source["connection"];
+	        this.microphone = source["microphone"];
+	        this.playbackMuted = source["playbackMuted"];
+	        this.participantCount = source["participantCount"];
+	        this.errorCode = source["errorCode"];
+	    }
+	}
+
+}
+

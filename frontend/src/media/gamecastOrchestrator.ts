@@ -1,5 +1,4 @@
 import type { GameCastPresenceParticipant, GameCastRoomState, Member, ShareSourceKind } from '../types';
-import type { ShareSettings } from '../components/RoomControls';
 
 export const GAMECAST_VIEWER_SELF_PEER_ID = 'gamecast-viewer';
 export const GAMECAST_HOST_SELF_PEER_ID = 'gamecast-host';
@@ -110,45 +109,6 @@ export interface GameCastShareRuntimeEventInput {
   activeSharePath: GameCastSharePath | null;
   currentRoomId: string | null | undefined;
   eventRoomId: string | null | undefined;
-}
-
-export interface NativeGameCastAudioRequest {
-  audioMode: 'off' | 'process' | 'system';
-  audioProcessName: string;
-  audioProcessId?: number;
-}
-
-export function nativeGameCastAudioRequest(
-  settings: ShareSettings,
-  selectedAudioSourceName = '',
-  selectedAudioSourceId?: number,
-): NativeGameCastAudioRequest {
-  const audioMode =
-    settings.audioMode === 'off'
-      ? 'off'
-      : settings.audioMode === 'process'
-        ? 'process'
-        : settings.audioDefault === 'system'
-          ? 'system'
-          : settings.audioDefault === 'process'
-            ? 'process'
-            : 'off';
-  const audioProcessName =
-    audioMode === 'process'
-      ? settings.audioMode === 'process'
-        ? selectedAudioSourceName || settings.audioProcessName || ''
-        : settings.audioProcessName || selectedAudioSourceName || ''
-      : '';
-  return {
-    audioMode,
-    audioProcessName,
-    audioProcessId:
-      audioMode === 'process'
-        ? settings.audioMode === 'process'
-          ? selectedAudioSourceId || settings.audioProcessId
-          : settings.audioProcessId
-        : undefined,
-  };
 }
 
 export function isGameCastSelfPeerId(selfPeerId: string | null | undefined): boolean {

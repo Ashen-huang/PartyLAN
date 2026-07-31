@@ -10,7 +10,6 @@ import {
   gameCastFailureMessageKey,
   gameCastRoomOriginLabelKey,
   mergeGameCastPresenceMembers,
-  nativeGameCastAudioRequest,
   promoteGameCastViewerToHost,
   reduceGameCastViewerReconnectAttempt,
   shouldApplyGameCastShareRuntimeEvent,
@@ -50,70 +49,6 @@ test('viewer websocket completion preserves attempts until a new session or medi
   assert.equal(reduceGameCastViewerReconnectAttempt(1, 'websocket-connected'), 1);
   assert.equal(reduceGameCastViewerReconnectAttempt(1, 'media-connected'), 0);
   assert.equal(reduceGameCastViewerReconnectAttempt(2, 'sharing-stopped'), 0);
-});
-
-test('native process audio request carries the selected window PID', () => {
-  assert.deepEqual(
-    nativeGameCastAudioRequest({
-      sourceId: 'window:10',
-      sourceKind: 'window',
-      sourceLabel: 'Player',
-      audioMode: 'default',
-      audioDefault: 'process',
-      audioProcessName: 'player.exe',
-      audioProcessId: 4242,
-      width: 1280,
-      height: 720,
-      fps: 30,
-    }),
-    { audioMode: 'process', audioProcessName: 'player.exe', audioProcessId: 4242 },
-  );
-});
-
-test('native system and disabled audio requests do not carry a window PID', () => {
-  const base = {
-    sourceId: 'display:0',
-    sourceKind: 'display',
-    sourceLabel: 'Display',
-    audioDefault: 'system',
-    audioProcessName: 'ignored.exe',
-    audioProcessId: 4242,
-    width: 1280,
-    height: 720,
-    fps: 30,
-  };
-  assert.deepEqual(nativeGameCastAudioRequest({ ...base, audioMode: 'default' }), {
-    audioMode: 'system',
-    audioProcessName: '',
-    audioProcessId: undefined,
-  });
-  assert.deepEqual(nativeGameCastAudioRequest({ ...base, audioMode: 'off' }), {
-    audioMode: 'off',
-    audioProcessName: '',
-    audioProcessId: undefined,
-  });
-});
-
-test('explicit audio source overrides the default window process PID', () => {
-  assert.deepEqual(
-    nativeGameCastAudioRequest(
-      {
-        sourceId: 'window:10',
-        sourceKind: 'window',
-        sourceLabel: 'Player',
-        audioMode: 'process',
-        audioDefault: 'process',
-        audioProcessName: 'window-player.exe',
-        audioProcessId: 4242,
-        width: 1280,
-        height: 720,
-        fps: 30,
-      },
-      'music.exe',
-      9001,
-    ),
-    { audioMode: 'process', audioProcessName: 'music.exe', audioProcessId: 9001 },
-  );
 });
 
 test('own active rooms route by their established origin', () => {

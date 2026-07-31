@@ -15,3 +15,16 @@ services:
       SCREEGO_FORCE_RELAY: "false"
       SCREEGO_SERVER_ADDRESS: ":5060"
     command: ["serve"]
+
+  voice-sfu:
+    image: partylan-voice-sfu:v1-20260731
+    container_name: partylan-voice-sfu
+    restart: unless-stopped
+    network_mode: "host"
+    environment:
+      GAMECAST_VOICE_SECRET: "${GAMECAST_VOICE_SECRET}"
+      VOICE_SFU_LISTEN_ADDR: "127.0.0.1:5054"
+      VOICE_SFU_UDP_ADDR: "0.0.0.0:5054"
+      VOICE_SFU_PUBLIC_IP: "${VOICE_SFU_PUBLIC_IP}"
+      VOICE_SFU_ROOM_LIMIT: "20"
+      VOICE_SFU_ICE_SERVERS_JSON: "${VOICE_SFU_ICE_SERVERS_JSON:-[]}"

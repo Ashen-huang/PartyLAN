@@ -1,3 +1,8 @@
+import base64
+import hashlib
+import hmac
+import json
+import secrets
 import threading
 import time
 import uuid
@@ -6,7 +11,7 @@ import uuid
 VALID_ORIGINS = {"web", "client"}
 VALID_CLIENT_TYPES = {"web", "client"}
 VALID_ROLES = {"owner", "member"}
-VALID_AUDIO_MODES = {"app", "off", "system", "process"}
+VALID_AUDIO_MODES = {"app", "exclude-process", "off", "system", "process"}
 
 
 class ControlError(Exception):
@@ -14,6 +19,95 @@ class ControlError(Exception):
         super().__init__(code)
         self.code = code
         self.status = status
+
+
+VOICE_TOKEN_AUDIENCE = "voice-sfu"
+
+
+def _base64url_encode(data):
+    return base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
+
+
+def _base64url_decode(value):
+    if not isinstance(value, str) or not value:
+        raise ValueError("invalid base64url value")
+    padding = "=" * ((4 - len(value) % 4) % 4)
+    return base64.b64decode(
+        (value + padding).encode("ascii"), altchars=b"-_", validate=True
+    )
+
+
+def issue_voice_token(
+    secret,
+    room_id,
+    participant_id,
+    now=None,
+    ttl=15,
+    jti_factory=None,
+):
+    secret = str(secret or "").strip()
+    room_id = str(room_id or "").strip()
+    participant_id = str(participant_id or "").strip()
+    if not secret:
+        raise ControlError("voice_unavailable", 503)
+    if not room_id or len(room_id) > 120 or not participant_id or len(participant_id) > 128:
+        raise ControlError("voice_token_invalid", 400)
+    issued_at = int(time.time() if now is None else now)
+    ttl = max(1, min(int(ttl), 60))
+    expires_at = issued_at + ttl
+    jti_factory = jti_factory or (lambda: secrets.token_urlsafe(12))
+    claims = {
+        "aud": VOICE_TOKEN_AUDIENCE,
+        "room": room_id,
+        "participantId": participant_id,
+        "clientType": "client",
+        "iat": issued_at,
+        "exp": expires_at,
+        "jti": str(jti_factory()),
+    }
+    payload = _base64url_encode(
+        json.dumps(claims, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    )
+    signature = _base64url_encode(
+        hmac.new(secret.encode("utf-8"), payload.encode("ascii"), hashlib.sha256).digest()
+    )
+    return {"token": payload + "." + signature, "expiresAtUnix": expires_at}
+
+
+def verify_voice_token(secret, token, now=None, audience=VOICE_TOKEN_AUDIENCE):
+    secret = str(secret or "").strip()
+    if not secret or not isinstance(token, str) or len(token) > 4096:
+        raise ControlError("voice_token_invalid", 401)
+    parts = token.split(".")
+    if len(parts) != 2:
+        raise ControlError("voice_token_invalid", 401)
+    payload, encoded_signature = parts
+    try:
+        signature = _base64url_decode(encoded_signature)
+        expected = hmac.new(
+            secret.encode("utf-8"), payload.encode("ascii"), hashlib.sha256
+        ).digest()
+        if not hmac.compare_digest(signature, expected):
+            raise ValueError("signature mismatch")
+        claims = json.loads(_base64url_decode(payload).decode("utf-8"))
+    except (UnicodeError, ValueError, TypeError, json.JSONDecodeError):
+        raise ControlError("voice_token_invalid", 401)
+
+    required_text = ("aud", "room", "participantId", "clientType", "jti")
+    if any(not isinstance(claims.get(field), str) or not claims[field] for field in required_text):
+        raise ControlError("voice_token_invalid", 401)
+    if claims["aud"] != audience or claims["clientType"] != "client":
+        raise ControlError("voice_token_invalid", 401)
+    if len(claims["room"]) > 120 or len(claims["participantId"]) > 128:
+        raise ControlError("voice_token_invalid", 401)
+    if not isinstance(claims.get("iat"), int) or not isinstance(claims.get("exp"), int):
+        raise ControlError("voice_token_invalid", 401)
+    checked_at = int(time.time() if now is None else now)
+    if claims["iat"] > checked_at + 5:
+        raise ControlError("voice_token_invalid", 401)
+    if claims["exp"] <= checked_at:
+        raise ControlError("voice_token_expired", 401)
+    return claims
 
 
 class ControlPlane:
@@ -163,6 +257,21 @@ class ControlPlane:
                 raise ControlError("quality_snapshot_forbidden", 403)
             active_ids = set((self._presence.get(room_id) or {}).keys())
             return self._build_participant(room_id, participant, now), active_ids
+
+    def authorize_voice(self, room_id, participant_id, auth_user):
+        room_id = self._required_text(room_id, "room_not_found", 400, 120)
+        participant_id = self._required_text(
+            participant_id, "participant_not_found", 400, 128
+        )
+        now = self._clock()
+        with self._lock:
+            self._prune_locked(now)
+            participant = self._get_participant_locked(
+                room_id, participant_id, auth_user
+            )
+            if participant.get("client_type") != "client":
+                raise ControlError("voice_client_required", 403)
+            return self._build_participant(room_id, participant, now)
 
     def claim_share(self, data, auth_user):
         room_id, participant_id = self._presence_identity(data)

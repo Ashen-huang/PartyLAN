@@ -8,7 +8,12 @@ package audio
 #include <string.h>
 #include <windows.h>
 
+#define PARTYLAN_OPUS_APPLICATION_VOIP 2048
 #define PARTYLAN_OPUS_APPLICATION_AUDIO 2049
+#define PARTYLAN_OPUS_SET_BITRATE_REQUEST 4002
+#define PARTYLAN_OPUS_SET_INBAND_FEC_REQUEST 4012
+#define PARTYLAN_OPUS_SET_PACKET_LOSS_PERC_REQUEST 4014
+#define PARTYLAN_OPUS_SET_DTX_REQUEST 4016
 
 typedef struct OpusEncoder OpusEncoder;
 typedef int16_t opus_int16;
@@ -17,6 +22,7 @@ typedef int32_t opus_int32;
 typedef int (*partylan_opus_encoder_get_size_fn)(int channels);
 typedef int (*partylan_opus_encoder_init_fn)(OpusEncoder* st, opus_int32 Fs, int channels, int application);
 typedef opus_int32 (*partylan_opus_encode_fn)(OpusEncoder* st, const opus_int16* pcm, int frame_size, unsigned char* data, opus_int32 max_data_bytes);
+typedef int (*partylan_opus_encoder_ctl_fn)(OpusEncoder* st, int request, ...);
 typedef const char* (*partylan_opus_strerror_fn)(int error);
 
 typedef struct PartyLANOpusAPI {
@@ -24,6 +30,7 @@ typedef struct PartyLANOpusAPI {
 	partylan_opus_encoder_get_size_fn encoder_get_size;
 	partylan_opus_encoder_init_fn encoder_init;
 	partylan_opus_encode_fn encode;
+	partylan_opus_encoder_ctl_fn encoder_ctl;
 	partylan_opus_strerror_fn strerror_fn;
 } PartyLANOpusAPI;
 
@@ -60,11 +67,13 @@ static int partylan_opus_load(void) {
 	PARTYLAN_OPUS_API.encoder_get_size = (partylan_opus_encoder_get_size_fn)GetProcAddress(lib, "opus_encoder_get_size");
 	PARTYLAN_OPUS_API.encoder_init = (partylan_opus_encoder_init_fn)GetProcAddress(lib, "opus_encoder_init");
 	PARTYLAN_OPUS_API.encode = (partylan_opus_encode_fn)GetProcAddress(lib, "opus_encode");
+	PARTYLAN_OPUS_API.encoder_ctl = (partylan_opus_encoder_ctl_fn)GetProcAddress(lib, "opus_encoder_ctl");
 	PARTYLAN_OPUS_API.strerror_fn = (partylan_opus_strerror_fn)GetProcAddress(lib, "opus_strerror");
 
 	if (PARTYLAN_OPUS_API.encoder_get_size == NULL ||
 		PARTYLAN_OPUS_API.encoder_init == NULL ||
 		PARTYLAN_OPUS_API.encode == NULL ||
+		PARTYLAN_OPUS_API.encoder_ctl == NULL ||
 		PARTYLAN_OPUS_API.strerror_fn == NULL) {
 		FreeLibrary(lib);
 		memset(&PARTYLAN_OPUS_API, 0, sizeof(PARTYLAN_OPUS_API));
@@ -92,7 +101,7 @@ const char* PartyLAN_OpusLastReason(void) {
 	return PARTYLAN_OPUS_REASON;
 }
 
-void* PartyLAN_CreateOpusEncoder(uint32_t sample_rate, uint32_t channels, uint32_t max_packet_bytes) {
+void* PartyLAN_CreateOpusEncoder(uint32_t sample_rate, uint32_t channels, uint32_t max_packet_bytes, int application, int bitrate, int dtx, int inband_fec, int packet_loss_perc) {
 	PartyLANOpusEncoder* encoder;
 	int size;
 	int err;
@@ -127,10 +136,37 @@ void* PartyLAN_CreateOpusEncoder(uint32_t sample_rate, uint32_t channels, uint32
 		return NULL;
 	}
 
-	err = PARTYLAN_OPUS_API.encoder_init((OpusEncoder*)encoder->state, (opus_int32)sample_rate, (int)channels, PARTYLAN_OPUS_APPLICATION_AUDIO);
+	err = PARTYLAN_OPUS_API.encoder_init(
+		(OpusEncoder*)encoder->state,
+		(opus_int32)sample_rate,
+		(int)channels,
+		application == 1 ? PARTYLAN_OPUS_APPLICATION_VOIP : PARTYLAN_OPUS_APPLICATION_AUDIO
+	);
 	if (err != 0) {
 		const char* opus_reason = partylan_opus_error(err);
 		partylan_opus_set_reason(opus_reason);
+		free(encoder->state);
+		free(encoder);
+		return NULL;
+	}
+	if (bitrate > 0) {
+		err = PARTYLAN_OPUS_API.encoder_ctl((OpusEncoder*)encoder->state, PARTYLAN_OPUS_SET_BITRATE_REQUEST, bitrate);
+		if (err != 0) {
+			partylan_opus_set_reason(partylan_opus_error(err));
+			free(encoder->state);
+			free(encoder);
+			return NULL;
+		}
+	}
+	err = PARTYLAN_OPUS_API.encoder_ctl((OpusEncoder*)encoder->state, PARTYLAN_OPUS_SET_DTX_REQUEST, dtx ? 1 : 0);
+	if (err == 0) {
+		err = PARTYLAN_OPUS_API.encoder_ctl((OpusEncoder*)encoder->state, PARTYLAN_OPUS_SET_INBAND_FEC_REQUEST, inband_fec ? 1 : 0);
+	}
+	if (err == 0) {
+		err = PARTYLAN_OPUS_API.encoder_ctl((OpusEncoder*)encoder->state, PARTYLAN_OPUS_SET_PACKET_LOSS_PERC_REQUEST, packet_loss_perc);
+	}
+	if (err != 0) {
+		partylan_opus_set_reason(partylan_opus_error(err));
 		free(encoder->state);
 		free(encoder);
 		return NULL;
@@ -227,11 +263,23 @@ func newNativeOpusEncoder(config OpusEncoderConfig) (nativeOpusEncoder, error) {
 		C.uint32_t(config.SampleRate),
 		C.uint32_t(config.Channels),
 		C.uint32_t(config.MaxPacketBytes),
+		C.int(config.Application),
+		C.int(config.Bitrate),
+		C.int(boolInt(config.DTX)),
+		C.int(boolInt(config.InbandFEC)),
+		C.int(config.PacketLossPerc),
 	))
 	if handle == 0 {
 		return nil, fmt.Errorf("create opus encoder: %s", cOpusString(C.PartyLAN_OpusLastReason()))
 	}
 	return &nativeOpusEncoderHandle{handle: handle}, nil
+}
+
+func boolInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func (e *nativeOpusEncoderHandle) EncodePCM16(samples []int16) ([]byte, error) {

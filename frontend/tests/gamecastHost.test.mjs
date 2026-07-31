@@ -38,6 +38,10 @@ class FakeMediaStream {
   getVideoTracks() {
     return this.tracks.filter((track) => track.kind === 'video');
   }
+
+  removeTrack(track) {
+    this.tracks = this.tracks.filter((current) => current !== track);
+  }
 }
 
 class FakeSender {
@@ -97,15 +101,20 @@ class FakePeerConnection {
 
 function installWebRTCFakes(stream) {
   FakePeerConnection.instances = [];
+  let displayConstraints;
   globalThis.RTCPeerConnection = FakePeerConnection;
   Object.defineProperty(globalThis, 'navigator', {
     configurable: true,
     value: {
       mediaDevices: {
-        getDisplayMedia: async () => stream,
+        getDisplayMedia: async (constraints) => {
+          displayConstraints = constraints;
+          return stream;
+        },
       },
     },
   });
+  return () => displayConstraints;
 }
 
 function shareSettings() {
@@ -121,11 +130,11 @@ function shareSettings() {
   };
 }
 
-test('compat host publishes both display video and audio', async () => {
+test('compat host discards unexpected display audio and publishes video only', async () => {
   const video = new FakeTrack('video', 'video-1');
   const audio = new FakeTrack('audio', 'audio-1');
   const stream = new FakeMediaStream([video, audio]);
-  installWebRTCFakes(stream);
+  const getDisplayConstraints = installWebRTCFakes(stream);
   const outbound = [];
   const host = new GameCastHost({
     serverBaseUrl: 'https://gamecast.test',
@@ -133,9 +142,12 @@ test('compat host publishes both display video and audio', async () => {
   });
 
   await host.capture(shareSettings());
+  assert.equal(getDisplayConstraints().audio, false);
+  assert.equal(audio.stopped, true);
+  assert.deepEqual(stream.getTracks(), [video]);
   await host.publish();
 
-  assert.deepEqual(FakePeerConnection.instances[0].tracks, [video, audio]);
+  assert.deepEqual(FakePeerConnection.instances[0].tracks, [video]);
   assert.equal(outbound[0].type, 'offer');
 });
 

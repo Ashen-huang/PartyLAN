@@ -82,6 +82,10 @@ export function GetRoomState() {
   return window['go']['main']['App']['GetRoomState']();
 }
 
+export function GetRoomVoiceState() {
+  return window['go']['main']['App']['GetRoomVoiceState']();
+}
+
 export function GetRuntimeStatus() {
   return window['go']['main']['App']['GetRuntimeStatus']();
 }
@@ -164,6 +168,14 @@ export function SetAudioShareSelection(arg1) {
 
 export function SetGameCastHostSharing(arg1) {
   return window['go']['main']['App']['SetGameCastHostSharing'](arg1);
+}
+
+export function SetRoomVoiceMicrophoneEnabled(arg1) {
+  return window['go']['main']['App']['SetRoomVoiceMicrophoneEnabled'](arg1);
+}
+
+export function SetRoomVoicePlaybackMuted(arg1) {
+  return window['go']['main']['App']['SetRoomVoicePlaybackMuted'](arg1);
 }
 
 export function SetTailscaleAuthKey(arg1) {

@@ -21,6 +21,7 @@ const (
 	EventGameCastSignal       Event = "gamecast:signal"
 	EventGameCastStatus       Event = "gamecast:status"
 	EventGameCastShareRuntime Event = "gamecast:share-runtime"
+	EventGameCastVoiceState   Event = "gamecast:voice-state"
 	EventError                Event = "error"
 )
 

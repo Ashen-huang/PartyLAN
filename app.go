@@ -29,6 +29,7 @@ import (
 	"PartyLAN/internal/gamecast/rooms"
 	"PartyLAN/internal/gamecast/session"
 	"PartyLAN/internal/gamecast/sharecatalog"
+	gamecastvoice "PartyLAN/internal/gamecast/voice"
 	gamecastws "PartyLAN/internal/gamecast/ws"
 	"PartyLAN/internal/media"
 	"PartyLAN/internal/native/windowsaudio"
@@ -94,6 +95,9 @@ type App struct {
 	gamecastViewerIntentCancel context.CancelFunc
 	gamecastViewerIntentRoom   string
 	gamecastQualityFailureLog  time.Time
+	gamecastVoice              roomVoiceSession
+	gamecastVoiceFactory       func(gamecastvoice.Config) roomVoiceSession
+	processLookup              func(int) (ps.Process, error)
 	gamecastMediaCancel        context.CancelFunc
 	gamecastMediaDone          chan struct{}
 	mediaCancel                context.CancelFunc
@@ -124,6 +128,10 @@ func NewApp(net network.Network) *App {
 		audioShareSession:     audio.NewShareSession(),
 		voiceVolume:           0.8,
 		gamecastParticipantID: rooms.GenerateRoomID("client"),
+		gamecastVoiceFactory: func(config gamecastvoice.Config) roomVoiceSession {
+			return gamecastvoice.New(config)
+		},
+		processLookup: ps.FindProcess,
 	}
 }
 
@@ -201,18 +209,28 @@ type VoiceStateSnapshot struct {
 	Message      string `json:"message"`
 }
 
+type roomVoiceSession interface {
+	Start(context.Context) error
+	Stop()
+	Snapshot() gamecastvoice.State
+	SetMicrophoneEnabled(bool) gamecastvoice.State
+	SetPlaybackMuted(bool) gamecastvoice.State
+}
+
 type shareSession struct {
-	roomID       string
-	peerID       string
-	displayIndex int
-	windowHandle uintptr
-	sourceKind   string
-	sourceLabel  string
-	width        int
-	height       int
-	fps          int
-	audioMode    string
-	ready        <-chan struct{}
+	roomID           string
+	peerID           string
+	displayIndex     int
+	windowHandle     uintptr
+	sourceKind       string
+	sourceLabel      string
+	audioProcessID   uint32
+	audioProcessName string
+	width            int
+	height           int
+	fps              int
+	audioMode        string
+	ready            <-chan struct{}
 }
 
 func logVideoCapability(prefix string, capability video.BackendCapability) {
@@ -3341,6 +3359,8 @@ func (a *App) StartNativeGameCastSharing(request GameCastHostShareRequest) (Game
 	displays := video.ListDisplays()
 	displayIndex := 0
 	windowHandle := uintptr(0)
+	windowProcessID := uint32(0)
+	windowProcessName := ""
 	sourceWidth := 0
 	sourceHeight := 0
 
@@ -3359,7 +3379,7 @@ func (a *App) StartNativeGameCastSharing(request GameCastHostShareRequest) (Game
 		sourceHeight = bounds.Dy()
 	case string(sharecatalog.SourceKindWindow):
 		var err error
-		windowHandle, sourceWidth, sourceHeight, err = resolveWindowShareSelection(request.SourceID)
+		windowHandle, sourceWidth, sourceHeight, windowProcessID, windowProcessName, err = resolveWindowShareSelection(request.SourceID)
 		if err != nil {
 			return GameCastRoomState{}, err
 		}
@@ -3371,17 +3391,19 @@ func (a *App) StartNativeGameCastSharing(request GameCastHostShareRequest) (Game
 	fps := normalizeShareFPS(request.FPS)
 	ready := make(chan struct{})
 	session := &shareSession{
-		roomID:       roomID,
-		peerID:       gameCastSharePeerID(request),
-		displayIndex: displayIndex,
-		windowHandle: windowHandle,
-		sourceKind:   sourceKind,
-		sourceLabel:  strings.TrimSpace(request.SourceLabel),
-		width:        width,
-		height:       height,
-		fps:          fps,
-		audioMode:    "off",
-		ready:        ready,
+		roomID:           roomID,
+		peerID:           gameCastSharePeerID(request),
+		displayIndex:     displayIndex,
+		windowHandle:     windowHandle,
+		sourceKind:       sourceKind,
+		sourceLabel:      strings.TrimSpace(request.SourceLabel),
+		audioProcessID:   windowProcessID,
+		audioProcessName: windowProcessName,
+		width:            width,
+		height:           height,
+		fps:              fps,
+		audioMode:        "off",
+		ready:            ready,
 	}
 	readyClosed := false
 	defer func() {
@@ -3527,32 +3549,32 @@ func resolveDisplayShareSelection(sourceID, sourceKind string, displayCount int)
 	return 0, fmt.Errorf("unsupported share source type")
 }
 
-func resolveWindowShareSelection(sourceID string) (uintptr, int, int, error) {
+func resolveWindowShareSelection(sourceID string) (uintptr, int, int, uint32, string, error) {
 	if strings.TrimSpace(sourceID) == "" {
-		return 0, 0, 0, fmt.Errorf("window share source is required")
+		return 0, 0, 0, 0, "", fmt.Errorf("window share source is required")
 	}
 	var handle uint64
 	if _, err := fmt.Sscanf(strings.TrimSpace(sourceID), "window:%d", &handle); err != nil || handle == 0 {
-		return 0, 0, 0, fmt.Errorf("invalid window source selection")
+		return 0, 0, 0, 0, "", fmt.Errorf("invalid window source selection")
 	}
 	capturer := hostwindowcapture.New(uintptr(handle), defaultShareFPS)
 	bounds, err := capturer.Bounds()
 	if err != nil {
-		return 0, 0, 0, err
+		return 0, 0, 0, 0, "", err
 	}
-	return uintptr(handle), bounds.Dx(), bounds.Dy(), nil
+	process, err := sharecatalog.ResolveWindowProcess(uintptr(handle))
+	if err != nil {
+		return 0, 0, 0, 0, "", err
+	}
+	return uintptr(handle), bounds.Dx(), bounds.Dy(), process.ProcessID, process.ProcessName, nil
 }
 
-func (a *App) resolveGameCastAudioCaptureTarget(request GameCastHostShareRequest, session *shareSession) (audioCaptureTarget, bool, string) {
-	audioMode := strings.TrimSpace(request.AudioMode)
-	if audioMode == "" {
-		audioMode = "off"
-	}
-	if audioMode == "off" {
+func (a *App) resolveGameCastAudioCaptureTarget(_ GameCastHostShareRequest, session *shareSession) (audioCaptureTarget, bool, string) {
+	if session == nil {
 		return audioCaptureTarget{}, false, "off"
 	}
 	if !a.audioCapability.SupportsProcessCapture {
-		log.Printf("[gamecast/audio] process/system loopback unavailable: %s", a.audioCapability.Reason)
+		log.Printf("[gamecast/audio] process loopback unavailable: %s", a.audioCapability.Reason)
 		return audioCaptureTarget{}, false, "off"
 	}
 	opusCapability := audio.QueryOpusCapability()
@@ -3561,35 +3583,66 @@ func (a *App) resolveGameCastAudioCaptureTarget(request GameCastHostShareRequest
 		return audioCaptureTarget{}, false, "off"
 	}
 
-	switch audioMode {
-	case "system":
+	switch session.sourceKind {
+	case string(sharecatalog.SourceKindDisplay):
 		return audioCaptureTarget{
-			PID:  0,
-			Name: "system-audio",
-			Mode: windowsaudio.CaptureSystemMix,
-		}, true, "system"
-	case "process":
-		processName := strings.TrimSpace(request.AudioProcessName)
+			PID:  uint32(os.Getpid()),
+			Name: "PartyLAN process tree",
+			Mode: windowsaudio.CaptureExcludeProcessTree,
+		}, true, "exclude-process"
+	case string(sharecatalog.SourceKindWindow):
+		processID := session.audioProcessID
+		lookup := a.processLookup
+		if lookup == nil {
+			lookup = ps.FindProcess
+		}
+		belongsToPartyLAN, processKnown := processTreeMembership(processID, uint32(os.Getpid()), lookup)
+		if processID == 0 || !processKnown || belongsToPartyLAN {
+			log.Printf("[gamecast/audio] unsafe window process target disabled pid=%d", processID)
+			return audioCaptureTarget{}, false, "off"
+		}
+		processName := strings.TrimSpace(session.audioProcessName)
 		if processName == "" {
-			selectedNames := a.audioShareSession.Selected()
-			if len(selectedNames) > 0 {
-				processName = selectedNames[0]
-			}
+			processName = fmt.Sprintf("PID %d", processID)
 		}
-		if target, ok := selectGameCastProcessAudioTarget(request.AudioProcessID, processName, a.resolveAudioCaptureTargetByName); ok {
-			return target, true, "process"
-		}
-		log.Printf("[gamecast/audio] process target unavailable pid=%d name=%q", request.AudioProcessID, processName)
-	}
-
-	if session != nil && session.sourceKind == string(sharecatalog.SourceKindDisplay) {
 		return audioCaptureTarget{
-			PID:  0,
-			Name: "system-audio",
-			Mode: windowsaudio.CaptureSystemMix,
-		}, true, "system"
+			PID:  processID,
+			Name: processName,
+			Mode: windowsaudio.CaptureIncludeProcessTree,
+		}, true, "process"
 	}
 	return audioCaptureTarget{}, false, "off"
+}
+
+func processTreeMembership(processID, rootProcessID uint32, lookup func(int) (ps.Process, error)) (bool, bool) {
+	if processID == 0 || rootProcessID == 0 || lookup == nil {
+		return false, false
+	}
+	visited := make(map[uint32]struct{}, 8)
+	current := processID
+	for depth := 0; depth < 64 && current != 0; depth++ {
+		if current == rootProcessID {
+			return true, true
+		}
+		if _, exists := visited[current]; exists {
+			return false, true
+		}
+		visited[current] = struct{}{}
+		process, err := lookup(int(current))
+		if err != nil || process == nil {
+			return false, false
+		}
+		if process.PPid() <= 0 {
+			return false, true
+		}
+		current = uint32(process.PPid())
+	}
+	return false, current == 0
+}
+
+func processBelongsToTree(processID, rootProcessID uint32, lookup func(int) (ps.Process, error)) bool {
+	belongs, _ := processTreeMembership(processID, rootProcessID, lookup)
+	return belongs
 }
 
 func selectGameCastProcessAudioTarget(
@@ -4138,8 +4191,115 @@ func (a *App) startGameCastPresence(roomID, role, origin string) (GameCastRoomSt
 	a.gamecastPresenceRole = role
 	a.gamecastPresenceOrigin = origin
 	a.mu.Unlock()
+	a.startGameCastVoice(heartbeatCtx, client, request)
 	go a.runGameCastPresenceHeartbeat(heartbeatCtx, request)
 	return roomState, nil
+}
+
+func (a *App) startGameCastVoice(ctx context.Context, client *gamecast.Client, request gamecast.PresenceRequest) {
+	if client == nil || request.Room == "" || request.ParticipantID == "" || request.ClientType != "client" {
+		return
+	}
+	var voiceSession roomVoiceSession
+	config := gamecastvoice.Config{
+		RoomID:            request.Room,
+		ParticipantID:     request.ParticipantID,
+		TokenIssuer:       client,
+		ConnectionFactory: gamecastvoice.NewPionConnection,
+		OnState: func(state gamecastvoice.State) {
+			a.emitGameCastVoiceStateIfCurrent(voiceSession, state)
+		},
+	}
+	a.mu.Lock()
+	factory := a.gamecastVoiceFactory
+	a.mu.Unlock()
+	if factory == nil {
+		factory = func(config gamecastvoice.Config) roomVoiceSession {
+			return gamecastvoice.New(config)
+		}
+	}
+	voiceSession = factory(config)
+	if voiceSession == nil {
+		a.emitGameCastVoiceState(gamecastvoice.State{
+			Connection: gamecastvoice.ConnectionError,
+			Microphone: gamecastvoice.MicrophoneUnavailable,
+			ErrorCode:  "voice_session_unavailable",
+		})
+		return
+	}
+
+	a.stopGameCastVoice()
+	a.mu.Lock()
+	a.gamecastVoice = voiceSession
+	a.mu.Unlock()
+	if err := voiceSession.Start(ctx); err != nil {
+		a.mu.Lock()
+		if a.gamecastVoice == voiceSession {
+			a.gamecastVoice = nil
+		}
+		a.mu.Unlock()
+		voiceSession.Stop()
+		a.emitGameCastVoiceState(gamecastvoice.State{
+			Connection: gamecastvoice.ConnectionError,
+			Microphone: gamecastvoice.MicrophoneUnavailable,
+			ErrorCode:  "voice_session_start_failed",
+		})
+	}
+}
+
+func (a *App) stopGameCastVoice() {
+	a.mu.Lock()
+	voiceSession := a.gamecastVoice
+	a.gamecastVoice = nil
+	a.mu.Unlock()
+	if voiceSession != nil {
+		voiceSession.Stop()
+	}
+}
+
+func (a *App) GetRoomVoiceState() gamecastvoice.State {
+	a.mu.Lock()
+	voiceSession := a.gamecastVoice
+	a.mu.Unlock()
+	if voiceSession == nil {
+		return gamecastvoice.State{Connection: gamecastvoice.ConnectionIdle, Microphone: gamecastvoice.MicrophoneMuted}
+	}
+	return voiceSession.Snapshot()
+}
+
+func (a *App) SetRoomVoiceMicrophoneEnabled(enabled bool) gamecastvoice.State {
+	a.mu.Lock()
+	voiceSession := a.gamecastVoice
+	a.mu.Unlock()
+	if voiceSession == nil {
+		return gamecastvoice.State{Connection: gamecastvoice.ConnectionIdle, Microphone: gamecastvoice.MicrophoneMuted}
+	}
+	return voiceSession.SetMicrophoneEnabled(enabled)
+}
+
+func (a *App) SetRoomVoicePlaybackMuted(muted bool) gamecastvoice.State {
+	a.mu.Lock()
+	voiceSession := a.gamecastVoice
+	a.mu.Unlock()
+	if voiceSession == nil {
+		return gamecastvoice.State{Connection: gamecastvoice.ConnectionIdle, Microphone: gamecastvoice.MicrophoneMuted}
+	}
+	return voiceSession.SetPlaybackMuted(muted)
+}
+
+func (a *App) emitGameCastVoiceStateIfCurrent(voiceSession roomVoiceSession, state gamecastvoice.State) {
+	a.mu.Lock()
+	current := voiceSession != nil && a.gamecastVoice == voiceSession
+	a.mu.Unlock()
+	if current {
+		a.emitGameCastVoiceState(state)
+	}
+}
+
+func (a *App) emitGameCastVoiceState(state gamecastvoice.State) {
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, string(app.EventGameCastVoiceState), state)
+	}
 }
 
 func (a *App) runGameCastPresenceHeartbeat(ctx context.Context, request gamecast.PresenceRequest) {
@@ -4168,6 +4328,7 @@ func (a *App) runGameCastPresenceHeartbeat(ctx context.Context, request gamecast
 }
 
 func (a *App) stopGameCastPresence(markInactive bool) {
+	a.stopGameCastVoice()
 	a.mu.Lock()
 	cancel := a.gamecastPresenceCancel
 	roomID := a.gamecastPresenceRoom

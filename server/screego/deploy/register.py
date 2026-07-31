@@ -17,13 +17,15 @@ import urllib.error
 
 import bcrypt
 
-from gamecast_control import ControlError, ControlPlane
+from gamecast_control import ControlError, ControlPlane, issue_voice_token
 
 HTPASSWD_FILE = os.environ.get('SCREEGO_USERS_FILE_HOST', '/etc/gamecast-sfu/users.htpasswd')
 HISTORY_DIR = '/root/screego/history'
 STATS_DIR = '/root/screego/stats'
 LISTEN_PORT = 5052
 ROOM_STATE_TTL = 15
+VOICE_TOKEN_TTL = 15
+GAMECAST_VOICE_SECRET = os.environ.get('GAMECAST_VOICE_SECRET', '').strip()
 MAX_POST_BODY = 256 * 1024
 USERNAME_RE = re.compile(r'^[a-zA-Z0-9_\-]{2,20}$')
 BACKEND_CONFIG_URL = 'http://127.0.0.1:5060/config'
@@ -908,6 +910,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if not self.enforce_rate_limit('presence:post', 360, 60):
                     return
                 self.handle_presence(request_path, data)
+            elif request_path == '/api/voice/token':
+                if not self.enforce_rate_limit('voice-token:post', 360, 60):
+                    return
+                self.handle_voice_token(data)
             elif request_path in (
                 '/api/share/claim',
                 '/api/share/heartbeat',
@@ -1032,6 +1038,32 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_control_error(error)
             return
         self.send_json(200, response)
+
+    def handle_voice_token(self, data):
+        if not GAMECAST_VOICE_SECRET:
+            self.send_control_error(ControlError('voice_unavailable', 503))
+            return
+        username = self.require_authenticated_user()
+        if not username:
+            return
+        try:
+            participant = control_plane.authorize_voice(
+                data.get('room'), data.get('participantId'), username
+            )
+            issued = issue_voice_token(
+                GAMECAST_VOICE_SECRET,
+                participant['room'],
+                participant['participantId'],
+                ttl=VOICE_TOKEN_TTL,
+            )
+        except ControlError as error:
+            self.send_control_error(error)
+            return
+        self.send_json(200, {
+            'ok': True,
+            'token': issued['token'],
+            'expiresAtUnix': issued['expiresAtUnix'],
+        })
 
     def handle_share(self, request_path, data):
         username = self.require_authenticated_user()

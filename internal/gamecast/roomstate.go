@@ -53,6 +53,19 @@ type PresenceResponse struct {
 	Error        string                `json:"error,omitempty"`
 }
 
+type VoiceTokenRequest struct {
+	Room          string `json:"room"`
+	ParticipantID string `json:"participantId"`
+}
+
+type VoiceTokenResponse struct {
+	OK            bool   `json:"ok"`
+	Token         string `json:"token,omitempty"`
+	ExpiresAtUnix int64  `json:"expiresAtUnix,omitempty"`
+	Code          string `json:"code,omitempty"`
+	Error         string `json:"error,omitempty"`
+}
+
 type ShareLeaseRequest struct {
 	Room          string `json:"room"`
 	ParticipantID string `json:"participantId"`

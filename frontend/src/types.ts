@@ -261,3 +261,22 @@ export interface VoiceChatState {
   status: VoiceStatus;
   error: string | null;
 }
+
+export type RoomVoiceConnectionState =
+  | 'idle'
+  | 'connecting'
+  | 'connected'
+  | 'reconnecting'
+  | 'full'
+  | 'unauthorized'
+  | 'error';
+
+export type RoomVoiceMicrophoneState = 'starting' | 'live' | 'muted' | 'unavailable';
+
+export interface RoomVoiceState {
+  connection: RoomVoiceConnectionState;
+  microphone: RoomVoiceMicrophoneState;
+  playbackMuted: boolean;
+  participantCount: number;
+  errorCode: string;
+}

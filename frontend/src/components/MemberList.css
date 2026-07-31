@@ -139,37 +139,3 @@
   color: var(--text-secondary);
   white-space: nowrap;
 }
-
-.member-actions {
-  margin-top: auto;
-  padding: 10px;
-  border-top: 1px solid rgba(68, 104, 145, 0.14);
-}
-
-.member-voice-btn {
-  width: 100%;
-  padding: 9px 12px;
-  border: 1px solid rgba(88, 130, 164, 0.2);
-  border-radius: 12px;
-  background: var(--surface-muted);
-  color: var(--text-primary);
-  font-size: 12px;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.member-voice-btn:hover {
-  background: var(--hover-bg);
-}
-
-.member-voice-btn.active {
-  border-color: rgba(57, 208, 183, 0.36);
-  background: rgba(57, 208, 183, 0.14);
-  color: var(--accent-strong);
-}
-
-.member-voice-btn.muted {
-  border-color: rgba(255, 131, 112, 0.28);
-  background: rgba(255, 131, 112, 0.12);
-  color: var(--danger-strong);
-}

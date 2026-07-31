@@ -1,7 +1,12 @@
 import concurrent.futures
 import unittest
 
-from gamecast_control import ControlError, ControlPlane
+from gamecast_control import (
+    ControlError,
+    ControlPlane,
+    issue_voice_token,
+    verify_voice_token,
+)
 
 
 class FakeClock:
@@ -187,6 +192,78 @@ class ControlPlaneTest(unittest.TestCase):
         web = next(item for item in participants if item["participantId"] == "web-member")
         self.assertTrue(web["sharing"])
         self.assertEqual(web["clientType"], "web")
+
+    def test_share_lease_preserves_exclude_process_audio_mode(self):
+        lease = self.control.claim_share(
+            {
+                "room": "room-1",
+                "participantId": "client-owner",
+                "audioMode": "exclude-process",
+            },
+            "owner",
+        )
+        room = self.control.get_room("room-1")
+        self.assertEqual(lease["audioMode"], "exclude-process")
+        self.assertEqual(room["audioMode"], "exclude-process")
+
+    def test_voice_authorization_requires_current_client_presence(self):
+        participant = self.control.authorize_voice(
+            "room-1", "client-owner", "owner"
+        )
+        self.assertEqual(participant["clientType"], "client")
+
+        self.control.join_presence(
+            {
+                "room": "room-1",
+                "participantId": "web-member",
+                "clientType": "web",
+                "role": "member",
+                "name": "Browser",
+            },
+            "webuser",
+        )
+        with self.assertRaises(ControlError) as caught:
+            self.control.authorize_voice("room-1", "web-member", "webuser")
+        self.assertEqual(caught.exception.code, "voice_client_required")
+        self.assertEqual(caught.exception.status, 403)
+
+        with self.assertRaises(ControlError) as caught:
+            self.control.authorize_voice("room-1", "client-owner", "other-user")
+        self.assertEqual(caught.exception.code, "participant_not_found")
+
+        self.clock.advance(16)
+        with self.assertRaises(ControlError) as caught:
+            self.control.authorize_voice("room-1", "client-owner", "owner")
+        self.assertEqual(caught.exception.code, "participant_not_found")
+
+    def test_voice_token_detects_tampering_expiry_and_wrong_audience(self):
+        issued = issue_voice_token(
+            "voice-secret",
+            "room-1",
+            "client-owner",
+            now=1000,
+            ttl=15,
+            jti_factory=lambda: "jti-1",
+        )
+        self.assertEqual(issued["expiresAtUnix"], 1015)
+        claims = verify_voice_token("voice-secret", issued["token"], now=1001)
+        self.assertEqual(claims["aud"], "voice-sfu")
+        self.assertEqual(claims["room"], "room-1")
+        self.assertEqual(claims["participantId"], "client-owner")
+        self.assertEqual(claims["clientType"], "client")
+        self.assertEqual(claims["jti"], "jti-1")
+
+        tampered = issued["token"][:-1] + ("A" if issued["token"][-1] != "A" else "B")
+        for token, now, audience, code in (
+            (tampered, 1001, "voice-sfu", "voice_token_invalid"),
+            (issued["token"], 1016, "voice-sfu", "voice_token_expired"),
+            (issued["token"], 1001, "other-service", "voice_token_invalid"),
+        ):
+            with self.assertRaises(ControlError) as caught:
+                verify_voice_token(
+                    "voice-secret", token, now=now, audience=audience
+                )
+            self.assertEqual(caught.exception.code, code)
 
 
 if __name__ == "__main__":

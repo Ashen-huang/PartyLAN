@@ -6,10 +6,6 @@ interface MemberListProps {
   selfMember: Member;
   otherMembers: Member[];
   t: Translator;
-  voiceLabel?: string;
-  voiceActive?: boolean;
-  voiceMuted?: boolean;
-  onOpenVoice?: () => void;
 }
 
 function MemberRow({ member, t, isSelf = false }: { member: Member; t: Translator; isSelf?: boolean }) {
@@ -37,10 +33,6 @@ export default function MemberList({
   selfMember,
   otherMembers,
   t,
-  voiceLabel,
-  voiceActive = false,
-  voiceMuted = false,
-  onOpenVoice,
 }: MemberListProps) {
   return (
     <div className="member-list">
@@ -63,17 +55,6 @@ export default function MemberList({
           </ul>
         )}
       </div>
-      {onOpenVoice && (
-        <div className="member-actions">
-          <button
-            className={`member-voice-btn ${voiceActive ? 'active' : ''} ${voiceMuted ? 'muted' : ''}`}
-            onClick={onOpenVoice}
-            type="button"
-          >
-            {voiceLabel || t('members.voiceChat')}
-          </button>
-        </div>
-      )}
     </div>
   );
 }

@@ -46,6 +46,7 @@ export class GameCastHost {
     this.options.onStateChange?.('capturing');
 
     const stream = await navigator.mediaDevices.getDisplayMedia(buildDisplayConstraints(settings));
+    discardNonVideoTracks(stream);
     await applyCaptureConstraints(stream, settings);
     this.localStream = stream;
     this.lastShareInfo = describeShare(stream, settings);
@@ -70,11 +71,9 @@ export class GameCastHost {
 
     this.options.onStateChange?.('connecting', 'creating host offer');
     const pc = this.createPeerConnection();
-    for (const track of this.localStream.getTracks()) {
+    for (const track of this.localStream.getVideoTracks()) {
       const sender = pc.addTrack(track, this.localStream);
-      if (track.kind === 'video') {
-        await tuneSender(sender, this.lastShareInfo);
-      }
+      await tuneSender(sender, this.lastShareInfo);
     }
 
     const offer = await pc.createOffer();
@@ -198,6 +197,16 @@ export class GameCastHost {
   }
 }
 
+function discardNonVideoTracks(stream: MediaStream): void {
+  for (const track of stream.getTracks()) {
+    if (track.kind === 'video') {
+      continue;
+    }
+    track.stop();
+    stream.removeTrack(track);
+  }
+}
+
 function buildDisplayConstraints(settings: ShareSettings): MediaStreamConstraints {
   const video: MediaTrackConstraints = {
     frameRate: {
@@ -211,12 +220,8 @@ function buildDisplayConstraints(settings: ShareSettings): MediaStreamConstraint
   }
   return {
     video,
-    audio: shouldRequestDisplayAudio(settings),
+    audio: false,
   };
-}
-
-function shouldRequestDisplayAudio(settings: ShareSettings): boolean {
-  return settings.audioMode !== 'off';
 }
 
 async function applyCaptureConstraints(stream: MediaStream, settings: ShareSettings): Promise<void> {

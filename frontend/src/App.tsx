@@ -5,7 +5,8 @@ import AvailableNodes from './components/AvailableNodes';
 import ScreenPreview from './components/ScreenPreview';
 import StatusBar from './components/StatusBar';
 import RoomControls from './components/RoomControls';
-import RoomToolsDialog, { type RoomToolsTab } from './components/RoomToolsDialog';
+import RoomToolsDialog from './components/RoomToolsDialog';
+import RoomVoiceControls from './components/RoomVoiceControls';
 import LobbyView from './components/LobbyView';
 import SettingsPanel from './components/SettingsPanel';
 import DiagnosticsPanel from './components/DiagnosticsPanel';
@@ -45,10 +46,10 @@ import {
   LogoutGameCast,
   GetRuntimeStatus,
   GetVideoCapability,
-  GetVoiceState,
+  GetRoomVoiceState,
   PostGameCastPlaybackStats,
-  SetVoiceMuted,
-  SetVoiceVolume,
+  SetRoomVoiceMicrophoneEnabled,
+  SetRoomVoicePlaybackMuted,
   SetTailscaleAuthKey,
   SetUserPreferences,
   SetGameCastHostSharing,
@@ -59,9 +60,7 @@ import {
   SendGameCastSignal,
   StartSharing,
   StartNativeGameCastSharing,
-  StartVoiceChat,
   StopSharing,
-  StopVoiceChat,
   TrustGameCastServerCertificate,
 } from '../wailsjs/go/main/App';
 import type {
@@ -77,8 +76,6 @@ import type {
   Member,
   NetworkStats,
   RoomState,
-  AudioState,
-  AudioShareSource,
   ShareSource,
   StreamFrame,
   StreamSettings,
@@ -88,8 +85,7 @@ import type {
   RuntimeStatus,
   MediaSignal,
   WebRTCPlaybackStats,
-  VoiceChatState,
-  VoiceStatus,
+  RoomVoiceState,
   UserPreferences,
 } from './types';
 import { GameCastReceiver } from './media/gamecastReceiver';
@@ -102,7 +98,6 @@ import {
   gameCastControlErrorMessageKey,
   gameCastFailureMessageKey,
   mergeGameCastPresenceMembers,
-  nativeGameCastAudioRequest,
   promoteGameCastViewerToHost,
   reduceGameCastViewerReconnectAttempt,
   selectOwnGameCastRoomAction,
@@ -116,6 +111,7 @@ import {
   type GameCastRoomEntry,
   type GameCastSharePath,
 } from './media/gamecastOrchestrator';
+import { normalizeRoomVoiceState } from './media/roomVoice';
 
 type Scene = 'lobby' | 'room-idle' | 'room-sharing-self' | 'room-sharing-watch';
 
@@ -158,8 +154,6 @@ interface AppState {
   members: Member[];
   network: NetworkStats;
   room: RoomState;
-  audio: AudioState;
-  audioSources: AudioShareSource[];
   frame: StreamFrame | null;
   streamStats: StreamStats | null;
   nodes: AvailableNode[];
@@ -170,10 +164,6 @@ interface AppState {
 }
 
 type AppAction =
-  | { type: 'TOGGLE_MIC' }
-  | { type: 'TOGGLE_SPEAKER' }
-  | { type: 'SET_VOLUME'; volume: number }
-  | { type: 'AUDIO_SOURCES_UPDATED'; sources: AudioShareSource[] }
   | { type: 'AUDIO_CAPABILITY'; capability: AudioCapability }
   | {
       type: 'NETWORK_STATUS';
@@ -217,12 +207,6 @@ const initialState: AppState = {
     hostVideoCapable: false,
     canShareToPeers: false,
   },
-  audio: {
-    micEnabled: true,
-    volume: 80,
-    speakerEnabled: true,
-  },
-  audioSources: [],
   frame: null,
   streamStats: null,
   nodes: [],
@@ -303,23 +287,6 @@ function rebuildGameCastPresenceMembers(
 
 function reducer(state: AppState, action: AppAction): AppState {
   switch (action.type) {
-    case 'TOGGLE_MIC':
-      return { ...state, audio: { ...state.audio, micEnabled: !state.audio.micEnabled } };
-    case 'TOGGLE_SPEAKER':
-      return {
-        ...state,
-        audio: {
-          ...state.audio,
-          speakerEnabled: !state.audio.speakerEnabled,
-        },
-      };
-    case 'SET_VOLUME':
-      return { ...state, audio: { ...state.audio, volume: action.volume } };
-    case 'AUDIO_SOURCES_UPDATED':
-      return {
-        ...state,
-        audioSources: action.sources,
-      };
     case 'AUDIO_CAPABILITY':
       return {
         ...state,
@@ -594,34 +561,6 @@ function loadLanguage(): Language {
   }
 }
 
-function voiceStatusFromSnapshot(snapshot: Partial<VoiceChatState>): VoiceStatus {
-  if (!snapshot.active) {
-    return 'idle';
-  }
-  if (snapshot.muted || snapshot.state === 1) {
-    return 'muted';
-  }
-  return 'active';
-}
-
-function toVoiceChatState(
-  snapshot: Partial<VoiceChatState>,
-  status?: VoiceStatus,
-  error: string | null = null,
-): VoiceChatState {
-  return {
-    active: Boolean(snapshot.active),
-    muted: Boolean(snapshot.muted),
-    volume: typeof snapshot.volume === 'number' ? snapshot.volume : 80,
-    state: typeof snapshot.state === 'number' ? snapshot.state : 0,
-    peerId: snapshot.peerId || '',
-    experimental: snapshot.experimental !== false,
-    message: snapshot.message || 'Experimental voice controls are connected; real device input and output are not complete yet.',
-    status: status || voiceStatusFromSnapshot(snapshot),
-    error,
-  };
-}
-
 function toNetworkStatus(payload: {
   nodeId?: string;
   peerCount?: number;
@@ -852,7 +791,7 @@ function isLegacyRuntimeMode(mode: string | null | undefined): boolean {
   return mode === 'loopback' || mode === 'lan' || mode === 'networked' || mode === 'tailscale-system';
 }
 
-const initialVoiceState: VoiceChatState = toVoiceChatState({});
+const initialRoomVoiceState: RoomVoiceState = normalizeRoomVoiceState(null);
 
 const initialGameCastProfile: GameCastProfile = {
   baseUrl: 'https://113.142.217.42:5050',
@@ -887,10 +826,10 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [roomToolsOpen, setRoomToolsOpen] = useState(false);
-  const [roomToolsInitialTab, setRoomToolsInitialTab] = useState<RoomToolsTab>('share');
   const [diagnosticsOverlayVisible, setDiagnosticsOverlayVisibleState] = useState(loadDiagnosticsOverlayVisible);
   const [language, setLanguageState] = useState<Language>(loadLanguage);
-  const [voiceState, setVoiceState] = useState<VoiceChatState>(initialVoiceState);
+  const [roomVoiceState, setRoomVoiceState] = useState<RoomVoiceState>(initialRoomVoiceState);
+  const [roomVoiceBusy, setRoomVoiceBusy] = useState(false);
   const [gameCast, setGameCast] = useState<GameCastClientState>(initialGameCastState);
   const [authKeyDraft, setAuthKeyDraft] = useState('');
   const [displayNameDraft, setDisplayNameDraft] = useState('');
@@ -1129,7 +1068,7 @@ export default function App() {
         invalidateGameCastViewer('room left');
         dispatch({ type: 'ROOM_LEFT' });
         setRoomToolsOpen(false);
-        setVoiceState(initialVoiceState);
+        setRoomVoiceState(initialRoomVoiceState);
         setRemoteMediaStream(null);
         setWebrtcStats(null);
         setGameCast((current) => ({
@@ -1192,18 +1131,9 @@ export default function App() {
         if (peerId) {
           dispatch({ type: 'PEER_VOICE_STATE', id: peerId, state: nextState });
         }
-        setVoiceState((current) => {
-          if (!current.active) {
-            return current;
-          }
-          const muted = nextState === 1;
-          return {
-            ...current,
-            muted,
-            state: nextState,
-            status: muted ? 'muted' : 'active',
-          };
-        });
+      }),
+      EventsOn('gamecast:voice-state', (payload) => {
+        setRoomVoiceState(normalizeRoomVoiceState(payload));
       }),
       EventsOn('stream:started', (payload) => {
         if (payload.peerId) {
@@ -1535,53 +1465,6 @@ export default function App() {
   }, [state.runtime?.mode]);
 
   useEffect(() => {
-    let cancelled = false;
-
-    async function loadAudioSources() {
-      try {
-        const { GetAudioShareCandidates } = await import('../wailsjs/go/main/App');
-        const rawSources = await GetAudioShareCandidates();
-        if (cancelled) {
-          return;
-        }
-        const sources = Array.isArray(rawSources) ? rawSources : [];
-        dispatch({
-          type: 'AUDIO_SOURCES_UPDATED',
-          sources: sources.map((source: {
-            pid?: number;
-            name?: string;
-            displayName?: string;
-            iconDataUrl?: string;
-            active?: boolean;
-            selected?: boolean;
-          }) => ({
-            pid: source.pid ?? 0,
-            name: source.name ?? '',
-            displayName: source.displayName ?? '',
-            iconDataUrl: source.iconDataUrl ?? '',
-            active: source.active !== false,
-            selected: Boolean(source.selected),
-          })),
-        });
-      } catch {
-        if (!cancelled) {
-          dispatch({ type: 'AUDIO_SOURCES_UPDATED', sources: [] });
-        }
-      }
-    }
-
-    void loadAudioSources();
-    const timer = window.setInterval(() => {
-      void loadAudioSources();
-    }, 5000);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, []);
-
-  useEffect(() => {
     if (!roomToolsOpen) {
       return;
     }
@@ -1709,20 +1592,20 @@ export default function App() {
   useEffect(() => {
     let cancelled = false;
 
-    async function loadVoiceState() {
+    async function loadRoomVoiceState() {
       try {
-        const snapshot = await GetVoiceState();
+        const snapshot = await GetRoomVoiceState();
         if (!cancelled) {
-          setVoiceState(toVoiceChatState(snapshot));
+          setRoomVoiceState(normalizeRoomVoiceState(snapshot));
         }
       } catch {
         if (!cancelled) {
-          setVoiceState(initialVoiceState);
+          setRoomVoiceState(initialRoomVoiceState);
         }
       }
     }
 
-    void loadVoiceState();
+    void loadRoomVoiceState();
 
     return () => {
       cancelled = true;
@@ -1915,12 +1798,12 @@ export default function App() {
         }));
         dispatch({ type: 'ROOM_LEFT' });
         setRoomToolsOpen(false);
-        setVoiceState(initialVoiceState);
+        setRoomVoiceState(initialRoomVoiceState);
         return;
       }
       await LeaveRoom();
       setRoomToolsOpen(false);
-      setVoiceState(initialVoiceState);
+      setRoomVoiceState(initialRoomVoiceState);
     });
 
   const stopGameCastHostShare = async (roomId: string, detail = 'host stopped') => {
@@ -2021,15 +1904,6 @@ export default function App() {
         ...current,
         operationError: null,
       }));
-      const selectedAudioSource = state.audioSources.find((source) => source.selected);
-      const requestedAudio = nativeGameCastAudioRequest(
-        settings,
-        selectedAudioSource?.name || '',
-        selectedAudioSource?.pid,
-      );
-      const requestedAudioMode = requestedAudio.audioMode;
-      const requestedAudioProcessName = requestedAudio.audioProcessName;
-
       if (
         (state.room.selfPeerId === GAMECAST_HOST_PEER_ID || state.room.selfPeerId === GAMECAST_SELF_PEER_ID) &&
         state.room.roomId
@@ -2113,7 +1987,6 @@ export default function App() {
                 width: shareInfo.width,
                 height: shareInfo.height,
                 fps: shareInfo.fps,
-                audioMode: requestedAudioMode === 'off' ? 'off' : 'system',
               }),
               roomId,
             );
@@ -2162,9 +2035,6 @@ export default function App() {
               width: settings.width,
               height: settings.height,
               fps: settings.fps,
-              audioMode: requestedAudioMode,
-              audioProcessName: requestedAudioProcessName,
-              audioProcessId: requestedAudio.audioProcessId,
             }),
             roomId,
           );
@@ -2253,20 +2123,6 @@ export default function App() {
       await StopSharing();
     });
 
-  const handleToggleAudioSource = (pid: number) =>
-    withBusy(async () => {
-      const { SetAudioShareSelection } = await import('../wailsjs/go/main/App');
-      const target = state.audioSources.find((source) => source.pid === pid);
-      const shouldSelect = Boolean(target && !target.selected);
-      const nextSources = state.audioSources.map((source) => ({
-        ...source,
-        selected: shouldSelect && source.pid === pid,
-      }));
-      const selected = shouldSelect && target?.name ? [target.name] : [];
-      await SetAudioShareSelection(selected);
-      dispatch({ type: 'AUDIO_SOURCES_UPDATED', sources: nextSources });
-    });
-
   function selectedDisplayIndexFromSource(sourceId: string, sourceKind: string): number {
     if (sourceKind !== 'display') {
       return 0;
@@ -2279,8 +2135,7 @@ export default function App() {
     return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
   }
 
-  const openRoomTools = (tab: RoomToolsTab) => {
-    setRoomToolsInitialTab(tab);
+  const openRoomTools = () => {
     setRoomToolsOpen(true);
   };
 
@@ -2302,47 +2157,28 @@ export default function App() {
     }
   };
 
-  const handleStartVoice = () =>
-    withBusy(async () => {
-      setVoiceState((current) => ({ ...current, status: 'starting', error: null }));
-      try {
-        const snapshot = await StartVoiceChat();
-        setVoiceState(toVoiceChatState(snapshot));
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        setVoiceState((current) => ({
-          ...current,
-          active: false,
-          status: 'error',
-          error: message,
-        }));
-        throw err;
-      }
-    });
+  const handleRoomVoiceMicrophoneChange = async (enabled: boolean) => {
+    if (roomVoiceBusy) return;
+    setRoomVoiceBusy(true);
+    try {
+      setRoomVoiceState(normalizeRoomVoiceState(await SetRoomVoiceMicrophoneEnabled(enabled)));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRoomVoiceBusy(false);
+    }
+  };
 
-  const handleStopVoice = () =>
-    withBusy(async () => {
-      const snapshot = await StopVoiceChat();
-      setVoiceState(toVoiceChatState(snapshot));
-    });
-
-  const handleToggleVoiceMuted = () =>
-    withBusy(async () => {
-      const snapshot = await SetVoiceMuted(!voiceState.muted);
-      setVoiceState(toVoiceChatState(snapshot));
-    });
-
-  const handleVoiceVolumeChange = (volume: number) => {
-    setVoiceState((current) => ({ ...current, volume }));
-    SetVoiceVolume(volume)
-      .then((snapshot) => setVoiceState(toVoiceChatState(snapshot)))
-      .catch((err) => {
-        setVoiceState((current) => ({
-          ...current,
-          status: 'error',
-          error: err instanceof Error ? err.message : String(err),
-        }));
-      });
+  const handleRoomVoicePlaybackMutedChange = async (muted: boolean) => {
+    if (roomVoiceBusy) return;
+    setRoomVoiceBusy(true);
+    try {
+      setRoomVoiceState(normalizeRoomVoiceState(await SetRoomVoicePlaybackMuted(muted)));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRoomVoiceBusy(false);
+    }
   };
 
   const handleOpenAuthUrl = () => {
@@ -2717,16 +2553,6 @@ export default function App() {
       ? t('members.self')
       : state.members.find((member) => member.id === state.streamSettings?.peerId)?.name || state.streamSettings.peerId
     : null;
-  const voiceButtonLabel =
-    voiceState.status === 'starting'
-      ? t('voice.connecting')
-      : voiceState.status === 'error'
-        ? t('voice.error')
-        : voiceState.muted
-          ? t('voice.muted')
-          : voiceState.active
-            ? t('voice.active')
-            : t('members.voiceChat');
   const roomDiagnosticsOverlay = diagnosticsOverlayVisible ? (
     <DiagnosticsPanel
       variant="overlay"
@@ -2775,6 +2601,7 @@ export default function App() {
   const canSubmitGameCastAuth = Boolean(gameCast.authUserDraft.trim() && gameCast.authPassDraft);
   const runtimeMode = state.runtime?.mode || 'gamecast-client';
   const showLegacyLobbyTools = isLegacyRuntimeMode(runtimeMode);
+  const showRoomVoiceControls = runtimeMode === 'gamecast-client' && state.room.inRoom;
   const showLegacyNetworkSettings = runtimeMode === 'networked' || runtimeMode === 'tailscale-system';
   const gameCastServerConfigured = Boolean(gameCast.profile.baseUrl.trim());
   const gameCastStatusItems = [
@@ -2851,7 +2678,7 @@ export default function App() {
                   onCreateRoom={handleCreateRoom}
                   onJoinRoom={handleJoinRoom}
                   onLeaveRoom={handleLeaveRoom}
-                  onOpenShareSettings={() => openRoomTools('share')}
+                  onOpenShareSettings={openRoomTools}
                   onStopSharing={handleStopSharing}
                 />
                 <AvailableNodes
@@ -2871,12 +2698,18 @@ export default function App() {
                   selfMember={selfMember}
                   otherMembers={otherMembers}
                   t={t}
-                  voiceLabel={voiceButtonLabel}
-                  voiceActive={voiceState.active}
-                  voiceMuted={voiceState.muted}
-                  onOpenVoice={() => openRoomTools('voice')}
                 />
               </div>
+
+              {showRoomVoiceControls && (
+                <RoomVoiceControls
+                  state={roomVoiceState}
+                  busy={roomVoiceBusy}
+                  t={t}
+                  onMicrophoneChange={handleRoomVoiceMicrophoneChange}
+                  onPlaybackMutedChange={handleRoomVoicePlaybackMutedChange}
+                />
+              )}
 
               <RoomControls
                 inRoom={state.room.inRoom}
@@ -2892,7 +2725,7 @@ export default function App() {
                 onCreateRoom={handleCreateRoom}
                 onJoinRoom={handleJoinRoom}
                 onLeaveRoom={handleLeaveRoom}
-                onOpenShareSettings={() => openRoomTools('share')}
+                onOpenShareSettings={openRoomTools}
                 onStopSharing={handleStopSharing}
               />
             </aside>
@@ -2960,27 +2793,14 @@ export default function App() {
 
       <RoomToolsDialog
         open={roomToolsOpen}
-        initialTab={roomToolsInitialTab}
         busy={busy}
         sharing={state.room.sharing}
         hostVideoCapable={hostCanStartSharing}
         shareSources={shareSources}
-        audio={state.audio}
-        audioCapability={state.audioCapability}
-        audioSources={state.audioSources}
-        voice={voiceState}
         error={error}
         t={t}
         onClose={() => setRoomToolsOpen(false)}
         onStartSharing={handleStartSharing}
-        onToggleMic={() => dispatch({ type: 'TOGGLE_MIC' })}
-        onToggleSpeaker={() => dispatch({ type: 'TOGGLE_SPEAKER' })}
-        onVolumeChange={(volume: number) => dispatch({ type: 'SET_VOLUME', volume })}
-        onToggleAudioSource={handleToggleAudioSource}
-        onStartVoice={handleStartVoice}
-        onStopVoice={handleStopVoice}
-        onToggleVoiceMuted={handleToggleVoiceMuted}
-        onVoiceVolumeChange={handleVoiceVolumeChange}
       />
     </div>
   );

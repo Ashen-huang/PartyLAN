@@ -2,7 +2,10 @@
 
 package sharecatalog
 
-import "image"
+import (
+	"fmt"
+	"image"
+)
 
 func currentProcessID() int {
 	return 0
@@ -18,4 +21,8 @@ func displayPreviewDataURL(_ int, _ image.Rectangle) string {
 
 func windowPreviewDataURL(_ WindowCandidate) string {
 	return ""
+}
+
+func resolveWindowProcess(_ uintptr) (WindowProcess, error) {
+	return WindowProcess{}, fmt.Errorf("window process lookup is unavailable")
 }

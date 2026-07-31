@@ -14,7 +14,7 @@ from unittest import mock
 import bcrypt
 
 import register
-from gamecast_control import ControlPlane
+from gamecast_control import ControlPlane, verify_voice_token
 
 
 DIAGNOSTIC_NUMBER_FIELDS = (
@@ -56,6 +56,8 @@ class RegisterControlAPITest(unittest.TestCase):
         register.quality_samples.clear()
         register.quality_clock = lambda: 1000.0
         self.original_htpasswd_file = register.HTPASSWD_FILE
+        self.original_voice_secret = register.GAMECAST_VOICE_SECRET
+        register.GAMECAST_VOICE_SECRET = "test-voice-secret"
         self.temp_dir = tempfile.TemporaryDirectory()
         register.HTPASSWD_FILE = os.path.join(self.temp_dir.name, "users.htpasswd")
         self.legacy_record = b"legacy:" + bcrypt.hashpw(b"legacy-pass", bcrypt.gensalt(rounds=4)) + b"\n"
@@ -71,6 +73,7 @@ class RegisterControlAPITest(unittest.TestCase):
         self.server.server_close()
         self.thread.join(timeout=2)
         register.HTPASSWD_FILE = self.original_htpasswd_file
+        register.GAMECAST_VOICE_SECRET = self.original_voice_secret
         self.temp_dir.cleanup()
 
     def request(self, method, path, payload=None):
@@ -154,6 +157,79 @@ class RegisterControlAPITest(unittest.TestCase):
         )
         self.assertEqual(status, 200)
         self.assertFalse(released["room"]["sharing"])
+
+    def test_voice_token_requires_authenticated_client_presence(self):
+        status, _ = self.request(
+            "POST",
+            "/api/presence/join",
+            {
+                "room": "voice-room",
+                "participantId": "client-voice",
+                "clientType": "client",
+                "origin": "client",
+                "role": "owner",
+                "name": "Desktop",
+            },
+        )
+        self.assertEqual(status, 200)
+
+        status, response = self.request(
+            "POST",
+            "/api/voice/token",
+            {"room": "voice-room", "participantId": "client-voice"},
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(response["ok"])
+        self.assertNotIn("test-voice-secret", json.dumps(response))
+        claims = verify_voice_token(
+            "test-voice-secret", response["token"], now=response["expiresAtUnix"] - 1
+        )
+        self.assertEqual(claims["room"], "voice-room")
+        self.assertEqual(claims["participantId"], "client-voice")
+
+        original_resolver = register.resolve_authenticated_user
+        register.resolve_authenticated_user = lambda _headers: None
+        try:
+            status, response = self.request(
+                "POST",
+                "/api/voice/token",
+                {"room": "voice-room", "participantId": "client-voice"},
+            )
+        finally:
+            register.resolve_authenticated_user = original_resolver
+        self.assertEqual(status, 401)
+        self.assertFalse(response["ok"])
+
+    def test_voice_token_rejects_web_presence_and_missing_secret(self):
+        status, _ = self.request(
+            "POST",
+            "/api/presence/join",
+            {
+                "room": "web-voice-room",
+                "participantId": "web-voice",
+                "clientType": "web",
+                "origin": "web",
+                "role": "owner",
+                "name": "Browser",
+            },
+        )
+        self.assertEqual(status, 200)
+        status, response = self.request(
+            "POST",
+            "/api/voice/token",
+            {"room": "web-voice-room", "participantId": "web-voice"},
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(response["code"], "voice_client_required")
+
+        register.GAMECAST_VOICE_SECRET = ""
+        status, response = self.request(
+            "POST",
+            "/api/voice/token",
+            {"room": "web-voice-room", "participantId": "web-voice"},
+        )
+        self.assertEqual(status, 503)
+        self.assertEqual(response["code"], "voice_unavailable")
 
     def test_quality_report_requires_active_room_participant(self):
         status, response = self.request(

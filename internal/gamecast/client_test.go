@@ -128,6 +128,19 @@ func TestPresenceAndShareLeaseAPIs(t *testing.T) {
 				Lease: &ShareLease{Room: "room-1", LeaseID: "lease-1", ParticipantID: "client-1", Active: r.URL.Path != "/api/share/release"},
 				Room:  &RoomState{Room: "room-1", Active: true, Origin: "client"},
 			})
+		case "/api/voice/token":
+			var payload VoiceTokenRequest
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode voice token request: %v", err)
+			}
+			if payload.Room != "room-1" || payload.ParticipantID != "client-1" {
+				t.Fatalf("voice token payload = %#v", payload)
+			}
+			_ = json.NewEncoder(w).Encode(VoiceTokenResponse{
+				OK:            true,
+				Token:         "signed-token",
+				ExpiresAtUnix: 1015,
+			})
 		default:
 			t.Fatalf("unexpected path %q", r.URL.Path)
 		}
@@ -162,6 +175,10 @@ func TestPresenceAndShareLeaseAPIs(t *testing.T) {
 	if _, _, err := client.ReleaseShare(ctx, leaseRequest); err != nil {
 		t.Fatalf("ReleaseShare: %v", err)
 	}
+	voiceToken, err := client.IssueVoiceToken(ctx, VoiceTokenRequest{Room: "room-1", ParticipantID: "client-1"})
+	if err != nil || voiceToken.Token != "signed-token" || voiceToken.ExpiresAtUnix != 1015 {
+		t.Fatalf("IssueVoiceToken token=%#v err=%v", voiceToken, err)
+	}
 	if _, err := client.LeavePresence(ctx, presence); err != nil {
 		t.Fatalf("LeavePresence: %v", err)
 	}
@@ -172,6 +189,7 @@ func TestPresenceAndShareLeaseAPIs(t *testing.T) {
 		"/api/share/claim",
 		"/api/share/heartbeat",
 		"/api/share/release",
+		"/api/voice/token",
 		"/api/presence/leave",
 	}
 	if strings.Join(paths, ",") != strings.Join(want, ",") {

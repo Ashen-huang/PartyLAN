@@ -52,6 +52,18 @@ type WindowCandidate struct {
 	PreviewDataURL string
 }
 
+type WindowProcess struct {
+	ProcessID   uint32
+	ProcessName string
+}
+
+func ResolveWindowProcess(handle uintptr) (WindowProcess, error) {
+	if handle == 0 {
+		return WindowProcess{}, fmt.Errorf("window handle is required")
+	}
+	return resolveWindowProcess(handle)
+}
+
 func ListSources() []Source {
 	displays := video.ListDisplays()
 	sources := DisplaySources(displays)

@@ -7,8 +7,11 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,6 +20,7 @@ import (
 	"PartyLAN/internal/gamecast/adaptive"
 	hostwindowcapture "PartyLAN/internal/gamecast/host/windowcapture"
 	"PartyLAN/internal/gamecast/session"
+	gamecastvoice "PartyLAN/internal/gamecast/voice"
 	gamecastws "PartyLAN/internal/gamecast/ws"
 	"PartyLAN/internal/native/windowsaudio"
 	"PartyLAN/internal/network"
@@ -367,6 +371,94 @@ func TestEnterGameCastHostRoomDoesNotWriteLegacyRoomState(t *testing.T) {
 		if request == "POST /api/room-state" {
 			t.Fatalf("modern room entry unexpectedly wrote legacy state: %v", requests)
 		}
+	}
+}
+
+type fakeRoomVoiceSession struct {
+	started chan struct{}
+	stopped atomic.Bool
+	state   gamecastvoice.State
+}
+
+func (s *fakeRoomVoiceSession) Start(context.Context) error {
+	close(s.started)
+	return nil
+}
+
+func (s *fakeRoomVoiceSession) Stop() {
+	s.stopped.Store(true)
+}
+
+func (s *fakeRoomVoiceSession) Snapshot() gamecastvoice.State {
+	return s.state
+}
+
+func (s *fakeRoomVoiceSession) SetMicrophoneEnabled(enabled bool) gamecastvoice.State {
+	if enabled {
+		s.state.Microphone = gamecastvoice.MicrophoneLive
+	} else {
+		s.state.Microphone = gamecastvoice.MicrophoneMuted
+	}
+	return s.state
+}
+
+func (s *fakeRoomVoiceSession) SetPlaybackMuted(muted bool) gamecastvoice.State {
+	s.state.PlaybackMuted = muted
+	return s.state
+}
+
+func TestGameCastPresenceStartsVoiceAndStopsItBeforeLeave(t *testing.T) {
+	voiceSession := &fakeRoomVoiceSession{
+		started: make(chan struct{}),
+		state: gamecastvoice.State{
+			Connection: gamecastvoice.ConnectionConnecting,
+			Microphone: gamecastvoice.MicrophoneStarting,
+		},
+	}
+	leaveObserved := make(chan bool, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch request.URL.Path {
+		case "/api/presence/join":
+			_, _ = w.Write([]byte(`{"ok":true,"participant":{"participantId":"client-test","room":"room-voice","clientType":"client","role":"member","active":true},"room":{"room":"room-voice","active":true,"origin":"client","sharing":false,"sfu":false,"audioMode":"off","ttl":15}}`))
+		case "/api/presence/leave":
+			leaveObserved <- voiceSession.stopped.Load()
+			_, _ = w.Write([]byte(`{"ok":true,"participant":{"participantId":"client-test","room":"room-voice","clientType":"client","role":"member","active":false}}`))
+		default:
+			http.Error(w, `{"error":"unexpected endpoint"}`, http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	jar, err := session.New(filepath.Join(t.TempDir(), "cookies.json"))
+	if err != nil {
+		t.Fatalf("create test cookie jar: %v", err)
+	}
+	application := NewApp(network.NewLoopbackNetwork("self"))
+	application.cfg = config.DefaultConfig()
+	application.cfg.GameCast.BaseURL = server.URL
+	application.gamecastJar = jar
+	application.gamecastParticipantID = "client-test"
+	application.gamecastVoiceFactory = func(gamecastvoice.Config) roomVoiceSession {
+		return voiceSession
+	}
+
+	if _, err := application.startGameCastPresence("room-voice", "member", "client"); err != nil {
+		t.Fatalf("startGameCastPresence: %v", err)
+	}
+	select {
+	case <-voiceSession.started:
+	case <-time.After(time.Second):
+		t.Fatal("voice session did not start after Presence join")
+	}
+	application.stopGameCastPresence(true)
+	select {
+	case stopped := <-leaveObserved:
+		if !stopped {
+			t.Fatal("Presence leave was sent before the voice session stopped")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Presence leave was not sent")
 	}
 }
 
@@ -828,6 +920,141 @@ func TestGameCastAudioStartupDoesNotFallbackToSystemMix(t *testing.T) {
 	}
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("audio startup error = %v, want %v", err, wantErr)
+	}
+}
+
+func TestResolveGameCastDisplayAudioExcludesPartyLANRegardlessOfRequestedMode(t *testing.T) {
+	ensureTestOpusDLL(t)
+	application := &App{audioCapability: windowsaudio.Capability{SupportsProcessCapture: true}}
+	session := &shareSession{sourceKind: "display"}
+
+	target, enabled, mode := application.resolveGameCastAudioCaptureTarget(GameCastHostShareRequest{
+		AudioMode:      "off",
+		AudioProcessID: 4242,
+	}, session)
+
+	if !enabled {
+		t.Fatal("expected safe display audio capture to be enabled")
+	}
+	if target.Mode != windowsaudio.CaptureExcludeProcessTree {
+		t.Fatalf("display capture mode = %v, want CaptureExcludeProcessTree", target.Mode)
+	}
+	if target.PID != uint32(os.Getpid()) {
+		t.Fatalf("display exclusion PID = %d, want current PID %d", target.PID, os.Getpid())
+	}
+	if mode != "exclude-process" {
+		t.Fatalf("display audio mode = %q, want exclude-process", mode)
+	}
+}
+
+func TestResolveGameCastWindowAudioIgnoresSystemOverride(t *testing.T) {
+	ensureTestOpusDLL(t)
+	safeProcessID := uint32(4242)
+	application := &App{
+		audioCapability: windowsaudio.Capability{SupportsProcessCapture: true},
+		processLookup: func(pid int) (ps.Process, error) {
+			if pid == int(safeProcessID) {
+				return testProcess{pid: pid, ppid: 0}, nil
+			}
+			return nil, fmt.Errorf("process %d not found", pid)
+		},
+	}
+	session := &shareSession{sourceKind: "window", audioProcessID: safeProcessID, audioProcessName: "game.exe"}
+
+	target, enabled, mode := application.resolveGameCastAudioCaptureTarget(GameCastHostShareRequest{
+		AudioMode:        "system",
+		AudioProcessID:   9999,
+		AudioProcessName: "untrusted.exe",
+	}, session)
+
+	if !enabled {
+		t.Fatal("expected selected window process audio to be enabled")
+	}
+	if target.Mode != windowsaudio.CaptureIncludeProcessTree || target.PID != safeProcessID {
+		t.Fatalf("window audio target = %#v, want process tree PID %d", target, safeProcessID)
+	}
+	if mode != "process" {
+		t.Fatalf("window audio mode = %q, want process", mode)
+	}
+}
+
+func TestResolveGameCastWindowAudioDisablesUnknownAndPartyLANProcesses(t *testing.T) {
+	ensureTestOpusDLL(t)
+	application := &App{audioCapability: windowsaudio.Capability{SupportsProcessCapture: true}}
+
+	for name, processID := range map[string]uint32{
+		"unknown":  0,
+		"partylan": uint32(os.Getpid()),
+	} {
+		t.Run(name, func(t *testing.T) {
+			session := &shareSession{sourceKind: "window", audioProcessID: processID}
+			target, enabled, mode := application.resolveGameCastAudioCaptureTarget(GameCastHostShareRequest{
+				AudioMode:      "system",
+				AudioProcessID: 4242,
+			}, session)
+			if enabled || mode != "off" || target.PID != 0 {
+				t.Fatalf("unsafe window audio resolved to target=%#v enabled=%t mode=%q", target, enabled, mode)
+			}
+		})
+	}
+}
+
+func TestResolveGameCastWindowAudioDisablesExitedProcess(t *testing.T) {
+	ensureTestOpusDLL(t)
+	application := &App{audioCapability: windowsaudio.Capability{SupportsProcessCapture: true}}
+	session := &shareSession{sourceKind: "window", audioProcessID: ^uint32(0), audioProcessName: "exited.exe"}
+
+	target, enabled, mode := application.resolveGameCastAudioCaptureTarget(GameCastHostShareRequest{}, session)
+	if enabled || mode != "off" || target.PID != 0 {
+		t.Fatalf("exited window process resolved to target=%#v enabled=%t mode=%q", target, enabled, mode)
+	}
+}
+
+func TestProcessBelongsToTreeIncludesDescendantsAndStopsCycles(t *testing.T) {
+	processes := map[int]ps.Process{
+		30: testProcess{pid: 30, ppid: 20},
+		20: testProcess{pid: 20, ppid: 10},
+		10: testProcess{pid: 10, ppid: 0},
+		40: testProcess{pid: 40, ppid: 50},
+		50: testProcess{pid: 50, ppid: 40},
+	}
+	lookup := func(pid int) (ps.Process, error) {
+		process, ok := processes[pid]
+		if !ok {
+			return nil, fmt.Errorf("process %d not found", pid)
+		}
+		return process, nil
+	}
+
+	if !processBelongsToTree(30, 10, lookup) {
+		t.Fatal("expected descendant process to belong to the PartyLAN process tree")
+	}
+	if processBelongsToTree(30, 99, lookup) {
+		t.Fatal("unexpected unrelated process tree match")
+	}
+	if processBelongsToTree(40, 10, lookup) {
+		t.Fatal("cycle must terminate without a false process tree match")
+	}
+}
+
+type testProcess struct {
+	pid  int
+	ppid int
+}
+
+func (p testProcess) Pid() int           { return p.pid }
+func (p testProcess) PPid() int          { return p.ppid }
+func (p testProcess) Executable() string { return "test.exe" }
+
+func ensureTestOpusDLL(t *testing.T) {
+	t.Helper()
+	opusDir, err := filepath.Abs(filepath.Join("third_party", "opus", "win64"))
+	if err != nil {
+		t.Fatalf("resolve test opus directory: %v", err)
+	}
+	t.Setenv("PATH", opusDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if capability := audio.QueryOpusCapability(); !capability.Available {
+		t.Fatalf("test opus capability unavailable: %s", capability.Reason)
 	}
 }
 

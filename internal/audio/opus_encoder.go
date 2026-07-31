@@ -13,6 +13,13 @@ const (
 	DefaultOpusMaxPacketBytes = 4000
 )
 
+type OpusApplication int
+
+const (
+	OpusApplicationAudio OpusApplication = iota
+	OpusApplicationVoIP
+)
+
 type OpusCapability struct {
 	Available bool
 	Reason    string
@@ -23,6 +30,11 @@ type OpusEncoderConfig struct {
 	Channels       int
 	FrameMillis    int
 	MaxPacketBytes int
+	Application    OpusApplication
+	Bitrate        int
+	DTX            bool
+	InbandFEC      bool
+	PacketLossPerc int
 }
 
 type nativeOpusEncoder interface {
@@ -48,6 +60,15 @@ func NewOpusEncoder(config OpusEncoderConfig) (*OpusEncoder, error) {
 	if !validOpusFrameMillis(config.FrameMillis) {
 		return nil, fmt.Errorf("opus frame size must be 2.5, 5, 10, 20, 40, or 60 ms; got %d ms", config.FrameMillis)
 	}
+	if config.Application != OpusApplicationAudio && config.Application != OpusApplicationVoIP {
+		return nil, fmt.Errorf("invalid opus application")
+	}
+	if config.Bitrate < 0 || config.Bitrate > 512000 {
+		return nil, fmt.Errorf("opus bitrate is out of range")
+	}
+	if config.PacketLossPerc < 0 || config.PacketLossPerc > 100 {
+		return nil, fmt.Errorf("opus packet loss percentage is out of range")
+	}
 
 	native, err := newNativeOpusEncoder(config)
 	if err != nil {
@@ -60,6 +81,20 @@ func NewOpusEncoder(config OpusEncoderConfig) (*OpusEncoder, error) {
 		config:      config,
 		frameValues: frameValues,
 	}, nil
+}
+
+func VoiceOpusEncoderConfig() OpusEncoderConfig {
+	return OpusEncoderConfig{
+		SampleRate:     DefaultOpusSampleRate,
+		Channels:       1,
+		FrameMillis:    DefaultOpusFrameMillis,
+		MaxPacketBytes: DefaultOpusMaxPacketBytes,
+		Application:    OpusApplicationVoIP,
+		Bitrate:        24000,
+		DTX:            true,
+		InbandFEC:      true,
+		PacketLossPerc: 10,
+	}
 }
 
 func (e *OpusEncoder) EncodePCM16(samples []int16) ([][]byte, error) {

@@ -464,6 +464,24 @@ func (c *Client) ListPresence(ctx context.Context, roomID string) ([]PresencePar
 	return response.Participants, *response.Room, nil
 }
 
+func (c *Client) IssueVoiceToken(ctx context.Context, request VoiceTokenRequest) (VoiceTokenResponse, error) {
+	if strings.TrimSpace(request.Room) == "" || strings.TrimSpace(request.ParticipantID) == "" {
+		return VoiceTokenResponse{}, fmt.Errorf("room and participant id are required")
+	}
+	endpoint, err := URLForEndpoint(c.profile.BaseURL, "/api/voice/token")
+	if err != nil {
+		return VoiceTokenResponse{}, err
+	}
+	var response VoiceTokenResponse
+	if err := c.doJSON(ctx, http.MethodPost, endpoint, request, &response); err != nil {
+		return VoiceTokenResponse{}, err
+	}
+	if strings.TrimSpace(response.Token) == "" || response.ExpiresAtUnix <= 0 {
+		return VoiceTokenResponse{}, fmt.Errorf("voice token response is incomplete")
+	}
+	return response, nil
+}
+
 func (c *Client) ClaimShare(ctx context.Context, request ShareLeaseRequest) (ShareLease, RoomState, error) {
 	response, err := c.postShareLease(ctx, "/api/share/claim", request)
 	return shareLeaseResult(response, err)

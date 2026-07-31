@@ -28,6 +28,7 @@ import (
 var (
 	user32DLL                = windows.NewLazySystemDLL("user32.dll")
 	enumWindowsProc          = user32DLL.NewProc("EnumWindows")
+	isWindowProc             = user32DLL.NewProc("IsWindow")
 	getWindowTextWProc       = user32DLL.NewProc("GetWindowTextW")
 	getWindowTextLengthWProc = user32DLL.NewProc("GetWindowTextLengthW")
 )
@@ -85,6 +86,21 @@ func listWindowCandidates() []WindowCandidate {
 	}
 
 	return candidates
+}
+
+func resolveWindowProcess(handle uintptr) (WindowProcess, error) {
+	window := win.HWND(handle)
+	valid, _, _ := isWindowProc.Call(uintptr(window))
+	if window == 0 || valid == 0 {
+		return WindowProcess{}, fmt.Errorf("selected window is unavailable")
+	}
+	var processID uint32
+	win.GetWindowThreadProcessId(window, &processID)
+	if processID == 0 {
+		return WindowProcess{}, fmt.Errorf("selected window process is unavailable")
+	}
+	names := processNamesByPID(map[uint32]struct{}{processID: {}})
+	return WindowProcess{ProcessID: processID, ProcessName: strings.TrimSpace(names[processID])}, nil
 }
 
 func readWindowText(hwnd win.HWND) string {

@@ -5,6 +5,7 @@ import {main} from '../models';
 import {app} from '../models';
 import {network} from '../models';
 import {room} from '../models';
+import {voice} from '../models';
 import {sharecatalog} from '../models';
 
 export function AddGameCastHistory(arg1:string):Promise<Array<gamecast.HistoryEntry>>;
@@ -47,6 +48,8 @@ export function GetPeers():Promise<Array<room.PeerInfo>>;
 
 export function GetRoomState():Promise<string>;
 
+export function GetRoomVoiceState():Promise<voice.State>;
+
 export function GetRuntimeStatus():Promise<app.RuntimeStatusEvent>;
 
 export function GetShareSources():Promise<Array<sharecatalog.Source>>;
@@ -88,6 +91,10 @@ export function SendMediaSignal(arg1:room.MediaSignalPayload):Promise<void>;
 export function SetAudioShareSelection(arg1:Array<string>):Promise<void>;
 
 export function SetGameCastHostSharing(arg1:main.GameCastHostShareRequest):Promise<gamecast.RoomState>;
+
+export function SetRoomVoiceMicrophoneEnabled(arg1:boolean):Promise<voice.State>;
+
+export function SetRoomVoicePlaybackMuted(arg1:boolean):Promise<voice.State>;
 
 export function SetTailscaleAuthKey(arg1:string):Promise<void>;
 

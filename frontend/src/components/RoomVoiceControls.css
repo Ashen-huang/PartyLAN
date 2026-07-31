@@ -1,0 +1,87 @@
+.room-voice-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-inline-size: 0;
+}
+
+.room-voice-status {
+  inline-size: 8px;
+  block-size: 8px;
+  flex: 0 0 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 50%;
+  background: var(--text-muted);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--text-muted) 16%, transparent);
+}
+
+.room-voice-status.status-connected {
+  background: var(--success-strong);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--success-strong) 18%, transparent);
+}
+
+.room-voice-status.status-connecting,
+.room-voice-status.status-reconnecting {
+  background: var(--accent-strong);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-strong) 18%, transparent);
+}
+
+.room-voice-status.status-full,
+.room-voice-status.status-unauthorized,
+.room-voice-status.status-error {
+  background: var(--danger-strong);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger-strong) 18%, transparent);
+}
+
+.room-voice-button {
+  display: inline-grid;
+  place-items: center;
+  inline-size: 44px;
+  block-size: 44px;
+  flex: 0 0 44px;
+  padding: 0;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--surface-raised);
+  color: var(--text-muted);
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: border-color 160ms ease, background-color 160ms ease, color 160ms ease;
+}
+
+.room-voice-button:hover:not(:disabled) {
+  border-color: var(--accent-strong);
+  color: var(--text-primary);
+}
+
+.room-voice-button.active {
+  border-color: color-mix(in srgb, var(--success-strong) 62%, var(--border-color));
+  background: var(--surface-muted);
+  color: var(--success-strong);
+}
+
+.room-voice-button.error {
+  border-color: color-mix(in srgb, var(--danger-strong) 62%, var(--border-color));
+  color: var(--danger-strong);
+}
+
+.room-voice-button:focus-visible {
+  outline: 2px solid var(--accent-strong);
+  outline-offset: 2px;
+}
+
+.room-voice-button:active:not(:disabled) {
+  background: var(--hover-bg);
+}
+
+.room-voice-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .room-voice-button {
+    transition: none;
+  }
+}
