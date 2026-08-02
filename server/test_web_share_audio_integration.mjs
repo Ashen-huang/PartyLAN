@@ -4,6 +4,12 @@ import test from 'node:test';
 
 const inject = await readFile(new URL('./screego/deploy/inject.js', import.meta.url), 'utf8');
 const nginx = await readFile(new URL('./screego/deploy/nginx-screego.conf', import.meta.url), 'utf8');
+const sourcePolicy = await readFile(new URL('./web_share_audio_policy.js', import.meta.url), 'utf8');
+const deployedPolicy = await readFile(new URL('./screego/deploy/web-share-audio.js', import.meta.url), 'utf8');
+
+test('source and deployed web audio policies are byte-identical', () => {
+  assert.equal(deployedPolicy, sourcePolicy);
+});
 
 test('web share audio policy loads before inject', () => {
   const replacement = nginx.match(/sub_filter '<\/head>' '([^']+)<\/head>'/);
@@ -52,13 +58,20 @@ test('room state and share heartbeat report the effective audio mode', () => {
   assert.match(inject, /activeCaptureAudioMode\s*=\s*'off'/);
 });
 
-test('blocked window audio produces one non-blocking safety notice', () => {
-  assert.match(inject, /function showWebAudioSafetyNotice\(\)/);
-  assert.match(inject, /为防止泄露系统声音，窗口共享已自动关闭音频。/);
-  assert.match(inject, /if \(audioResult\.shouldNotify\) showWebAudioSafetyNotice\(\)/);
+test('video-only fallback produces one non-blocking capture result notice', () => {
+  assert.match(inject, /function showWebAudioCaptureNotice\(reason\)/);
+  assert.match(inject, /未获取到所选来源音频，本次仅共享画面。/);
+  assert.match(inject, /所选来源与音频模式不匹配，本次仅共享画面。/);
+  assert.match(inject, /if \(audioResult\.shouldNotify\) showWebAudioCaptureNotice\(audioResult\.noticeReason\)/);
 });
 
-test('audio mode labels describe tab and full-screen scope', () => {
-  assert.match(inject, /label:\s*'标签页音频 \(推荐\)'/);
+test('audio mode labels describe window, tab and full-screen scope', () => {
+  assert.match(inject, /label:\s*'窗口\/标签页音频 \(推荐\)'/);
+  assert.match(inject, /共享所选窗口或浏览器标签页的声音/);
   assert.match(inject, /label:\s*'全屏系统音频'/);
+});
+
+test('changed audio assets use new cache versions', () => {
+  assert.match(nginx, /web-share-audio\.js\?v=2/);
+  assert.match(nginx, /inject\.js\?v=6\.20/);
 });

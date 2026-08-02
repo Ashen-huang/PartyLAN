@@ -57,7 +57,7 @@
   var webShareLease = null;
   var webShareHeartbeatTimer = 0;
   var webShareSafetyTimer = 0;
-  var webAudioSafetyNoticeTimer = 0;
+  var webAudioCaptureNoticeTimer = 0;
   var activeCaptureAudioMode = 'off';
 
   var QUALITY = {
@@ -83,8 +83,8 @@
 
   var AUDIO_MODES = {
     app: {
-      label: '标签页音频 (推荐)',
-      desc: '仅在选择浏览器标签页时共享该标签页声音；普通窗口会自动静音。'
+      label: '窗口/标签页音频 (推荐)',
+      desc: '共享所选窗口或浏览器标签页的声音；浏览器未提供音轨时将仅共享画面。'
     },
     off: {
       label: '不共享音频',
@@ -1921,20 +1921,22 @@
     };
   }
 
-  function showWebAudioSafetyNotice() {
+  function showWebAudioCaptureNotice(reason) {
     var previous = document.getElementById('gc-audio-safety-notice');
     if (previous) previous.remove();
-    if (webAudioSafetyNoticeTimer) clearTimeout(webAudioSafetyNoticeTimer);
+    if (webAudioCaptureNoticeTimer) clearTimeout(webAudioCaptureNoticeTimer);
 
     var notice = document.createElement('div');
     notice.id = 'gc-audio-safety-notice';
     notice.setAttribute('role', 'status');
-    notice.textContent = '为防止泄露系统声音，窗口共享已自动关闭音频。';
+    notice.textContent = reason === 'source-mismatch'
+      ? '所选来源与音频模式不匹配，本次仅共享画面。'
+      : '未获取到所选来源音频，本次仅共享画面。';
     notice.style.cssText = 'position:fixed;right:20px;bottom:20px;z-index:100002;max-width:420px;padding:10px 14px;background:rgba(15,23,42,.96);color:#f8fafc;border:1px solid rgba(251,191,36,.45);border-left:4px solid #fbbf24;border-radius:6px;box-shadow:0 12px 32px rgba(2,6,23,.32);font-size:13px;line-height:1.5;letter-spacing:0';
     document.body.appendChild(notice);
-    webAudioSafetyNoticeTimer = setTimeout(function () {
+    webAudioCaptureNoticeTimer = setTimeout(function () {
       if (notice.parentNode) notice.parentNode.removeChild(notice);
-      webAudioSafetyNoticeTimer = 0;
+      webAudioCaptureNoticeTimer = 0;
     }, 5000);
   }
 
@@ -1946,7 +1948,7 @@
     var audioResult = GameCastWebShareAudioPolicy.sanitizeCapturedStream(stream, requestedAudioMode);
     stream = audioResult.stream;
     activeCaptureAudioMode = audioResult.effectiveMode;
-    if (audioResult.shouldNotify) showWebAudioSafetyNotice();
+    if (audioResult.shouldNotify) showWebAudioCaptureNotice(audioResult.noticeReason);
 
     stream._gcCaptureActivated = true;
     markPeerStatsChange('_gcSourceChanged');

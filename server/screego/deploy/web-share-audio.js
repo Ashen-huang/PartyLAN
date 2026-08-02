@@ -5,7 +5,7 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
-  var POLICY_VERSION = 'web-share-audio-isolation-v1';
+  var POLICY_VERSION = 'web-share-audio-isolation-v2';
 
   function normalizeMode(mode) {
     if (mode === 'app' || mode === 'system') return mode;
@@ -26,7 +26,7 @@
     return {
       requestAudio: true,
       systemAudio: 'exclude',
-      windowAudio: 'exclude',
+      windowAudio: 'window',
       selfBrowserSurface: 'exclude',
       surfaceSwitching: 'include'
     };
@@ -59,11 +59,15 @@
       ? stream.getAudioTracks().slice()
       : [];
     var allowedSurface =
-      (mode === 'app' && surface === 'browser') ||
+      (mode === 'app' && (surface === 'browser' || surface === 'window')) ||
       (mode === 'system' && surface === 'monitor');
     var effectiveMode = allowedSurface && audioTracks.length > 0
-      ? (mode === 'app' ? 'tab' : 'system')
+      ? mode
       : 'off';
+    var shouldNotify = mode !== 'off' && effectiveMode === 'off';
+    var noticeReason = shouldNotify
+      ? (allowedSurface ? 'audio-unavailable' : 'source-mismatch')
+      : '';
 
     if (!allowedSurface || mode === 'off') {
       audioTracks.forEach(function (track) {
@@ -82,7 +86,8 @@
       effectiveMode: effectiveMode,
       displaySurface: surface,
       removedAudio: audioTracks.length > 0 && effectiveMode === 'off',
-      shouldNotify: mode !== 'off' && !allowedSurface
+      shouldNotify: shouldNotify,
+      noticeReason: noticeReason
     };
   }
 

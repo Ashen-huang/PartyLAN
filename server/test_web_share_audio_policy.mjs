@@ -46,11 +46,11 @@ function makeVideoOnlyStream(tracks) {
   };
 }
 
-test('capture preferences exclude system and window audio for tab mode', () => {
+test('capture preferences request selected window audio without system audio', () => {
   assert.deepEqual(buildCapturePreferences('app'), {
     requestAudio: true,
     systemAudio: 'exclude',
-    windowAudio: 'exclude',
+    windowAudio: 'window',
     selfBrowserSurface: 'exclude',
     surfaceSwitching: 'include',
   });
@@ -66,14 +66,26 @@ test('capture preferences expose system audio only for full-screen mode', () => 
   assert.deepEqual(buildCapturePreferences('off'), {requestAudio: false});
 });
 
-test('tab mode retains audio only for a browser surface', () => {
+test('app mode retains browser audio and reports the supported app mode', () => {
   const stream = fakeStream('browser');
   const result = sanitizeCapturedStream(stream, 'app', makeVideoOnlyStream);
   assert.equal(result.policyVersion, POLICY_VERSION);
   assert.equal(result.stream, stream);
-  assert.equal(result.effectiveMode, 'tab');
+  assert.equal(result.effectiveMode, 'app');
   assert.equal(result.removedAudio, false);
   assert.equal(result.shouldNotify, false);
+  assert.equal(result.noticeReason, '');
+  assert.equal(stream.audio[0].stopped, false);
+});
+
+test('app mode retains audio for a selected window', () => {
+  const stream = fakeStream('window');
+  const result = sanitizeCapturedStream(stream, 'app', makeVideoOnlyStream);
+  assert.equal(result.stream, stream);
+  assert.equal(result.effectiveMode, 'app');
+  assert.equal(result.removedAudio, false);
+  assert.equal(result.shouldNotify, false);
+  assert.equal(result.noticeReason, '');
   assert.equal(stream.audio[0].stopped, false);
 });
 
@@ -84,10 +96,10 @@ test('full-screen mode retains audio only for a monitor surface', () => {
   assert.equal(result.effectiveMode, 'system');
   assert.equal(result.removedAudio, false);
   assert.equal(result.shouldNotify, false);
+  assert.equal(result.noticeReason, '');
 });
 
 for (const [mode, surface] of [
-  ['app', 'window'],
   ['app', 'monitor'],
   ['app', ''],
   ['system', 'window'],
@@ -102,6 +114,7 @@ for (const [mode, surface] of [
     assert.equal(result.effectiveMode, 'off');
     assert.equal(result.removedAudio, true);
     assert.equal(result.shouldNotify, true);
+    assert.equal(result.noticeReason, 'source-mismatch');
     assert.equal(stream.audio[0].stopped, true);
   });
 }
@@ -113,14 +126,25 @@ test('off mode strips an unexpected audio track without a safety notice', () => 
   assert.equal(result.effectiveMode, 'off');
   assert.equal(result.removedAudio, true);
   assert.equal(result.shouldNotify, false);
+  assert.equal(result.noticeReason, '');
   assert.equal(stream.audio[0].stopped, true);
 });
 
-test('an allowed surface without an audio track reports off', () => {
-  const stream = fakeStream('browser', 0);
+for (const surface of ['browser', 'window']) {
+  test(`an allowed ${surface} surface without audio reports video-only fallback`, () => {
+    const stream = fakeStream(surface, 0);
+    const result = sanitizeCapturedStream(stream, 'app', makeVideoOnlyStream);
+    assert.equal(result.stream, stream);
+    assert.equal(result.effectiveMode, 'off');
+    assert.equal(result.removedAudio, false);
+    assert.equal(result.shouldNotify, true);
+    assert.equal(result.noticeReason, 'audio-unavailable');
+  });
+}
+
+test('every unexpected audio track is stopped and removed', () => {
+  const stream = fakeStream('monitor', 2);
   const result = sanitizeCapturedStream(stream, 'app', makeVideoOnlyStream);
-  assert.equal(result.stream, stream);
-  assert.equal(result.effectiveMode, 'off');
-  assert.equal(result.removedAudio, false);
-  assert.equal(result.shouldNotify, false);
+  assert.equal(result.stream.getAudioTracks().length, 0);
+  assert.equal(stream.audio.every((track) => track.stopped), true);
 });
