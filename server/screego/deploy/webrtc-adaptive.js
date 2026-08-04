@@ -5,7 +5,7 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
-  var POLICY_VERSION = 'adaptive-per-peer-v1';
+  var POLICY_VERSION = 'adaptive-per-peer-v2';
   var OBSERVATION_MS = 15000;
   var WINDOW_SIZE = 7;
   var REQUIRED_BAD = 5;
@@ -13,10 +13,12 @@
   var DOWNSHIFT_COOLDOWN_MS = 20000;
   var RECOVERY_STABLE_MS = 30000;
   var RECOVERY_COOLDOWN_MS = 30000;
-  var MAX_LEVEL = 2;
+  var MAX_LEVEL = 4;
   var PROFILES = {
     1: {maxWidth: 1280, maxHeight: 720, maxFramerate: 24, maxBitrate: 3000000},
-    2: {maxWidth: 960, maxHeight: 540, maxFramerate: 24, maxBitrate: 1700000}
+    2: {maxWidth: 960, maxHeight: 540, maxFramerate: 24, maxBitrate: 1700000},
+    3: {maxWidth: 854, maxHeight: 480, maxFramerate: 20, maxBitrate: 1000000},
+    4: {maxWidth: 640, maxHeight: 360, maxFramerate: 15, maxBitrate: 600000}
   };
 
   function createAdaptiveState(connectedAt) {
@@ -50,7 +52,7 @@
   }
 
   function isBadSample(sample) {
-    if (!sample.valid || !(sample.lossPercent > 5)) return false;
+    if (!sample.valid) return false;
     var profileKbps = Number(sample.profileKbps) || 0;
     var lowThroughput =
       profileKbps > 0 &&
@@ -60,20 +62,23 @@
       profileKbps > 0 &&
       Number(sample.availableOutgoingBitrate) > 0 &&
       Number(sample.availableOutgoingBitrate) < profileKbps * 1000 * 0.7;
-    return (
-      lowThroughput ||
-      Number(sample.jitterMs) > 100 ||
-      sample.qualityLimitationReason === 'bandwidth' ||
-      lowAvailable
+    var highLoss = Number(sample.lossPercent) > 5;
+    var bandwidthLimited = sample.qualityLimitationReason === 'bandwidth';
+    return bandwidthLimited || lowAvailable || (
+      highLoss && (lowThroughput || Number(sample.jitterMs) > 100)
     );
   }
 
   function isStableSample(sample) {
+    var profileKbps = Number(sample.profileKbps) || 0;
+    var availableOutgoingBitrate = Number(sample.availableOutgoingBitrate) || 0;
     return (
       sample.valid &&
       Number(sample.lossPercent) < 1 &&
       Number(sample.jitterMs) < 40 &&
-      sample.qualityLimitationReason !== 'bandwidth'
+      sample.qualityLimitationReason !== 'bandwidth' &&
+      profileKbps > 0 &&
+      availableOutgoingBitrate >= profileKbps * 1000
     );
   }
 
@@ -201,13 +206,15 @@
     var maxHeight = profile ? Math.min(sourceHeight, profile.maxHeight) : sourceHeight;
     var maxFramerate = profile ? Math.min(configuredFps, profile.maxFramerate) : configuredFps;
     var profileBitrate = profile ? profile.maxBitrate : targetBitrate;
+    var applyServerBudget = options.applyServerBudget === true;
     var protectionMaxWidth = Math.max(0, Number(options.protectionMaxWidth) || 0);
     var protectionMaxHeight = Math.max(0, Number(options.protectionMaxHeight) || 0);
     var protectionMaxBitrate = Math.max(0, Number(options.protectionMaxBitrate) || 0);
     if (protectionMaxWidth > 0) maxWidth = Math.min(maxWidth, protectionMaxWidth);
     if (protectionMaxHeight > 0) maxHeight = Math.min(maxHeight, protectionMaxHeight);
     if (protectionMaxBitrate > 0) profileBitrate = Math.min(profileBitrate, protectionMaxBitrate);
-    var maxBitrate = Math.round(Math.min(targetBitrate, profileBitrate, serverSafeBitrate / viewerCount));
+    var budgetBitrate = applyServerBudget ? serverSafeBitrate / viewerCount : targetBitrate;
+    var maxBitrate = Math.round(Math.min(targetBitrate, profileBitrate, budgetBitrate));
     var scaleResolutionDownBy = roundScale(Math.max(
       1,
       sourceWidth / Math.max(1, maxWidth),

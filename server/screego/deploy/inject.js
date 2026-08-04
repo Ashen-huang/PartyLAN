@@ -23,6 +23,7 @@
   var nativeViewerIntentActive = false;
   var autoSfuSuppressedForCurrentShare = false;
   var adaptiveStreamingMonitorTimer = 0;
+  var adaptiveServerBudgetPeerCount = 0;
   var sfuConnection = null;
   var sfuStatusText = '未启用';
   var activeRoomSocket = null;
@@ -97,10 +98,10 @@
   };
 
   var SERVER_PROFILE = {
-    cores: 4,
-    ramGB: 4,
-    netMbps: 20,
-    safeNetMbps: 16
+    cores: 2,
+    ramGB: 2,
+    netMbps: 200,
+    safeNetMbps: 160
   };
 
   function loadCfg() {
@@ -511,6 +512,7 @@
   }
 
   function resetAdaptiveStreamingState() {
+    adaptiveServerBudgetPeerCount = 0;
     activePCs.forEach(function (pc) {
       pc._gcAdaptiveState = null;
       if (typeof GameCastWebRTCAdaptive !== 'undefined') {
@@ -807,6 +809,37 @@
     return descriptors;
   }
 
+  function isServerBudgetedAdaptivePeer(descriptor) {
+    if (!descriptor || !descriptor.pc) return false;
+    return descriptor.mode === 'sfu-host' || !!(
+      descriptor.pc._gcAdaptiveLastSample &&
+      descriptor.pc._gcAdaptiveLastSample.path === 'turn'
+    );
+  }
+
+  function countServerBudgetedAdaptivePeers(descriptors) {
+    var count = 0;
+    (descriptors || getAdaptivePeerDescriptors()).forEach(function (descriptor) {
+      if (!isServerBudgetedAdaptivePeer(descriptor)) return;
+      count += descriptor.mode === 'sfu-host'
+        ? Math.max(1, getMemberCountEstimate() - 1)
+        : 1;
+    });
+    return count;
+  }
+
+  function getServerBudgetedAdaptivePeerCount() {
+    return Math.max(1, countServerBudgetedAdaptivePeers());
+  }
+
+  function getAdaptivePeerDescriptor(pc) {
+    var descriptors = getAdaptivePeerDescriptors();
+    for (var i = 0; i < descriptors.length; i++) {
+      if (descriptors[i].pc === pc) return descriptors[i];
+    }
+    return {pc: pc, mode: 'native-host'};
+  }
+
   function getPeerVideoSender(pc) {
     if (!pc || typeof pc.getSenders !== 'function') return null;
     var senders = pc.getSenders() || [];
@@ -828,14 +861,17 @@
     var sourceHeight = settings.height || configuredResolution.h || 720;
     var state = pc._gcAdaptiveState || GameCastWebRTCAdaptive.createAdaptiveState(Date.now());
     pc._gcAdaptiveState = state;
+    var descriptor = getAdaptivePeerDescriptor(pc);
+    var applyServerBudget = isServerBudgetedAdaptivePeer(descriptor);
     var profile = GameCastWebRTCAdaptive.computeEncodingProfile({
       level: state.level,
       sourceWidth: sourceWidth,
       sourceHeight: sourceHeight,
       configuredFps: cfg.fps || 35,
       targetBitrate: computeTargetBitrate(),
-      viewerCount: Math.max(1, getAdaptivePeerDescriptors().length),
+      viewerCount: getServerBudgetedAdaptivePeerCount(),
       serverSafeBitrate: SERVER_PROFILE.safeNetMbps * 1000000,
+      applyServerBudget: applyServerBudget,
       protectionMaxWidth: pc._gcProtectionMaxWidth || 0,
       protectionMaxHeight: pc._gcProtectionMaxHeight || 0,
       protectionMaxBitrate: pc._gcProtectionMaxBitrate || 0
@@ -878,6 +914,9 @@
       });
 
       var now = Date.now();
+      var previousAdaptivePath = pc._gcAdaptiveLastSample
+        ? pc._gcAdaptiveLastSample.path || 'unknown'
+        : 'unknown';
       var adaptiveSample = {
         now: now,
         valid: false,
@@ -931,11 +970,14 @@
       adaptiveState = evaluation.state;
       pc._gcAdaptiveState = adaptiveState;
       pc._gcAdaptiveLastSample = adaptiveSample;
+      var pathChanged = previousAdaptivePath !== adaptiveSample.path;
       if (evaluation.decision) {
         var adaptiveDecision = evaluation.decision.type + ':' +
           evaluation.decision.fromLevel + '->' + evaluation.decision.toLevel;
         pc._gcAdaptivePendingDecision = adaptiveDecision;
         applyAdaptiveProfile(pc, adaptiveDecision);
+      } else if (pathChanged) {
+        applyAdaptiveProfile(pc, 'path:' + previousAdaptivePath + '->' + adaptiveSample.path);
       }
     }).catch(function () {}).finally(function () {
       pc._gcAdaptiveFetchPromise = null;
@@ -944,7 +986,20 @@
 
   function sampleAdaptiveStreaming() {
     if (!activeDisplayStream) return;
-    getAdaptivePeerDescriptors().forEach(sampleAdaptiveStreamingPeer);
+    var descriptors = getAdaptivePeerDescriptors();
+    var budgetedPeerCount = countServerBudgetedAdaptivePeers(descriptors);
+    if (budgetedPeerCount !== adaptiveServerBudgetPeerCount) {
+      var previousBudgetedPeerCount = adaptiveServerBudgetPeerCount;
+      adaptiveServerBudgetPeerCount = budgetedPeerCount;
+      descriptors.forEach(function (descriptor) {
+        if (!isServerBudgetedAdaptivePeer(descriptor)) return;
+        applyAdaptiveProfile(
+          descriptor.pc,
+          'server-budget:' + previousBudgetedPeerCount + '->' + budgetedPeerCount
+        );
+      });
+    }
+    descriptors.forEach(sampleAdaptiveStreamingPeer);
   }
 
   function startAdaptiveStreamingMonitor() {

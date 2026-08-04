@@ -56,7 +56,7 @@ test('observation and a short spike do not downshift', () => {
   assert.equal(result.decision, null);
 });
 
-test('sustained degradation moves from configured to 720p and then 540p', () => {
+test('sustained degradation descends one level at a time through 360p', () => {
   let state = createAdaptiveState(0);
   let result = evaluateMany(state, [16000, 18000, 20000, 22000, 24000, 26000, 28000].map(bad));
   assert.deepEqual(result.decision, {type: 'downshift', fromLevel: 0, toLevel: 1});
@@ -66,9 +66,47 @@ test('sustained degradation moves from configured to 720p and then 540p', () => 
   result = evaluateMany(result.state, [50000, 52000, 54000, 56000, 58000, 60000, 62000].map((now) => bad(now, {profileKbps: 3000})));
   assert.deepEqual(result.decision, {type: 'downshift', fromLevel: 1, toLevel: 2});
   assert.equal(result.state.level, 2);
+
+  result = evaluateMany(result.state, [84000, 86000, 88000, 90000, 92000, 94000, 96000].map((now) => bad(now, {profileKbps: 1700})));
+  assert.deepEqual(result.decision, {type: 'downshift', fromLevel: 2, toLevel: 3});
+  assert.equal(result.state.level, 3);
+
+  result = evaluateMany(result.state, [118000, 120000, 122000, 124000, 126000, 128000, 130000].map((now) => bad(now, {profileKbps: 1000})));
+  assert.deepEqual(result.decision, {type: 'downshift', fromLevel: 3, toLevel: 4});
+  assert.equal(result.state.level, 4);
 });
 
-test('invalid samples and low throughput without loss do not downshift', () => {
+test('low available bitrate triggers without high loss', () => {
+  const result = evaluateMany(
+    createAdaptiveState(0),
+    [16000, 18000, 20000, 22000, 24000, 26000, 28000].map((now) => good(now, {
+      lossPercent: 0.2,
+      jitterMs: 10,
+      outboundKbps: 5000,
+      profileKbps: 6000,
+      availableOutgoingBitrate: 3000000,
+      qualityLimitationReason: 'none',
+    })),
+  );
+  assert.deepEqual(result.decision, {type: 'downshift', fromLevel: 0, toLevel: 1});
+});
+
+test('browser bandwidth limitation triggers without high loss', () => {
+  const result = evaluateMany(
+    createAdaptiveState(0),
+    [16000, 18000, 20000, 22000, 24000, 26000, 28000].map((now) => good(now, {
+      lossPercent: 0.2,
+      jitterMs: 10,
+      outboundKbps: 5000,
+      profileKbps: 6000,
+      availableOutgoingBitrate: 8000000,
+      qualityLimitationReason: 'bandwidth',
+    })),
+  );
+  assert.deepEqual(result.decision, {type: 'downshift', fromLevel: 0, toLevel: 1});
+});
+
+test('invalid samples and low throughput alone do not downshift', () => {
   let state = createAdaptiveState(0);
   let result = evaluateMany(state, [16000, 18000, 20000, 22000, 24000, 26000, 28000].map((now) => bad(now, {
     valid: false,
@@ -78,10 +116,14 @@ test('invalid samples and low throughput without loss do not downshift', () => {
   assert.equal(result.state.window.length, 0);
 
   state = createAdaptiveState(0);
-  result = evaluateMany(state, [16000, 18000, 20000, 22000, 24000, 26000, 28000].map((now) => bad(now, {
-    lossPercent: 0,
+  result = evaluateMany(state, [16000, 18000, 20000, 22000, 24000, 26000, 28000].map((now) => good(now, {
+    outboundKbps: 100,
+    profileKbps: 6000,
+    availableOutgoingBitrate: 8000000,
+    qualityLimitationReason: 'none',
   })));
   assert.equal(result.state.level, 0);
+  assert.equal(result.decision, null);
 });
 
 test('stable quality recovers only one level after thirty seconds', () => {
@@ -93,6 +135,19 @@ test('stable quality recovers only one level after thirty seconds', () => {
   result = evaluateAdaptiveSample(result.state, good(50000));
   assert.deepEqual(result.decision, {type: 'recover', fromLevel: 2, toLevel: 1});
   assert.equal(result.state.level, 1);
+});
+
+test('recovery waits until available bitrate reaches the current profile', () => {
+  const state = {...createAdaptiveState(0), level: 2, connectedAt: 0};
+  const result = evaluateMany(
+    state,
+    [20000, 30000, 40000, 50000, 60000].map((now) => good(now, {
+      profileKbps: 1700,
+      availableOutgoingBitrate: 1200000,
+    })),
+  );
+  assert.equal(result.state.level, 2);
+  assert.equal(result.decision, null);
 });
 
 test('states are independent for a good and a bad viewer', () => {
@@ -127,6 +182,30 @@ test('encoding profiles cap resolution, frame rate, bitrate and server budget', 
     }),
     {level: 2, maxWidth: 960, maxHeight: 540, maxFramerate: 24, maxBitrate: 1700000, scaleResolutionDownBy: 2},
   );
+  assert.deepEqual(
+    computeEncodingProfile({
+      level: 3,
+      sourceWidth: 1920,
+      sourceHeight: 1080,
+      configuredFps: 60,
+      targetBitrate: 10800000,
+      viewerCount: 1,
+      serverSafeBitrate: 160000000,
+    }),
+    {level: 3, maxWidth: 854, maxHeight: 480, maxFramerate: 20, maxBitrate: 1000000, scaleResolutionDownBy: 2.25},
+  );
+  assert.deepEqual(
+    computeEncodingProfile({
+      level: 4,
+      sourceWidth: 1920,
+      sourceHeight: 1080,
+      configuredFps: 60,
+      targetBitrate: 10800000,
+      viewerCount: 1,
+      serverSafeBitrate: 160000000,
+    }),
+    {level: 4, maxWidth: 640, maxHeight: 360, maxFramerate: 15, maxBitrate: 600000, scaleResolutionDownBy: 3},
+  );
 
   const lowSource = computeEncodingProfile({
     level: 1,
@@ -140,26 +219,39 @@ test('encoding profiles cap resolution, frame rate, bitrate and server budget', 
   assert.equal(lowSource.scaleResolutionDownBy, 1);
   assert.equal(lowSource.maxBitrate, 1500000);
 
-  const oneViewer = computeEncodingProfile({
+  const oneP2pViewer = computeEncodingProfile({
     level: 0,
     sourceWidth: 1920,
     sourceHeight: 1080,
     configuredFps: 35,
     targetBitrate: 10800000,
     viewerCount: 1,
-    serverSafeBitrate: 16000000,
+    serverSafeBitrate: 160000000,
+    applyServerBudget: false,
   });
-  const twoViewers = computeEncodingProfile({
+  const twentyP2pViewers = computeEncodingProfile({
     level: 0,
     sourceWidth: 1920,
     sourceHeight: 1080,
     configuredFps: 35,
     targetBitrate: 10800000,
-    viewerCount: 2,
-    serverSafeBitrate: 16000000,
+    viewerCount: 20,
+    serverSafeBitrate: 160000000,
+    applyServerBudget: false,
   });
-  assert.equal(oneViewer.maxBitrate, 10800000);
-  assert.equal(twoViewers.maxBitrate, 8000000);
+  const twentyRelayedViewers = computeEncodingProfile({
+    level: 0,
+    sourceWidth: 1920,
+    sourceHeight: 1080,
+    configuredFps: 35,
+    targetBitrate: 10800000,
+    viewerCount: 20,
+    serverSafeBitrate: 160000000,
+    applyServerBudget: true,
+  });
+  assert.equal(oneP2pViewer.maxBitrate, 10800000);
+  assert.equal(twentyP2pViewers.maxBitrate, 10800000);
+  assert.equal(twentyRelayedViewers.maxBitrate, 8000000);
 
   const protectedViewer = computeEncodingProfile({
     level: 0,
