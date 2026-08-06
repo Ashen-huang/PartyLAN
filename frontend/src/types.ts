@@ -69,6 +69,13 @@ export interface GameCastProbeResult {
   message?: string;
 }
 
+export interface GameCastMediaCapabilities {
+  sfuViewer: boolean;
+  sfuHost: boolean;
+  h264: boolean;
+  opus: boolean;
+}
+
 export interface GameCastRoomState {
   room: string;
   active: boolean;
@@ -76,6 +83,9 @@ export interface GameCastRoomState {
   ownerParticipantId?: string;
   ownerName?: string;
   sharing: boolean;
+  mediaMode?: 'sfu' | 'legacy-p2p' | string;
+  mediaProtocolVersion?: number;
+  sharePhase?: 'idle' | 'starting' | 'live' | 'stopping' | string;
   shareOwnerParticipantId?: string;
   shareOwnerName?: string;
   shareOrigin?: 'web' | 'client' | string;
@@ -96,6 +106,8 @@ export interface GameCastPresenceParticipant {
   role: 'owner' | 'member' | string;
   active: boolean;
   sharing: boolean;
+  mediaProtocolVersion?: number;
+  capabilities?: GameCastMediaCapabilities;
   ttl?: number;
   ageSeconds?: number;
 }

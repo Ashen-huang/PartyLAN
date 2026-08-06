@@ -67,6 +67,7 @@ const (
 	windowLayoutVersion      = 4
 	maxDisplayNameRunes      = 40
 	gameCastMediaStopTimeout = 2 * time.Second
+	gameCastHostReadyTimeout = 10 * time.Second
 )
 
 type App struct {
@@ -472,11 +473,11 @@ func (a *App) domReady(ctx context.Context) {
 
 func (a *App) shutdown(ctx context.Context) {
 	a.persistConfig()
-	_ = a.releaseGameCastShareLease()
+	if err := a.stopGameCastScreenShare(); err != nil {
+		log.Printf("[gamecast/shutdown] screen share cleanup failed: %v", err)
+	}
 	a.stopGameCastPresence(true)
 	a.stopGameCastRoomHeartbeat(true)
-	a.closeGameCastWS()
-	a.stopGameCastNativeHost()
 	if err := a.network.Stop(); err != nil {
 		log.Printf("network stop failed: %v", err)
 		a.emitError(app.ErrCodeNetworkStop, "网络关闭失败。")
@@ -1815,8 +1816,8 @@ func waitForGameCastShareReady(session *shareSession) {
 func (a *App) handleGameCastNativeVideoFailure(session *shareSession, cause error) {
 	waitForGameCastShareReady(session)
 	a.gamecastRuntimeMu.Lock()
-	defer a.gamecastRuntimeMu.Unlock()
 	if !a.currentGameCastNativeShare(session) {
+		a.gamecastRuntimeMu.Unlock()
 		return
 	}
 
@@ -1830,6 +1831,7 @@ func (a *App) handleGameCastNativeVideoFailure(session *shareSession, cause erro
 	}
 	log.Printf("[gamecast/native-host] stopping failed %s share room=%s: %v", sourceName, session.roomID, cause)
 	a.stopGameCastNativeHostLocked()
+	a.gamecastRuntimeMu.Unlock()
 	if _, err := a.SetGameCastHostSharing(GameCastHostShareRequest{
 		RoomID:    session.roomID,
 		Sharing:   false,
@@ -3266,7 +3268,7 @@ func (a *App) CreateGameCastRoom() (GameCastRoomSession, error) {
 	if roomID == "" {
 		return GameCastRoomSession{}, fmt.Errorf("current GameCast user cannot be used as a room id")
 	}
-	return a.enterGameCastHostRoom(roomID)
+	return a.enterGameCastRoom(roomID, "member", "client")
 }
 
 func (a *App) EnterGameCastHostRoom(roomID string) (GameCastRoomSession, error) {
@@ -3277,17 +3279,23 @@ func (a *App) EnterGameCastHostRoom(roomID string) (GameCastRoomSession, error) 
 	return a.enterGameCastHostRoom(roomID)
 }
 
+func (a *App) JoinGameCastRoom(roomID string) (GameCastRoomSession, error) {
+	roomID = strings.TrimSpace(roomID)
+	if roomID == "" {
+		return GameCastRoomSession{}, fmt.Errorf("room id is required")
+	}
+	return a.enterGameCastRoom(roomID, "member", "")
+}
+
 func (a *App) LeaveGameCastRoom() error {
-	_ = a.releaseGameCastShareLease()
+	shareErr := a.stopGameCastScreenShare()
 	a.stopGameCastPresence(true)
 	a.stopGameCastRoomHeartbeat(true)
 	a.stopGameCastViewerIntent(true)
-	a.stopGameCastNativeHost()
-	a.closeGameCastWS()
 	if a.ctx != nil {
 		runtime.EventsEmit(a.ctx, string(app.EventRoomLeft), nil)
 	}
-	return nil
+	return shareErr
 }
 
 func (a *App) ConnectGameCastHost(roomID string) error {
@@ -3390,10 +3398,9 @@ func (a *App) setPresenceManagedGameCastSharing(roomID string, sharing bool, aud
 		audioMode = "off"
 	}
 	if !sharing {
-		if err := a.releaseGameCastShareLease(); err != nil && !isGameCastLeaseGone(err) {
-			return GameCastRoomState{}, err
-		}
-		return a.GetGameCastRoomState(roomID)
+		stopErr := a.stopGameCastScreenShare()
+		state, stateErr := a.GetGameCastRoomState(roomID)
+		return state, errors.Join(stopErr, stateErr)
 	}
 
 	a.mu.Lock()
@@ -3403,14 +3410,16 @@ func (a *App) setPresenceManagedGameCastSharing(roomID string, sharing bool, aud
 	var state GameCastRoomState
 	var err error
 	if hasLease {
-		lease, state, err = a.heartbeatGameCastShare(roomID, true, audioMode)
+		lease, state, err = a.heartbeatGameCastShare(roomID, gamecast.SharePhaseLive, audioMode)
 	} else {
-		lease, state, err = a.claimGameCastShare(roomID, true, audioMode)
+		if _, _, err = a.claimGameCastShare(roomID, audioMode); err == nil {
+			lease, state, err = a.heartbeatGameCastShare(roomID, gamecast.SharePhaseLive, audioMode)
+		}
 	}
 	if err != nil {
 		return GameCastRoomState{}, err
 	}
-	a.startGameCastShareHeartbeat(lease, true, audioMode)
+	a.startGameCastShareHeartbeat(lease, gamecast.SharePhaseLive, audioMode)
 	return state, nil
 }
 
@@ -3522,10 +3531,11 @@ func (a *App) StartNativeGameCastSharing(request GameCastHostShareRequest) (Game
 	a.closeGameCastWS()
 	a.stopGameCastViewerIntent(true)
 	a.stopGameCastNativeHost()
-	_, _, err := a.claimGameCastShare(roomID, false, "off")
+	lease, _, err := a.claimGameCastShare(roomID, "off")
 	if err != nil {
 		return GameCastRoomState{}, fmt.Errorf("claim gamecast share: %w", err)
 	}
+	a.startGameCastShareHeartbeat(lease, gamecast.SharePhaseStarting, "off")
 	leaseCommitted := false
 	defer func() {
 		if !leaseCommitted {
@@ -3535,6 +3545,13 @@ func (a *App) StartNativeGameCastSharing(request GameCastHostShareRequest) (Game
 
 	audioTarget, audioEnabled, audioMode := a.resolveGameCastAudioCaptureTarget(request, session)
 
+	hostReady := make(chan error, 1)
+	var hostReadyOnce sync.Once
+	reportHostReady := func(err error) {
+		hostReadyOnce.Do(func() {
+			hostReady <- err
+		})
+	}
 	host := nativehost.New(nativehost.Config{
 		Profile:      a.gameCastProfileForRequest(""),
 		RoomID:       roomID,
@@ -3548,6 +3565,9 @@ func (a *App) StartNativeGameCastSharing(request GameCastHostShareRequest) (Game
 		},
 		OnStatus: func(status gamecastws.Status) {
 			a.emitGameCastStatus(status)
+			if resolved, readyErr := gameCastNativeHostReadyResult(status); resolved {
+				reportHostReady(readyErr)
+			}
 		},
 		OnKeyFrameRequest: func(reason string) {
 			seq := a.mediaKeyFrameSeq.Add(1)
@@ -3570,6 +3590,18 @@ func (a *App) StartNativeGameCastSharing(request GameCastHostShareRequest) (Game
 		audioMode, audioEnabled, audioStartErr = a.startGameCastAudioLoopOrDisable(host, session, audioTarget, audioMode)
 	}
 	session.audioMode = audioMode
+	readyCtx, cancelReady := context.WithTimeout(ctx, gameCastHostReadyTimeout)
+	defer cancelReady()
+	select {
+	case <-readyCtx.Done():
+		a.stopGameCastNativeHost()
+		return GameCastRoomState{}, fmt.Errorf("wait for native GameCast media readiness: %w", readyCtx.Err())
+	case readyErr := <-hostReady:
+		if readyErr != nil {
+			a.stopGameCastNativeHost()
+			return GameCastRoomState{}, readyErr
+		}
+	}
 
 	posted, err := a.SetGameCastHostSharing(GameCastHostShareRequest{
 		RoomID:    roomID,
@@ -3597,6 +3629,19 @@ func (a *App) StartNativeGameCastSharing(request GameCastHostShareRequest) (Game
 		})
 	}
 	return posted, nil
+}
+
+func gameCastNativeHostReadyResult(status gamecastws.Status) (bool, error) {
+	switch {
+	case status.State == "connected" && status.Detail == "native host sending media":
+		return true, nil
+	case status.State == "error":
+		return true, fmt.Errorf("native GameCast host failed before media was ready: %s", status.Detail)
+	case status.State == "closed":
+		return true, fmt.Errorf("native GameCast host closed before media was ready")
+	default:
+		return false, nil
+	}
 }
 
 func (a *App) startGameCastAudioLoopOrDisable(
@@ -3894,41 +3939,42 @@ func (a *App) ConnectGameCastViewer(roomID, layer string) error {
 	a.mu.Lock()
 	presenceRoom := a.gamecastPresenceRoom
 	presenceActive := a.gamecastPresenceCancel != nil
+	participantID := a.gamecastParticipantID
 	a.mu.Unlock()
-	presenceStarted := false
+	var roomState GameCastRoomState
 	if !presenceActive || !strings.EqualFold(presenceRoom, roomID) {
-		if _, err := a.startGameCastPresence(roomID, "member", ""); err != nil {
+		_, joinedState, err := a.startGameCastPresence(roomID, "member", "")
+		if err != nil {
 			return fmt.Errorf("join gamecast presence: %w", err)
 		}
-		presenceStarted = true
+		roomState = joinedState
+	} else {
+		client, err := a.gameCastClient(a.gameCastProfileForRequest(""))
+		if err != nil {
+			return err
+		}
+		requestCtx, cancelRequest := context.WithTimeout(ctx, 5*time.Second)
+		roomState, err = client.GetRoomState(requestCtx, roomID)
+		cancelRequest()
+		if err != nil {
+			return err
+		}
 	}
 
+	if !gameCastRoomLiveForViewer(roomState, participantID) {
+		a.stopGameCastViewerIntent(true)
+		a.closeGameCastWS()
+		return nil
+	}
 	a.closeGameCastWS()
 	generation := a.nextGameCastWSGeneration()
-	a.startGameCastViewerIntent(roomID)
-	select {
-	case <-ctx.Done():
-		a.stopGameCastViewerIntent(true)
-		if presenceStarted {
-			a.stopGameCastPresence(true)
-		}
-		return ctx.Err()
-	case <-time.After(1500 * time.Millisecond):
-	}
-	if !a.isCurrentGameCastWSGeneration(generation) {
-		return fmt.Errorf("gamecast websocket connection was superseded")
-	}
+	a.stopGameCastViewerIntent(true)
 	client := a.newGameCastWSClient(roomID, "viewer", layer, generation)
 	if !a.setGameCastWSIfCurrent(generation, client) {
 		return fmt.Errorf("gamecast websocket connection was superseded")
 	}
 	if err := client.Connect(ctx); err != nil {
-		if a.clearGameCastWSIfCurrent(generation, client) {
-			a.stopGameCastViewerIntent(true)
-			if presenceStarted {
-				a.stopGameCastPresence(true)
-			}
-		}
+		a.clearGameCastWSIfCurrent(generation, client)
 		return err
 	}
 	if !a.gameCastWSIsCurrent(generation, client) {
@@ -3939,6 +3985,16 @@ func (a *App) ConnectGameCastViewer(roomID, layer string) error {
 		log.Printf("add gamecast history failed: %v", err)
 	}
 	return nil
+}
+
+func gameCastRoomLiveForViewer(state GameCastRoomState, participantID string) bool {
+	return state.Active &&
+		state.Sharing &&
+		state.MediaMode == gamecast.MediaModeSFU &&
+		state.MediaProtocolVersion == gamecast.MediaProtocolVersion &&
+		state.SharePhase == gamecast.SharePhaseLive &&
+		state.SFU &&
+		(strings.TrimSpace(state.ShareOwnerParticipantID) == "" || state.ShareOwnerParticipantID != participantID)
 }
 
 func (a *App) PostGameCastPlaybackStats(payload map[string]interface{}) error {
@@ -4162,12 +4218,16 @@ func (a *App) closeGameCastWS() {
 }
 
 func (a *App) enterGameCastHostRoom(roomID string) (GameCastRoomSession, error) {
+	return a.enterGameCastRoom(roomID, "owner", "client")
+}
+
+func (a *App) enterGameCastRoom(roomID, requestedRole, origin string) (GameCastRoomSession, error) {
 	roomID = strings.TrimSpace(roomID)
 	if roomID == "" {
 		return GameCastRoomSession{}, fmt.Errorf("room id is required")
 	}
 	a.stopGameCastRoomHeartbeat(false)
-	presenceState, err := a.startGameCastPresence(roomID, "owner", "client")
+	participant, presenceState, err := a.startGameCastPresence(roomID, requestedRole, origin)
 	if err != nil {
 		return GameCastRoomSession{}, fmt.Errorf("join gamecast presence: %w", err)
 	}
@@ -4175,14 +4235,20 @@ func (a *App) enterGameCastHostRoom(roomID string) (GameCastRoomSession, error) 
 	posted := presenceState
 	posted.Room = roomID
 	posted.Active = true
-	if strings.TrimSpace(posted.Origin) == "" {
-		posted.Origin = "client"
+	if strings.TrimSpace(posted.Origin) == "" && strings.TrimSpace(origin) != "" {
+		posted.Origin = strings.TrimSpace(origin)
 	}
 	if strings.TrimSpace(posted.User) == "" {
 		posted.User = a.gameCastUserLabel()
 	}
 	if posted.TTL <= 0 {
 		posted.TTL = 15
+	}
+	role := "viewer"
+	selfPeerID := "gamecast-viewer"
+	if participant.Role == "owner" {
+		role = "host"
+		selfPeerID = "gamecast-host"
 	}
 	a.rememberGameCastRoom(roomID)
 	if _, err := a.AddGameCastHistory(roomID); err != nil {
@@ -4191,12 +4257,12 @@ func (a *App) enterGameCastHostRoom(roomID string) (GameCastRoomSession, error) 
 	if a.ctx != nil {
 		runtime.EventsEmit(a.ctx, string(app.EventRoomJoined), map[string]interface{}{
 			"roomId":     roomID,
-			"selfPeerId": "gamecast-host",
+			"selfPeerId": selfPeerID,
 		})
 	}
 	return GameCastRoomSession{
 		RoomID: roomID,
-		Role:   "host",
+		Role:   role,
 		State:  posted,
 	}, nil
 }
@@ -4343,27 +4409,35 @@ func (a *App) postGameCastViewerIntent(roomID string, active bool) error {
 func (a *App) gameCastPresenceRequest(roomID, role, origin string) gamecast.PresenceRequest {
 	a.mu.Lock()
 	participantID := a.gamecastParticipantID
+	hostCapability := a.hostVideoCapability
 	a.mu.Unlock()
 	return gamecast.PresenceRequest{
-		Room:          strings.TrimSpace(roomID),
-		ParticipantID: participantID,
-		ClientType:    "client",
-		Origin:        strings.TrimSpace(origin),
-		Role:          strings.TrimSpace(role),
-		Name:          a.gameCastUserLabel(),
-		TTL:           15,
+		Room:                 strings.TrimSpace(roomID),
+		ParticipantID:        participantID,
+		ClientType:           "client",
+		Origin:               strings.TrimSpace(origin),
+		Role:                 strings.TrimSpace(role),
+		Name:                 a.gameCastUserLabel(),
+		MediaProtocolVersion: gamecast.MediaProtocolVersion,
+		Capabilities: gamecast.MediaCapabilities{
+			SFUViewer: true,
+			SFUHost:   hostCapability.SupportsHost && hostCapability.Backend == video.BackendNative,
+			H264:      true,
+			Opus:      true,
+		},
+		TTL: 15,
 	}
 }
 
-func (a *App) startGameCastPresence(roomID, role, origin string) (GameCastRoomState, error) {
+func (a *App) startGameCastPresence(roomID, role, origin string) (gamecast.PresenceParticipant, GameCastRoomState, error) {
 	roomID = strings.TrimSpace(roomID)
 	if roomID == "" {
-		return GameCastRoomState{}, fmt.Errorf("room id is required")
+		return gamecast.PresenceParticipant{}, GameCastRoomState{}, fmt.Errorf("room id is required")
 	}
 	a.stopGameCastPresence(true)
 	client, err := a.gameCastClient(a.gameCastProfileForRequest(""))
 	if err != nil {
-		return GameCastRoomState{}, err
+		return gamecast.PresenceParticipant{}, GameCastRoomState{}, err
 	}
 	ctx := a.ctx
 	if ctx == nil {
@@ -4371,10 +4445,10 @@ func (a *App) startGameCastPresence(roomID, role, origin string) (GameCastRoomSt
 	}
 	request := a.gameCastPresenceRequest(roomID, role, origin)
 	requestCtx, cancelRequest := context.WithTimeout(ctx, 5*time.Second)
-	_, roomState, err := client.JoinPresence(requestCtx, request)
+	participant, roomState, err := client.JoinPresence(requestCtx, request)
 	cancelRequest()
 	if err != nil {
-		return GameCastRoomState{}, err
+		return gamecast.PresenceParticipant{}, GameCastRoomState{}, err
 	}
 	heartbeatCtx, cancel := context.WithCancel(ctx)
 	a.mu.Lock()
@@ -4385,7 +4459,7 @@ func (a *App) startGameCastPresence(roomID, role, origin string) (GameCastRoomSt
 	a.mu.Unlock()
 	a.startGameCastVoice(heartbeatCtx, client, request)
 	go a.runGameCastPresenceHeartbeat(heartbeatCtx, request)
-	return roomState, nil
+	return participant, roomState, nil
 }
 
 func (a *App) startGameCastVoice(ctx context.Context, client *gamecast.Client, request gamecast.PresenceRequest) {
@@ -4555,15 +4629,24 @@ func (a *App) stopGameCastPresence(markInactive bool) {
 	}
 }
 
-func (a *App) gameCastShareLeaseRequest(roomID string, sfu bool, audioMode string) gamecast.ShareLeaseRequest {
+func (a *App) gameCastShareLeaseRequest(roomID, phase, audioMode string) gamecast.ShareLeaseRequest {
 	a.mu.Lock()
 	participantID := a.gamecastParticipantID
 	lease := a.gamecastShareLease
 	a.mu.Unlock()
+	phase = strings.TrimSpace(phase)
+	if phase == "" && lease != nil {
+		phase = strings.TrimSpace(lease.Phase)
+	}
+	if phase == "" {
+		phase = gamecast.SharePhaseStarting
+	}
 	request := gamecast.ShareLeaseRequest{
 		Room:          strings.TrimSpace(roomID),
 		ParticipantID: participantID,
-		SFU:           sfu,
+		MediaMode:     gamecast.MediaModeSFU,
+		Phase:         phase,
+		SFU:           true,
 		AudioMode:     strings.TrimSpace(audioMode),
 		TTL:           15,
 	}
@@ -4573,7 +4656,7 @@ func (a *App) gameCastShareLeaseRequest(roomID string, sfu bool, audioMode strin
 	return request
 }
 
-func (a *App) claimGameCastShare(roomID string, sfu bool, audioMode string) (gamecast.ShareLease, GameCastRoomState, error) {
+func (a *App) claimGameCastShare(roomID, audioMode string) (gamecast.ShareLease, GameCastRoomState, error) {
 	client, err := a.gameCastClient(a.gameCastProfileForRequest(""))
 	if err != nil {
 		return gamecast.ShareLease{}, GameCastRoomState{}, err
@@ -4584,7 +4667,7 @@ func (a *App) claimGameCastShare(roomID string, sfu bool, audioMode string) (gam
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	lease, roomState, err := client.ClaimShare(requestCtx, a.gameCastShareLeaseRequest(roomID, sfu, audioMode))
+	lease, roomState, err := client.ClaimShare(requestCtx, a.gameCastShareLeaseRequest(roomID, gamecast.SharePhaseStarting, audioMode))
 	if err != nil {
 		return gamecast.ShareLease{}, GameCastRoomState{}, err
 	}
@@ -4594,7 +4677,7 @@ func (a *App) claimGameCastShare(roomID string, sfu bool, audioMode string) (gam
 	return lease, roomState, nil
 }
 
-func (a *App) heartbeatGameCastShare(roomID string, sfu bool, audioMode string) (gamecast.ShareLease, GameCastRoomState, error) {
+func (a *App) heartbeatGameCastShare(roomID, phase, audioMode string) (gamecast.ShareLease, GameCastRoomState, error) {
 	client, err := a.gameCastClient(a.gameCastProfileForRequest(""))
 	if err != nil {
 		return gamecast.ShareLease{}, GameCastRoomState{}, err
@@ -4605,7 +4688,7 @@ func (a *App) heartbeatGameCastShare(roomID string, sfu bool, audioMode string) 
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	lease, roomState, err := client.HeartbeatShare(requestCtx, a.gameCastShareLeaseRequest(roomID, sfu, audioMode))
+	lease, roomState, err := client.HeartbeatShare(requestCtx, a.gameCastShareLeaseRequest(roomID, phase, audioMode))
 	if err != nil {
 		return gamecast.ShareLease{}, GameCastRoomState{}, err
 	}
@@ -4615,7 +4698,7 @@ func (a *App) heartbeatGameCastShare(roomID string, sfu bool, audioMode string) 
 	return lease, roomState, nil
 }
 
-func (a *App) startGameCastShareHeartbeat(lease gamecast.ShareLease, sfu bool, audioMode string) {
+func (a *App) startGameCastShareHeartbeat(lease gamecast.ShareLease, phase, audioMode string) {
 	a.mu.Lock()
 	if a.gamecastShareCancel != nil {
 		a.gamecastShareCancel()
@@ -4642,7 +4725,7 @@ func (a *App) startGameCastShareHeartbeat(lease gamecast.ShareLease, sfu bool, a
 					continue
 				}
 				requestCtx, cancelRequest := context.WithTimeout(heartbeatCtx, 5*time.Second)
-				updated, _, err := client.HeartbeatShare(requestCtx, a.gameCastShareLeaseRequest(lease.Room, sfu, audioMode))
+				updated, _, err := client.HeartbeatShare(requestCtx, a.gameCastShareLeaseRequest(lease.Room, phase, audioMode))
 				cancelRequest()
 				if err != nil {
 					if heartbeatCtx.Err() == nil {
@@ -4658,16 +4741,48 @@ func (a *App) startGameCastShareHeartbeat(lease gamecast.ShareLease, sfu bool, a
 	}()
 }
 
-func (a *App) releaseGameCastShareLease() error {
+func (a *App) stopGameCastShareHeartbeat() {
 	a.mu.Lock()
 	cancel := a.gamecastShareCancel
-	lease := a.gamecastShareLease
 	a.gamecastShareCancel = nil
-	a.gamecastShareLease = nil
 	a.mu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
+}
+
+func (a *App) stopGameCastScreenShare() error {
+	a.stopGameCastShareHeartbeat()
+	a.mu.Lock()
+	lease := a.gamecastShareLease
+	a.mu.Unlock()
+
+	var transitionErr error
+	if lease != nil {
+		phase := strings.TrimSpace(lease.Phase)
+		if phase == gamecast.SharePhaseLive || (phase == "" && lease.SFU) {
+			_, _, transitionErr = a.heartbeatGameCastShare(lease.Room, gamecast.SharePhaseStopping, lease.AudioMode)
+			if isGameCastLeaseGone(transitionErr) {
+				transitionErr = nil
+			}
+		}
+	}
+
+	a.stopGameCastNativeHost()
+	a.closeGameCastWS()
+	releaseErr := a.releaseGameCastShareLease()
+	if isGameCastLeaseGone(releaseErr) {
+		releaseErr = nil
+	}
+	return errors.Join(transitionErr, releaseErr)
+}
+
+func (a *App) releaseGameCastShareLease() error {
+	a.stopGameCastShareHeartbeat()
+	a.mu.Lock()
+	lease := a.gamecastShareLease
+	a.gamecastShareLease = nil
+	a.mu.Unlock()
 	if lease == nil || strings.TrimSpace(lease.LeaseID) == "" {
 		return nil
 	}
@@ -4685,6 +4800,10 @@ func (a *App) releaseGameCastShareLease() error {
 		Room:          lease.Room,
 		ParticipantID: lease.ParticipantID,
 		LeaseID:       lease.LeaseID,
+		MediaMode:     gamecast.MediaModeSFU,
+		Phase:         lease.Phase,
+		SFU:           true,
+		AudioMode:     lease.AudioMode,
 		TTL:           15,
 	})
 	return err

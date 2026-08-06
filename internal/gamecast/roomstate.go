@@ -2,6 +2,23 @@ package gamecast
 
 import "time"
 
+const (
+	MediaProtocolVersion = 1
+	MediaModeSFU         = "sfu"
+	MediaModeLegacyP2P   = "legacy-p2p"
+	SharePhaseIdle       = "idle"
+	SharePhaseStarting   = "starting"
+	SharePhaseLive       = "live"
+	SharePhaseStopping   = "stopping"
+)
+
+type MediaCapabilities struct {
+	SFUViewer bool `json:"sfuViewer"`
+	SFUHost   bool `json:"sfuHost"`
+	H264      bool `json:"h264"`
+	Opus      bool `json:"opus"`
+}
+
 type RoomState struct {
 	Room                    string    `json:"room"`
 	Active                  bool      `json:"active"`
@@ -9,6 +26,9 @@ type RoomState struct {
 	OwnerParticipantID      string    `json:"ownerParticipantId,omitempty"`
 	OwnerName               string    `json:"ownerName,omitempty"`
 	Sharing                 bool      `json:"sharing"`
+	MediaMode               string    `json:"mediaMode,omitempty"`
+	MediaProtocolVersion    int       `json:"mediaProtocolVersion,omitempty"`
+	SharePhase              string    `json:"sharePhase,omitempty"`
 	ShareOwnerParticipantID string    `json:"shareOwnerParticipantId,omitempty"`
 	ShareOwnerName          string    `json:"shareOwnerName,omitempty"`
 	ShareOrigin             string    `json:"shareOrigin,omitempty"`
@@ -22,25 +42,29 @@ type RoomState struct {
 }
 
 type PresenceRequest struct {
-	Room          string `json:"room"`
-	ParticipantID string `json:"participantId"`
-	ClientType    string `json:"clientType,omitempty"`
-	Origin        string `json:"origin,omitempty"`
-	Role          string `json:"role,omitempty"`
-	Name          string `json:"name,omitempty"`
-	TTL           int    `json:"ttl,omitempty"`
+	Room                 string            `json:"room"`
+	ParticipantID        string            `json:"participantId"`
+	ClientType           string            `json:"clientType,omitempty"`
+	Origin               string            `json:"origin,omitempty"`
+	Role                 string            `json:"role,omitempty"`
+	Name                 string            `json:"name,omitempty"`
+	MediaProtocolVersion int               `json:"mediaProtocolVersion,omitempty"`
+	Capabilities         MediaCapabilities `json:"capabilities,omitempty"`
+	TTL                  int               `json:"ttl,omitempty"`
 }
 
 type PresenceParticipant struct {
-	ParticipantID string  `json:"participantId"`
-	Room          string  `json:"room"`
-	Name          string  `json:"name,omitempty"`
-	ClientType    string  `json:"clientType"`
-	Role          string  `json:"role"`
-	Active        bool    `json:"active"`
-	Sharing       bool    `json:"sharing"`
-	TTL           int     `json:"ttl,omitempty"`
-	AgeSeconds    float64 `json:"ageSeconds,omitempty"`
+	ParticipantID        string            `json:"participantId"`
+	Room                 string            `json:"room"`
+	Name                 string            `json:"name,omitempty"`
+	ClientType           string            `json:"clientType"`
+	Role                 string            `json:"role"`
+	Active               bool              `json:"active"`
+	Sharing              bool              `json:"sharing"`
+	MediaProtocolVersion int               `json:"mediaProtocolVersion,omitempty"`
+	Capabilities         MediaCapabilities `json:"capabilities,omitempty"`
+	TTL                  int               `json:"ttl,omitempty"`
+	AgeSeconds           float64           `json:"ageSeconds,omitempty"`
 }
 
 type PresenceResponse struct {
@@ -70,6 +94,8 @@ type ShareLeaseRequest struct {
 	Room          string `json:"room"`
 	ParticipantID string `json:"participantId"`
 	LeaseID       string `json:"leaseId,omitempty"`
+	MediaMode     string `json:"mediaMode,omitempty"`
+	Phase         string `json:"phase,omitempty"`
 	SFU           bool   `json:"sfu"`
 	AudioMode     string `json:"audioMode,omitempty"`
 	TTL           int    `json:"ttl,omitempty"`
@@ -82,6 +108,8 @@ type ShareLease struct {
 	ClientType    string  `json:"clientType,omitempty"`
 	Name          string  `json:"name,omitempty"`
 	Active        bool    `json:"active"`
+	MediaMode     string  `json:"mediaMode,omitempty"`
+	Phase         string  `json:"phase,omitempty"`
 	SFU           bool    `json:"sfu"`
 	AudioMode     string  `json:"audioMode,omitempty"`
 	TTL           int     `json:"ttl,omitempty"`

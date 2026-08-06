@@ -1,6 +1,6 @@
 # PartyLAN 网页端与客户端统一 SFU 实施计划
 
-**状态：** 实施中
+**状态：** 本地实施完成，待外部验收
 **日期：** 2026-08-06
 **设计依据：**
 `docs/superpowers/specs/2026-08-06-partylan-unified-sfu-cross-client-design.md`
@@ -255,3 +255,21 @@ git diff --check
 - 客户端加入网页来源房间不再自动打开浏览器，空闲房间不建立屏幕媒体连接。
 - 网页成员锚点稳定显示客户端成员，Screego 统一房间不建立屏幕 P2P 会话。
 - 自动验证、构建、真实设备和生产验收分别记录，未完成的外部门禁不宣称通过。
+
+## 执行记录（2026-08-06）
+
+- Task 1 至 Task 10 已在本地完成。Python 36 项、服务器 Node 104 项、前端 Node 37 项、
+  普通 Go 全仓、`partylan_native_media` 标签全仓及前端生产构建均通过。
+- 在锁定提交 `f946cee83b61d9f47c2f1c2238fb31f4042b628a` 的新干净 Screego 检出中，
+  `0001` 至 `0003` 补丁重新应用成功；补丁行为测试 10 项、UI build、Go tests 和
+  auth race test 均通过。
+- 正式脚本生成 `C:\project\PartyLAN\build\bin\PartyLAN.exe`：21,244,928 字节，
+  修改时间 `2026-08-06 14:00:22.163 +08:00`，SHA-256
+  `2E4933AFBAEB01444642C8E92A432388C032E64C8E5389E7C0AB85033EC30E37`；构建元数据
+  包含 `desktop,partylan_native_media,wv2runtime.download,production` 且
+  `CGO_ENABLED=1`，相邻 `opus.dll` 已复制并校验。
+- `server/register.py` 与部署副本均为 43,314 字节，SHA-256
+  `927DC527745E1A6C675B590D0CFD043C41285D7CE9C765166F4B347F41B784D9`，逐字节一致；
+  计划内差异的凭据、令牌、SDP、ICE candidate 和媒体内容扫描均为零匹配。
+- 本轮未上传、部署、重启服务、切换广州节点开关或推送远端。Task 11 的 Windows
+  真实音频、四种跨端组合及广州生产回归仍为未完成外部门禁。

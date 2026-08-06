@@ -73,7 +73,7 @@ func TestGetRoomState(t *testing.T) {
 func TestGetRoomStateDecodesCrossClientMetadata(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"ok":true,"state":{"room":"room-123","active":true,"origin":"client","ownerParticipantId":"owner-1","ownerName":"Desktop","sharing":true,"shareOwnerParticipantId":"web-1","shareOwnerName":"Browser","shareOrigin":"web","sfu":true,"participantCount":2}}`)
+		_, _ = io.WriteString(w, `{"ok":true,"state":{"room":"room-123","active":true,"origin":"client","ownerParticipantId":"owner-1","ownerName":"Desktop","sharing":true,"mediaMode":"sfu","mediaProtocolVersion":1,"sharePhase":"live","shareOwnerParticipantId":"web-1","shareOwnerName":"Browser","shareOrigin":"web","sfu":true,"participantCount":2}}`)
 	}))
 	defer server.Close()
 
@@ -94,6 +94,10 @@ func TestGetRoomStateDecodesCrossClientMetadata(t *testing.T) {
 	if state.ParticipantCount != 2 {
 		t.Fatalf("participant count = %d", state.ParticipantCount)
 	}
+	stateJSON := encodeJSONMap(t, state)
+	if stateJSON["mediaMode"] != "sfu" || stateJSON["mediaProtocolVersion"] != float64(1) || stateJSON["sharePhase"] != "live" {
+		t.Fatalf("unified room metadata = %#v", stateJSON)
+	}
 }
 
 func TestPresenceAndShareLeaseAPIs(t *testing.T) {
@@ -103,24 +107,24 @@ func TestPresenceAndShareLeaseAPIs(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/api/presence/join", "/api/presence/heartbeat", "/api/presence/leave":
-			var payload PresenceRequest
+			var payload map[string]interface{}
 			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 				t.Fatalf("decode presence: %v", err)
 			}
-			if payload.Room != "room-1" || payload.ParticipantID != "client-1" || payload.ClientType != "client" {
+			capabilities, _ := payload["capabilities"].(map[string]interface{})
+			if payload["room"] != "room-1" || payload["participantId"] != "client-1" || payload["clientType"] != "client" ||
+				payload["mediaProtocolVersion"] != float64(1) || capabilities["sfuViewer"] != true ||
+				capabilities["sfuHost"] != true || capabilities["h264"] != true || capabilities["opus"] != true {
 				t.Fatalf("presence payload = %#v", payload)
 			}
-			_ = json.NewEncoder(w).Encode(PresenceResponse{
-				OK: true,
-				Participant: &PresenceParticipant{
-					ParticipantID: "client-1",
-					Room:          "room-1",
-					Name:          "Desktop",
-					ClientType:    "client",
-					Role:          "owner",
-					Active:        r.URL.Path != "/api/presence/leave",
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"ok": true,
+				"participant": map[string]interface{}{
+					"participantId": "client-1", "room": "room-1", "name": "Desktop",
+					"clientType": "client", "role": "owner", "active": r.URL.Path != "/api/presence/leave",
+					"mediaProtocolVersion": 1, "capabilities": map[string]bool{"sfuViewer": true, "sfuHost": true, "h264": true, "opus": true},
 				},
-				Room: &RoomState{Room: "room-1", Active: true, Origin: "client"},
+				"room": map[string]interface{}{"room": "room-1", "active": true, "origin": "client", "mediaMode": "sfu", "mediaProtocolVersion": 1, "sharePhase": "idle"},
 			})
 		case "/api/presence":
 			if r.URL.Query().Get("room") != "room-1" {
@@ -132,20 +136,30 @@ func TestPresenceAndShareLeaseAPIs(t *testing.T) {
 				Room:         &RoomState{Room: "room-1", Active: true, Origin: "client"},
 			})
 		case "/api/share/claim", "/api/share/heartbeat", "/api/share/release":
-			var payload ShareLeaseRequest
+			var payload map[string]interface{}
 			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 				t.Fatalf("decode lease: %v", err)
 			}
-			if payload.Room != "room-1" || payload.ParticipantID != "client-1" {
+			if payload["room"] != "room-1" || payload["participantId"] != "client-1" || payload["mediaMode"] != "sfu" {
 				t.Fatalf("lease payload = %#v", payload)
 			}
-			if r.URL.Path != "/api/share/claim" && payload.LeaseID != "lease-1" {
-				t.Fatalf("lease id = %q", payload.LeaseID)
+			if r.URL.Path != "/api/share/claim" && payload["leaseId"] != "lease-1" {
+				t.Fatalf("lease id = %#v", payload["leaseId"])
 			}
-			_ = json.NewEncoder(w).Encode(ShareLeaseResponse{
-				OK:    true,
-				Lease: &ShareLease{Room: "room-1", LeaseID: "lease-1", ParticipantID: "client-1", Active: r.URL.Path != "/api/share/release"},
-				Room:  &RoomState{Room: "room-1", Active: true, Origin: "client"},
+			wantPhase := map[string]string{"/api/share/claim": "starting", "/api/share/heartbeat": "live", "/api/share/release": "stopping"}[r.URL.Path]
+			if payload["phase"] != wantPhase {
+				t.Fatalf("lease phase = %#v, want %q", payload["phase"], wantPhase)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"ok": true,
+				"lease": map[string]interface{}{
+					"room": "room-1", "leaseId": "lease-1", "participantId": "client-1",
+					"active": r.URL.Path != "/api/share/release", "mediaMode": "sfu", "phase": wantPhase,
+				},
+				"room": map[string]interface{}{
+					"room": "room-1", "active": true, "origin": "client", "sharing": r.URL.Path != "/api/share/release",
+					"mediaMode": "sfu", "mediaProtocolVersion": 1, "sharePhase": wantPhase, "sfu": wantPhase == "live",
+				},
 			})
 		case "/api/voice/token":
 			var payload VoiceTokenRequest
@@ -171,9 +185,19 @@ func TestPresenceAndShareLeaseAPIs(t *testing.T) {
 		t.Fatalf("NewClient: %v", err)
 	}
 	ctx := context.Background()
-	presence := PresenceRequest{Room: "room-1", ParticipantID: "client-1", ClientType: "client", Origin: "client", Role: "owner", Name: "Desktop", TTL: 15}
-	if _, _, err := client.JoinPresence(ctx, presence); err != nil {
+	var presence PresenceRequest
+	if err := json.Unmarshal([]byte(`{"room":"room-1","participantId":"client-1","clientType":"client","origin":"client","role":"owner","name":"Desktop","ttl":15,"mediaProtocolVersion":1,"capabilities":{"sfuViewer":true,"sfuHost":true,"h264":true,"opus":true}}`), &presence); err != nil {
+		t.Fatalf("decode unified presence fixture: %v", err)
+	}
+	joined, joinedRoom, err := client.JoinPresence(ctx, presence)
+	if err != nil {
 		t.Fatalf("JoinPresence: %v", err)
+	}
+	if participantJSON := encodeJSONMap(t, joined); participantJSON["mediaProtocolVersion"] != float64(1) || participantJSON["capabilities"] == nil {
+		t.Fatalf("decoded presence participant = %#v", participantJSON)
+	}
+	if roomJSON := encodeJSONMap(t, joinedRoom); roomJSON["mediaMode"] != "sfu" || roomJSON["sharePhase"] != "idle" {
+		t.Fatalf("decoded presence room = %#v", roomJSON)
 	}
 	if _, err := client.HeartbeatPresence(ctx, presence); err != nil {
 		t.Fatalf("HeartbeatPresence: %v", err)
@@ -182,14 +206,26 @@ func TestPresenceAndShareLeaseAPIs(t *testing.T) {
 	if err != nil || len(participants) != 1 || state.Origin != "client" {
 		t.Fatalf("ListPresence participants=%#v state=%#v err=%v", participants, state, err)
 	}
-	leaseRequest := ShareLeaseRequest{Room: "room-1", ParticipantID: "client-1", SFU: true, AudioMode: "system", TTL: 15}
+	var leaseRequest ShareLeaseRequest
+	if err := json.Unmarshal([]byte(`{"room":"room-1","participantId":"client-1","sfu":true,"mediaMode":"sfu","phase":"starting","audioMode":"system","ttl":15}`), &leaseRequest); err != nil {
+		t.Fatalf("decode unified lease fixture: %v", err)
+	}
 	lease, _, err := client.ClaimShare(ctx, leaseRequest)
 	if err != nil || lease.LeaseID != "lease-1" {
 		t.Fatalf("ClaimShare lease=%#v err=%v", lease, err)
 	}
+	if leaseJSON := encodeJSONMap(t, lease); leaseJSON["mediaMode"] != "sfu" || leaseJSON["phase"] != "starting" {
+		t.Fatalf("decoded share lease = %#v", leaseJSON)
+	}
 	leaseRequest.LeaseID = lease.LeaseID
+	if err := json.Unmarshal([]byte(`{"phase":"live"}`), &leaseRequest); err != nil {
+		t.Fatalf("decode live phase: %v", err)
+	}
 	if _, _, err := client.HeartbeatShare(ctx, leaseRequest); err != nil {
 		t.Fatalf("HeartbeatShare: %v", err)
+	}
+	if err := json.Unmarshal([]byte(`{"phase":"stopping"}`), &leaseRequest); err != nil {
+		t.Fatalf("decode stopping phase: %v", err)
 	}
 	if _, _, err := client.ReleaseShare(ctx, leaseRequest); err != nil {
 		t.Fatalf("ReleaseShare: %v", err)
@@ -214,6 +250,19 @@ func TestPresenceAndShareLeaseAPIs(t *testing.T) {
 	if strings.Join(paths, ",") != strings.Join(want, ",") {
 		t.Fatalf("paths=%v want=%v", paths, want)
 	}
+}
+
+func encodeJSONMap(t *testing.T, value interface{}) map[string]interface{} {
+	t.Helper()
+	body, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal JSON object: %v", err)
+	}
+	var result map[string]interface{}
+	if err := json.Unmarshal(body, &result); err != nil {
+		t.Fatalf("decode JSON object: %v", err)
+	}
+	return result
 }
 
 func TestShareConflictPreservesStructuredErrorCode(t *testing.T) {

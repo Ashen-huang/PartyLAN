@@ -109,6 +109,24 @@ export namespace gamecast {
 	        this.time = source["time"];
 	    }
 	}
+	export class MediaCapabilities {
+	    sfuViewer: boolean;
+	    sfuHost: boolean;
+	    h264: boolean;
+	    opus: boolean;
+
+	    static createFrom(source: any = {}) {
+	        return new MediaCapabilities(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sfuViewer = source["sfuViewer"];
+	        this.sfuHost = source["sfuHost"];
+	        this.h264 = source["h264"];
+	        this.opus = source["opus"];
+	    }
+	}
 	export class PresenceParticipant {
 	    participantId: string;
 	    room: string;
@@ -117,6 +135,8 @@ export namespace gamecast {
 	    role: string;
 	    active: boolean;
 	    sharing: boolean;
+	    mediaProtocolVersion?: number;
+	    capabilities?: MediaCapabilities;
 	    ttl?: number;
 	    ageSeconds?: number;
 
@@ -133,9 +153,29 @@ export namespace gamecast {
 	        this.role = source["role"];
 	        this.active = source["active"];
 	        this.sharing = source["sharing"];
+	        this.mediaProtocolVersion = source["mediaProtocolVersion"];
+	        this.capabilities = this.convertValues(source["capabilities"], MediaCapabilities);
 	        this.ttl = source["ttl"];
 	        this.ageSeconds = source["ageSeconds"];
 	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class ProbeResult {
 	    ok: boolean;
@@ -172,6 +212,9 @@ export namespace gamecast {
 	    ownerParticipantId?: string;
 	    ownerName?: string;
 	    sharing: boolean;
+	    mediaMode?: string;
+	    mediaProtocolVersion?: number;
+	    sharePhase?: string;
 	    shareOwnerParticipantId?: string;
 	    shareOwnerName?: string;
 	    shareOrigin?: string;
@@ -196,6 +239,9 @@ export namespace gamecast {
 	        this.ownerParticipantId = source["ownerParticipantId"];
 	        this.ownerName = source["ownerName"];
 	        this.sharing = source["sharing"];
+	        this.mediaMode = source["mediaMode"];
+	        this.mediaProtocolVersion = source["mediaProtocolVersion"];
+	        this.sharePhase = source["sharePhase"];
 	        this.shareOwnerParticipantId = source["shareOwnerParticipantId"];
 	        this.shareOwnerName = source["shareOwnerName"];
 	        this.shareOrigin = source["shareOrigin"];

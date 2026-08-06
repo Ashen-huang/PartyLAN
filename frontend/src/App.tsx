@@ -39,6 +39,7 @@ import {
   GetUserPreferences,
   GetAvailableNodes,
   GetNetworkStatus,
+  JoinGameCastRoom,
   JoinRoom,
   LeaveGameCastRoom,
   LeaveRoom,
@@ -97,12 +98,12 @@ import {
   canStartGameCastSharing,
   gameCastControlErrorMessageKey,
   gameCastFailureMessageKey,
+  isGameCastRoomLiveForViewer,
   mergeGameCastPresenceMembers,
   promoteGameCastViewerToHost,
   reduceGameCastViewerReconnectAttempt,
   selectOwnGameCastRoomAction,
   selectGameCastSharePath,
-  selectGameCastJoinAction,
   shouldListGameCastRoom,
   shouldApplyGameCastShareRuntimeEvent,
   shouldReconnectGameCastViewer,
@@ -670,6 +671,9 @@ function toGameCastRoomState(payload: Partial<GameCastRoomState> | null | undefi
     ownerParticipantId: payload?.ownerParticipantId ? String(payload.ownerParticipantId) : '',
     ownerName: payload?.ownerName ? String(payload.ownerName) : '',
     sharing: Boolean(payload?.sharing),
+    mediaMode: payload?.mediaMode ? String(payload.mediaMode) : '',
+    mediaProtocolVersion: typeof payload?.mediaProtocolVersion === 'number' ? payload.mediaProtocolVersion : 0,
+    sharePhase: payload?.sharePhase ? String(payload.sharePhase) : 'idle',
     shareOwnerParticipantId: payload?.shareOwnerParticipantId ? String(payload.shareOwnerParticipantId) : '',
     shareOwnerName: payload?.shareOwnerName ? String(payload.shareOwnerName) : '',
     shareOrigin: payload?.shareOrigin ? String(payload.shareOrigin) : '',
@@ -687,8 +691,11 @@ function optimisticGameCastRoomState(roomId: string): GameCastRoomState {
   return {
     room: roomId,
     active: true,
-    sharing: true,
-    sfu: true,
+    sharing: false,
+    mediaMode: 'sfu',
+    mediaProtocolVersion: 1,
+    sharePhase: 'idle',
+    sfu: false,
     audioMode: '',
     user: '',
   };
@@ -752,6 +759,16 @@ function toGameCastPresenceParticipants(raw: unknown): GameCastPresenceParticipa
             role: value.role ? String(value.role) : 'member',
             active: Boolean(value.active),
             sharing: Boolean(value.sharing),
+            mediaProtocolVersion:
+              typeof value.mediaProtocolVersion === 'number' ? value.mediaProtocolVersion : 0,
+            capabilities: value.capabilities
+              ? {
+                  sfuViewer: Boolean(value.capabilities.sfuViewer),
+                  sfuHost: Boolean(value.capabilities.sfuHost),
+                  h264: Boolean(value.capabilities.h264),
+                  opus: Boolean(value.capabilities.opus),
+                }
+              : undefined,
             ttl: typeof value.ttl === 'number' ? value.ttl : undefined,
             ageSeconds: typeof value.ageSeconds === 'number' ? value.ageSeconds : undefined,
           };
@@ -842,16 +859,13 @@ export default function App() {
   const gameCastReceiverRef = useRef<GameCastReceiver | null>(null);
   const gameCastHostRef = useRef<GameCastHost | null>(null);
   const gameCastProfileRef = useRef<GameCastProfile>(initialGameCastProfile);
-  const gameCastSessionRef = useRef<GameCastSessionState | null>(null);
   const gameCastRoomRef = useRef('');
   const gameCastRoleRef = useRef<GameCastClientState['role']>(null);
   const gameCastActiveSharePathRef = useRef<GameCastSharePath | null>(null);
-  const gameCastRoomOriginRef = useRef('');
   const gameCastParticipantIdRef = useRef('');
   const lastGameCastStatsPostRef = useRef(0);
   const gameCastViewerReconnectTimerRef = useRef<number | null>(null);
   const gameCastViewerLifecycleRef = useRef(new GameCastViewerLifecycle());
-  const gameCastAutoViewerRoomRef = useRef('');
   const t = useMemo(() => createTranslator(language), [language]);
 
   function formatGameCastFailure(kind: GameCastFailureKind, detail: string): string {
@@ -933,10 +947,6 @@ export default function App() {
   }, [gameCast.profile]);
 
   useEffect(() => {
-    gameCastSessionRef.current = gameCast.session;
-  }, [gameCast.session]);
-
-  useEffect(() => {
     gameCastRoomRef.current = gameCast.roomDraft || state.room.roomId || '';
     lastGameCastStatsPostRef.current = 0;
   }, [gameCast.roomDraft, state.room.roomId]);
@@ -948,10 +958,6 @@ export default function App() {
   useEffect(() => {
     gameCastActiveSharePathRef.current = gameCast.activeSharePath;
   }, [gameCast.activeSharePath]);
-
-  useEffect(() => {
-    gameCastRoomOriginRef.current = gameCast.roomState?.origin || '';
-  }, [gameCast.roomState?.origin]);
 
   useEffect(() => {
     gameCastParticipantIdRef.current = gameCast.participantId;
@@ -974,6 +980,10 @@ export default function App() {
       role: gameCast.role,
       roomActive: Boolean(gameCast.roomState?.active),
       roomSharing: Boolean(gameCast.roomState?.sharing),
+      roomMediaMode: gameCast.roomState?.mediaMode,
+      roomMediaProtocolVersion: gameCast.roomState?.mediaProtocolVersion,
+      roomSharePhase: gameCast.roomState?.sharePhase,
+      roomSFU: Boolean(gameCast.roomState?.sfu),
       activeSharePath: gameCast.activeSharePath,
       statusState: gameCast.status?.state,
       receiverState: gameCast.receiverState,
@@ -1048,6 +1058,10 @@ export default function App() {
     gameCast.roomDraft,
     gameCast.roomState?.active,
     gameCast.roomState?.sharing,
+    gameCast.roomState?.mediaMode,
+    gameCast.roomState?.mediaProtocolVersion,
+    gameCast.roomState?.sharePhase,
+    gameCast.roomState?.sfu,
     gameCast.status?.state,
     gameCast.receiverState,
     gameCast.activeSharePath,
@@ -1191,15 +1205,6 @@ export default function App() {
       EventsOn('gamecast:signal', (payload) => {
         const presenceViewers = toGameCastPresenceViewers(payload);
         if (presenceViewers) {
-          if (gameCastRoomOriginRef.current === 'client') {
-            return;
-          }
-          dispatch({
-            type: 'GAMECAST_PRESENCE',
-            viewers: presenceViewers,
-            selfPeerId: selfPeerIdRef.current || null,
-            selfName: gameCastSessionRef.current?.user || '',
-          });
           return;
         }
         if (gameCastHostRef.current) {
@@ -1456,7 +1461,7 @@ export default function App() {
     void loadNodes();
     const timer = window.setInterval(() => {
       void loadNodes();
-    }, 5000);
+    }, 3000);
 
     return () => {
       cancelled = true;
@@ -1653,7 +1658,7 @@ export default function App() {
 
   useEffect(() => {
     const roomId = state.room.roomId?.trim() || '';
-    if (!roomId || gameCast.roomState?.origin !== 'client') {
+    if (!roomId) {
       return;
     }
     let cancelled = false;
@@ -1686,7 +1691,6 @@ export default function App() {
     gameCast.participantId,
     gameCast.profile.baseUrl,
     gameCast.profile.trustedCertificateSha256,
-    gameCast.roomState?.origin,
     state.room.roomId,
     state.room.selfPeerId,
   ]);
@@ -1695,12 +1699,13 @@ export default function App() {
     if (
       gameCast.role !== 'viewer' ||
       !gameCast.roomState ||
-      gameCast.roomState.sharing ||
+      isGameCastRoomLiveForViewer(gameCast.roomState) ||
       gameCast.activeSharePath !== null
     ) {
       return;
     }
     invalidateGameCastViewer('sharing stopped');
+    void DisconnectGameCast().catch(() => undefined);
     setGameCast((current) => ({
       ...current,
       receiverState: 'idle',
@@ -1714,7 +1719,12 @@ export default function App() {
   }, [
     gameCast.activeSharePath,
     gameCast.role,
+    gameCast.roomState?.active,
     gameCast.roomState?.sharing,
+    gameCast.roomState?.mediaMode,
+    gameCast.roomState?.mediaProtocolVersion,
+    gameCast.roomState?.sharePhase,
+    gameCast.roomState?.sfu,
   ]);
 
   useEffect(() => {
@@ -1809,7 +1819,6 @@ export default function App() {
   const stopGameCastHostShare = async (roomId: string, detail = 'host stopped') => {
     gameCastHostRef.current?.stop(detail);
     gameCastHostRef.current = null;
-    await DisconnectGameCast().catch(() => undefined);
     const roomState = toGameCastRoomState(
       await SetGameCastHostSharing({
         roomId,
@@ -1914,6 +1923,8 @@ export default function App() {
           selfPeerId: state.room.selfPeerId,
           roomEntry: gameCast.roomEntry,
           roomOrigin: gameCast.roomState?.origin,
+          mediaMode: gameCast.roomState?.mediaMode,
+          mediaProtocolVersion: gameCast.roomState?.mediaProtocolVersion,
           role: gameCast.role,
           hostVideoCapable: state.room.hostVideoCapable,
           sourceKind: settings.sourceKind,
@@ -2313,19 +2324,12 @@ export default function App() {
           existingRoom = null;
         }
       }
-      if (selectOwnGameCastRoomAction(ownRoomId, existingRoom) === 'open-browser') {
-        setGameCast((current) => ({
-          ...current,
-          profile,
-          serverDraft: profile.baseUrl,
-          roomDraft: ownRoomId,
-          roomState: existingRoom,
-          operationError: null,
-        }));
-        BrowserOpenURL(`${profile.baseUrl.replace(/\/+$/, '')}/?room=${encodeURIComponent(ownRoomId)}`);
-        return;
-      }
-      const room = toGameCastRoomSession(await CreateGameCastRoom());
+      const ownRoomAction = selectOwnGameCastRoomAction(ownRoomId, existingRoom);
+      const room = toGameCastRoomSession(
+        await (ownRoomAction === 'enter-native' ? JoinGameCastRoom(ownRoomId) : CreateGameCastRoom()),
+      );
+      const enteredAsHost = room.role === 'host';
+      const selfPeerId = enteredAsHost ? GAMECAST_HOST_PEER_ID : GAMECAST_SELF_PEER_ID;
       const [history, rooms] = await Promise.all([
         GetGameCastHistory().catch(() => gameCast.history),
         GetGameCastRooms().catch(() => gameCast.rooms),
@@ -2336,25 +2340,26 @@ export default function App() {
         serverDraft: profile.baseUrl,
         roomDraft: room.roomId,
         roomState: room.state,
-        role: 'host',
-        receiverState: 'host-ready',
-        roomEntry: 'local-created',
+        role: enteredAsHost ? 'host' : 'viewer',
+        receiverState: enteredAsHost ? 'host-ready' : 'idle',
+        roomEntry: enteredAsHost ? 'local-created' : 'client-joined-viewer',
         activeSharePath: null,
         operationError: null,
         viewerReconnectAttempt: 0,
-        status: { state: 'host-ready', detail: room.roomId },
+        status: { state: enteredAsHost ? 'host-ready' : 'connected', detail: room.roomId },
         history: toGameCastHistory(history),
         rooms: toGameCastRooms(rooms),
       }));
-      dispatch({ type: 'ROOM_JOINED', roomId: room.roomId, selfPeerId: GAMECAST_HOST_PEER_ID });
+      dispatch({ type: 'ROOM_JOINED', roomId: room.roomId, selfPeerId });
       dispatch({
         type: 'PEER_JOINED',
         member: {
-          id: GAMECAST_HOST_PEER_ID,
-          name: t('gamecast.hostSelf'),
+          id: selfPeerId,
+          name: enteredAsHost ? t('gamecast.hostSelf') : t('gamecast.viewerSelf'),
           online: true,
           muted: false,
           sharing: false,
+          clientType: 'client',
         },
       });
     });
@@ -2377,7 +2382,7 @@ export default function App() {
     BrowserOpenURL(`${base.replace(/\/+$/, '')}/?room=${encodeURIComponent(roomId)}`);
   };
 
-  const handleConnectGameCastViewer = (targetRoomId?: string, knownRoomState?: GameCastRoomState) =>
+  const handleJoinGameCastViewer = (targetRoomId?: string, knownRoomState?: GameCastRoomState) =>
     withBusy(async () => {
       const roomId = (targetRoomId || gameCast.roomDraft).trim();
       if (!roomId) {
@@ -2399,18 +2404,13 @@ export default function App() {
         baseUrl: gameCast.serverDraft.trim(),
       });
       const profile = toGameCastProfile(saved);
-      let roomState = knownRoomState || optimisticGameCastRoomState(roomId);
-      try {
-        const fetchedState = toGameCastRoomState(await GetGameCastRoomState(roomId), roomId);
-        roomState = fetchedState.active ? fetchedState : roomState;
-      } catch {
-        // A room selected from the live room list already has a usable state snapshot.
-      }
+      const joinedRoom = toGameCastRoomSession(await JoinGameCastRoom(roomId));
+      const roomState = joinedRoom.state.active
+        ? joinedRoom.state
+        : knownRoomState || optimisticGameCastRoomState(roomId);
+      const enteredAsHost = joinedRoom.role === 'host';
+      const selfPeerId = enteredAsHost ? GAMECAST_HOST_PEER_ID : GAMECAST_SELF_PEER_ID;
 
-      if (!lifecycle.isCurrent(token)) {
-        return;
-      }
-      await ConnectGameCastViewer(roomId, preferredViewerLayer());
       if (!lifecycle.isCurrent(token)) {
         return;
       }
@@ -2421,46 +2421,29 @@ export default function App() {
         serverDraft: profile.baseUrl,
         roomDraft: roomId,
         roomState,
-        receiverState: 'connecting',
-        role: 'viewer',
-        roomEntry: 'client-joined-viewer',
+        receiverState: enteredAsHost ? 'host-ready' : 'idle',
+        role: enteredAsHost ? 'host' : 'viewer',
+        roomEntry: enteredAsHost ? 'local-created' : 'client-joined-viewer',
         activeSharePath: null,
         operationError: null,
         viewerReconnectAttempt: reduceGameCastViewerReconnectAttempt(
           current.viewerReconnectAttempt,
-          'websocket-connected',
+          'connection-started',
         ),
+        status: { state: enteredAsHost ? 'host-ready' : 'connected', detail: roomId },
       }));
-      dispatch({ type: 'ROOM_JOINED', roomId, selfPeerId: GAMECAST_SELF_PEER_ID });
+      dispatch({ type: 'ROOM_JOINED', roomId, selfPeerId });
       dispatch({
         type: 'PEER_JOINED',
         member: {
-          id: GAMECAST_SELF_PEER_ID,
-          name: t('gamecast.viewerSelf'),
+          id: selfPeerId,
+          name: enteredAsHost ? t('gamecast.hostSelf') : t('gamecast.viewerSelf'),
           online: true,
           muted: false,
           sharing: false,
+          clientType: 'client',
         },
       });
-      dispatch({
-        type: 'PEER_JOINED',
-        member: {
-          id: GAMECAST_HOST_PEER_ID,
-          name: roomState.user || t('gamecast.remoteHost'),
-          online: roomState.active,
-          muted: false,
-          sharing: roomState.sharing,
-        },
-      });
-      if (roomState.sharing) {
-        dispatch({
-          type: 'STREAM_STARTED',
-          peerId: GAMECAST_HOST_PEER_ID,
-          width: 0,
-          height: 0,
-          fps: 0,
-        });
-      }
     });
 
   const handleJoinGameCastRoom = async (roomId: string, knownRoomState?: GameCastRoomState) => {
@@ -2476,11 +2459,7 @@ export default function App() {
         roomState = undefined;
       }
     }
-    if (selectGameCastJoinAction(roomState?.origin) === 'open-browser') {
-      handleOpenGameCastWebRoom(normalizedRoomId);
-      return;
-    }
-    await handleConnectGameCastViewer(normalizedRoomId, roomState);
+    await handleJoinGameCastViewer(normalizedRoomId, roomState);
   };
 
   const handleDisconnectGameCast = () =>
@@ -2505,30 +2484,38 @@ export default function App() {
 
   useEffect(() => {
     const roomId = state.room.roomId?.trim() || '';
-    const shouldWatchWebShare =
+    const shouldWatchRemoteShare =
       Boolean(roomId) &&
-      gameCast.roomState?.origin === 'client' &&
-      gameCast.roomState.sharing &&
-      gameCast.roomState.shareOrigin === 'web' &&
+      isGameCastRoomLiveForViewer(gameCast.roomState) &&
+      gameCast.roomState?.shareOwnerParticipantId !== gameCast.participantId &&
       gameCast.role === 'host' &&
       state.room.selfPeerId === GAMECAST_HOST_PEER_ID &&
       gameCast.activeSharePath === null;
 
-    if (!shouldWatchWebShare) {
-      if (!gameCast.roomState?.sharing || gameCast.roomState?.shareOrigin !== 'web') {
-        gameCastAutoViewerRoomRef.current = '';
-      }
+    if (!shouldWatchRemoteShare) {
       return;
     }
-    if (gameCastAutoViewerRoomRef.current === roomId) {
-      return;
-    }
-    gameCastAutoViewerRoomRef.current = roomId;
-    void handleConnectGameCastViewer(roomId, gameCast.roomState || undefined);
+    invalidateGameCastViewer('remote unified share became live');
+    setGameCast((current) => ({
+      ...current,
+      role: 'viewer',
+      roomEntry: 'client-joined-viewer',
+      receiverState: 'idle',
+      status: { state: 'connected', detail: roomId },
+      viewerReconnectAttempt: 0,
+    }));
+    dispatch({ type: 'ROOM_JOINED', roomId, selfPeerId: GAMECAST_SELF_PEER_ID });
   }, [
     gameCast.activeSharePath,
+    gameCast.participantId,
     gameCast.role,
-    gameCast.roomState,
+    gameCast.roomState?.active,
+    gameCast.roomState?.sharing,
+    gameCast.roomState?.mediaMode,
+    gameCast.roomState?.mediaProtocolVersion,
+    gameCast.roomState?.sharePhase,
+    gameCast.roomState?.sfu,
+    gameCast.roomState?.shareOwnerParticipantId,
     state.room.roomId,
     state.room.selfPeerId,
   ]);
@@ -2545,8 +2532,7 @@ export default function App() {
   const hostCanStartSharing = canStartGameCastSharing(
     state.room.selfPeerId,
     state.room.hostVideoCapable,
-    typeof navigator !== 'undefined' && typeof navigator.mediaDevices?.getDisplayMedia === 'function',
-    gameCast.roomState?.origin,
+    gameCast.roomState,
   ) && !gameCast.roomState?.sharing;
   const activeStreamOwnerName = state.streamSettings
     ? state.streamSettings.peerId === state.room.selfPeerId

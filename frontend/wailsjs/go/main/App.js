@@ -114,6 +114,10 @@ export function IsSharing() {
   return window['go']['main']['App']['IsSharing']();
 }
 
+export function JoinGameCastRoom(arg1) {
+  return window['go']['main']['App']['JoinGameCastRoom'](arg1);
+}
+
 export function JoinRoom(arg1, arg2) {
   return window['go']['main']['App']['JoinRoom'](arg1, arg2);
 }

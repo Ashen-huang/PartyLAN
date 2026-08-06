@@ -25,6 +25,8 @@ export interface GameCastShareDecisionInput {
   selfPeerId: string | null;
   roomEntry: GameCastRoomEntry | null;
   roomOrigin?: GameCastRoomOrigin;
+  mediaMode?: string;
+  mediaProtocolVersion?: number;
   role: GameCastRoomRole;
   hostVideoCapable: boolean;
   sourceKind: ShareSourceKind;
@@ -36,6 +38,10 @@ export interface GameCastViewerReconnectInput {
   role: GameCastRoomRole;
   roomActive: boolean;
   roomSharing: boolean;
+  roomMediaMode?: string;
+  roomMediaProtocolVersion?: number;
+  roomSharePhase?: string;
+  roomSFU?: boolean;
   activeSharePath: GameCastSharePath | null;
   statusState: string | null | undefined;
   receiverState: string;
@@ -115,12 +121,33 @@ export function isGameCastSelfPeerId(selfPeerId: string | null | undefined): boo
   return selfPeerId === GAMECAST_HOST_SELF_PEER_ID || selfPeerId === GAMECAST_VIEWER_SELF_PEER_ID;
 }
 
+export function hasUnifiedGameCastMediaContract(
+  room: Pick<GameCastRoomState, 'mediaMode' | 'mediaProtocolVersion'> | null | undefined,
+): boolean {
+  return room?.mediaMode === 'sfu' && room.mediaProtocolVersion === 1;
+}
+
+export function isGameCastRoomLiveForViewer(
+  room: Pick<
+    GameCastRoomState,
+    'active' | 'sharing' | 'mediaMode' | 'mediaProtocolVersion' | 'sharePhase' | 'sfu'
+  > | null | undefined,
+): boolean {
+  return Boolean(
+    room?.active &&
+      room.sharing &&
+      room.sharePhase === 'live' &&
+      room.sfu &&
+      hasUnifiedGameCastMediaContract(room),
+  );
+}
+
 export function selectGameCastSharePath(input: GameCastShareDecisionInput): GameCastSharePath | null {
   if (
     !input.roomId ||
     !isGameCastSelfPeerId(input.selfPeerId) ||
-    input.roomOrigin !== 'client' ||
-    !input.hostVideoCapable
+    !input.hostVideoCapable ||
+    !hasUnifiedGameCastMediaContract(input)
   ) {
     return null;
   }
@@ -130,15 +157,14 @@ export function selectGameCastSharePath(input: GameCastShareDecisionInput): Game
 export function canStartGameCastSharing(
   selfPeerId: string | null | undefined,
   nativeHostVideoCapable: boolean,
-  webDisplayCaptureAvailable: boolean,
-  roomOrigin?: GameCastRoomOrigin,
+  room: Pick<GameCastRoomState, 'mediaMode' | 'mediaProtocolVersion'> | null | undefined,
 ): boolean {
-  void webDisplayCaptureAvailable;
-  return isGameCastSelfPeerId(selfPeerId) && roomOrigin === 'client' && nativeHostVideoCapable;
+  return isGameCastSelfPeerId(selfPeerId) && nativeHostVideoCapable && hasUnifiedGameCastMediaContract(room);
 }
 
 export function selectGameCastJoinAction(origin: GameCastRoomOrigin): GameCastJoinAction {
-  return origin === 'client' ? 'native-viewer' : 'open-browser';
+  void origin;
+  return 'native-viewer';
 }
 
 export function selectOwnGameCastRoomAction(
@@ -148,7 +174,7 @@ export function selectOwnGameCastRoomAction(
   if (!room?.active || room.room.trim().toLowerCase() !== ownRoomId.trim().toLowerCase()) {
     return 'create-client';
   }
-  return room.origin === 'client' ? 'enter-native' : 'open-browser';
+  return 'enter-native';
 }
 
 export function shouldListGameCastRoom(
@@ -159,7 +185,7 @@ export function shouldListGameCastRoom(
     return false;
   }
   const ownRoom = Boolean(ownRoomId.trim()) && room.room.trim().toLowerCase() === ownRoomId.trim().toLowerCase();
-  return !ownRoom || room.origin !== 'client';
+  return !ownRoom;
 }
 
 export function gameCastRoomOriginLabelKey(origin: GameCastRoomOrigin): string {
@@ -239,6 +265,10 @@ export function shouldReconnectGameCastViewer(input: GameCastViewerReconnectInpu
     Boolean(input.roomId?.trim()) &&
     input.roomActive &&
     input.roomSharing &&
+    input.roomMediaMode === 'sfu' &&
+    input.roomMediaProtocolVersion === 1 &&
+    input.roomSharePhase === 'live' &&
+    input.roomSFU === true &&
     input.activeSharePath === null &&
     input.attempt < maxAttempts &&
     input.receiverState !== 'connecting' &&

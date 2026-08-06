@@ -64,6 +64,8 @@ export function GetVoiceState():Promise<main.VoiceStateSnapshot>;
 
 export function IsSharing():Promise<boolean>;
 
+export function JoinGameCastRoom(arg1:string):Promise<main.GameCastRoomSession>;
+
 export function JoinRoom(arg1:string,arg2:string):Promise<void>;
 
 export function LeaveGameCastRoom():Promise<void>;

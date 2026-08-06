@@ -110,6 +110,59 @@ func TestGameCastWSGenerationRejectsStaleCallbacks(t *testing.T) {
 	}
 }
 
+func TestGameCastNativeHostReadyResult(t *testing.T) {
+	tests := []struct {
+		name        string
+		status      gamecastws.Status
+		resolved    bool
+		errContains string
+	}{
+		{
+			name:     "media sending is ready",
+			status:   gamecastws.Status{State: "connected", Detail: "native host sending media"},
+			resolved: true,
+		},
+		{
+			name:   "websocket connected is not media ready",
+			status: gamecastws.Status{State: "connected", Detail: "native host connected"},
+		},
+		{
+			name:   "intermediate state remains pending",
+			status: gamecastws.Status{State: "connecting", Detail: "dialing native host"},
+		},
+		{
+			name:        "error resolves with failure",
+			status:      gamecastws.Status{State: "error", Detail: "codec unavailable"},
+			resolved:    true,
+			errContains: "codec unavailable",
+		},
+		{
+			name:        "closed resolves with failure",
+			status:      gamecastws.Status{State: "closed"},
+			resolved:    true,
+			errContains: "closed before media was ready",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			resolved, err := gameCastNativeHostReadyResult(test.status)
+			if resolved != test.resolved {
+				t.Fatalf("resolved = %t, want %t", resolved, test.resolved)
+			}
+			if test.errContains == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.errContains) {
+				t.Fatalf("error = %v, want substring %q", err, test.errContains)
+			}
+		})
+	}
+}
+
 func TestCloseGameCastWSInvalidatesCallbacksBeforeClientClose(t *testing.T) {
 	application := &App{}
 	generation := application.nextGameCastWSGeneration()
@@ -182,21 +235,167 @@ func TestGameCastWSCallbacksRequireCurrentClientIdentity(t *testing.T) {
 
 func TestGameCastControlRequestsUseCurrentParticipantAndLease(t *testing.T) {
 	application := NewApp(network.NewLoopbackNetwork("self"))
-	application.gamecastShareLease = &gamecast.ShareLease{
-		Room:          "room-1",
-		LeaseID:       "lease-1",
-		ParticipantID: application.gamecastParticipantID,
-		Active:        true,
+	application.hostVideoCapability = video.BackendCapability{
+		Backend:      video.BackendNative,
+		SupportsHost: true,
+		SupportsView: true,
 	}
+	var lease gamecast.ShareLease
+	if err := json.Unmarshal([]byte(fmt.Sprintf(
+		`{"room":"room-1","leaseId":"lease-1","participantId":%q,"active":true,"mediaMode":"sfu","phase":"starting"}`,
+		application.gamecastParticipantID,
+	)), &lease); err != nil {
+		t.Fatalf("decode unified lease fixture: %v", err)
+	}
+	application.gamecastShareLease = &lease
 
 	presence := application.gameCastPresenceRequest("room-1", "owner", "client")
 	if presence.Room != "room-1" || presence.ClientType != "client" || presence.Origin != "client" || presence.Role != "owner" {
 		t.Fatalf("presence request = %#v", presence)
 	}
-	lease := application.gameCastShareLeaseRequest("room-1", true, "system")
-	if lease.ParticipantID != application.gamecastParticipantID || lease.LeaseID != "lease-1" || !lease.SFU || lease.AudioMode != "system" {
-		t.Fatalf("lease request = %#v", lease)
+	presenceJSON := appJSONMap(t, presence)
+	capabilities, _ := presenceJSON["capabilities"].(map[string]interface{})
+	if presenceJSON["mediaProtocolVersion"] != float64(1) || capabilities["sfuViewer"] != true ||
+		capabilities["sfuHost"] != true || capabilities["h264"] != true || capabilities["opus"] != true {
+		t.Fatalf("unified presence request = %#v", presenceJSON)
 	}
+	leaseRequest := application.gameCastShareLeaseRequest("room-1", gamecast.SharePhaseStarting, "system")
+	if leaseRequest.ParticipantID != application.gamecastParticipantID || leaseRequest.LeaseID != "lease-1" || !leaseRequest.SFU || leaseRequest.AudioMode != "system" {
+		t.Fatalf("lease request = %#v", leaseRequest)
+	}
+	leaseJSON := appJSONMap(t, leaseRequest)
+	if leaseJSON["mediaMode"] != "sfu" || leaseJSON["phase"] != "starting" {
+		t.Fatalf("unified lease request = %#v", leaseJSON)
+	}
+}
+
+func TestConnectGameCastViewerLeavesIdleUnifiedRoomPresenceOnly(t *testing.T) {
+	var screenWSRequests atomic.Int32
+	voiceSession := &fakeRoomVoiceSession{
+		started: make(chan struct{}),
+		state: gamecastvoice.State{
+			Connection: gamecastvoice.ConnectionConnecting,
+			Microphone: gamecastvoice.MicrophoneStarting,
+		},
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch request.URL.Path {
+		case "/api/presence/join":
+			_, _ = w.Write([]byte(`{"ok":true,"participant":{"participantId":"client-test","room":"room-idle","clientType":"client","role":"member","active":true,"mediaProtocolVersion":1,"capabilities":{"sfuViewer":true,"sfuHost":true,"h264":true,"opus":true}},"room":{"room":"room-idle","active":true,"origin":"web","sharing":false,"mediaMode":"sfu","mediaProtocolVersion":1,"sharePhase":"idle","sfu":false,"audioMode":"off","ttl":15}}`))
+		case "/api/room-state":
+			_, _ = w.Write([]byte(`{"ok":true,"state":{"room":"room-idle","active":true,"origin":"web","sharing":false,"mediaMode":"sfu","mediaProtocolVersion":1,"sharePhase":"idle","sfu":false,"audioMode":"off","ttl":15}}`))
+		case "/api/history":
+			_, _ = w.Write([]byte(`{"ok":true,"history":[]}`))
+		case "/api/viewer-intent":
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		case "/sfu-ws":
+			screenWSRequests.Add(1)
+			http.Error(w, "screen websocket must stay idle", http.StatusServiceUnavailable)
+		default:
+			http.Error(w, `{"error":"unexpected endpoint"}`, http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	jar, err := session.New(filepath.Join(t.TempDir(), "cookies.json"))
+	if err != nil {
+		t.Fatalf("create test cookie jar: %v", err)
+	}
+	application := NewApp(network.NewLoopbackNetwork("self"))
+	application.cfg = config.DefaultConfig()
+	application.cfg.GameCast.BaseURL = server.URL
+	application.gamecastJar = jar
+	application.gamecastParticipantID = "client-test"
+	application.gamecastVoiceFactory = func(gamecastvoice.Config) roomVoiceSession {
+		return voiceSession
+	}
+	defer application.stopGameCastPresence(false)
+
+	joined, err := application.JoinGameCastRoom("room-idle")
+	if err != nil {
+		t.Fatalf("JoinGameCastRoom(idle): %v", err)
+	}
+	if joined.Role != "viewer" || joined.State.Origin != "web" || joined.State.SharePhase != gamecast.SharePhaseIdle {
+		t.Fatalf("joined idle room = %#v", joined)
+	}
+	if err := application.ConnectGameCastViewer("room-idle", "auto"); err != nil {
+		t.Fatalf("ConnectGameCastViewer(idle): %v", err)
+	}
+	select {
+	case <-voiceSession.started:
+	case <-time.After(time.Second):
+		t.Fatal("voice session did not remain active in the idle room")
+	}
+	if screenWSRequests.Load() != 0 {
+		t.Fatalf("idle room opened %d screen websocket connection(s)", screenWSRequests.Load())
+	}
+	application.mu.Lock()
+	presenceActive := application.gamecastPresenceCancel != nil && application.gamecastPresenceRoom == "room-idle"
+	screenClient := application.gamecastWS
+	application.mu.Unlock()
+	if !presenceActive || screenClient != nil {
+		t.Fatalf("idle room state presenceActive=%t screenClient=%p", presenceActive, screenClient)
+	}
+}
+
+func TestGameCastRoomLiveForViewerRequiresLiveUnifiedRemoteShare(t *testing.T) {
+	live := GameCastRoomState{
+		Room:                    "room-live",
+		Active:                  true,
+		Sharing:                 true,
+		MediaMode:               gamecast.MediaModeSFU,
+		MediaProtocolVersion:    gamecast.MediaProtocolVersion,
+		SharePhase:              gamecast.SharePhaseLive,
+		ShareOwnerParticipantID: "web-share",
+		SFU:                     true,
+	}
+	if !gameCastRoomLiveForViewer(live, "client-self") {
+		t.Fatal("expected a remote live unified share to open the viewer")
+	}
+	for name, state := range map[string]GameCastRoomState{
+		"starting": func() GameCastRoomState {
+			state := live
+			state.SharePhase = gamecast.SharePhaseStarting
+			state.SFU = false
+			return state
+		}(),
+		"stopping": func() GameCastRoomState {
+			state := live
+			state.SharePhase = gamecast.SharePhaseStopping
+			state.SFU = false
+			return state
+		}(),
+		"idle": func() GameCastRoomState {
+			state := live
+			state.Sharing = false
+			state.SharePhase = gamecast.SharePhaseIdle
+			state.SFU = false
+			return state
+		}(),
+		"legacy":     func() GameCastRoomState { state := live; state.MediaMode = gamecast.MediaModeLegacyP2P; return state }(),
+		"old":        func() GameCastRoomState { state := live; state.MediaProtocolVersion = 0; return state }(),
+		"self-share": func() GameCastRoomState { state := live; state.ShareOwnerParticipantID = "client-self"; return state }(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if gameCastRoomLiveForViewer(state, "client-self") {
+				t.Fatalf("unexpected viewer connection for %#v", state)
+			}
+		})
+	}
+}
+
+func appJSONMap(t *testing.T, value interface{}) map[string]interface{} {
+	t.Helper()
+	body, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal JSON object: %v", err)
+	}
+	var result map[string]interface{}
+	if err := json.Unmarshal(body, &result); err != nil {
+		t.Fatalf("decode JSON object: %v", err)
+	}
+	return result
 }
 
 func TestNetworkStartTimeoutUsesLongerBudgetWithAuthKey(t *testing.T) {
@@ -348,34 +547,47 @@ func TestPresenceManagedGameCastRoomRequiresActiveMatchingPresence(t *testing.T)
 func TestEnterGameCastHostRoomDoesNotWriteLegacyRoomState(t *testing.T) {
 	var mu sync.Mutex
 	requests := make([]string, 0, 4)
+	leaseTransitions := make([]string, 0, 4)
 	shareActive := false
+	sharePhase := gamecast.SharePhaseIdle
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
+		defer mu.Unlock()
 		requests = append(requests, r.Method+" "+r.URL.Path)
-		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/config":
 			_, _ = w.Write([]byte(`{"user":"admin","loggedIn":true}`))
 		case "/api/presence/join":
-			_, _ = w.Write([]byte(`{"ok":true,"participant":{"participantId":"client-test","room":"admin","clientType":"client","role":"owner","active":true},"room":{"room":"admin","active":true,"origin":"client","ownerParticipantId":"client-test","ownerName":"admin","sharing":false,"sfu":false,"audioMode":"off","ttl":15}}`))
+			_, _ = w.Write([]byte(`{"ok":true,"participant":{"participantId":"client-test","room":"admin","clientType":"client","role":"owner","active":true,"mediaProtocolVersion":1,"capabilities":{"sfuViewer":true,"sfuHost":true,"h264":true,"opus":true}},"room":{"room":"admin","active":true,"origin":"client","ownerParticipantId":"client-test","ownerName":"admin","sharing":false,"mediaMode":"sfu","mediaProtocolVersion":1,"sharePhase":"idle","sfu":false,"audioMode":"off","ttl":15}}`))
 		case "/api/history":
 			_, _ = w.Write([]byte(`{"ok":true,"history":[]}`))
 		case "/api/share/claim":
+			payload := decodeRequestJSONMap(t, r)
+			leaseTransitions = append(leaseTransitions, fmt.Sprintf("claim:%s:%s", payload["phase"], payload["mediaMode"]))
 			shareActive = true
-			_, _ = w.Write([]byte(`{"ok":true,"lease":{"room":"admin","leaseId":"lease-1","participantId":"client-test","active":true,"sfu":false,"audioMode":"off","ttl":15},"room":{"room":"admin","active":true,"origin":"client","sharing":true,"sfu":false,"audioMode":"off"}}`))
+			sharePhase = gamecast.SharePhaseStarting
+			_, _ = w.Write([]byte(`{"ok":true,"lease":{"room":"admin","leaseId":"lease-1","participantId":"client-test","active":true,"mediaMode":"sfu","phase":"starting","sfu":false,"audioMode":"off","ttl":15},"room":{"room":"admin","active":true,"origin":"client","sharing":true,"mediaMode":"sfu","mediaProtocolVersion":1,"sharePhase":"starting","sfu":false,"audioMode":"off"}}`))
 		case "/api/share/heartbeat":
+			payload := decodeRequestJSONMap(t, r)
+			phase := fmt.Sprint(payload["phase"])
+			leaseTransitions = append(leaseTransitions, fmt.Sprintf("heartbeat:%s:%s", phase, payload["mediaMode"]))
 			shareActive = true
-			_, _ = w.Write([]byte(`{"ok":true,"lease":{"room":"admin","leaseId":"lease-1","participantId":"client-test","active":true,"sfu":true,"audioMode":"system","ttl":15},"room":{"room":"admin","active":true,"origin":"client","sharing":true,"sfu":true,"audioMode":"system"}}`))
+			sharePhase = phase
+			sfu := phase == gamecast.SharePhaseLive
+			_, _ = fmt.Fprintf(w, `{"ok":true,"lease":{"room":"admin","leaseId":"lease-1","participantId":"client-test","active":true,"mediaMode":"sfu","phase":%q,"sfu":%t,"audioMode":"system","ttl":15},"room":{"room":"admin","active":true,"origin":"client","sharing":true,"mediaMode":"sfu","mediaProtocolVersion":1,"sharePhase":%q,"sfu":%t,"audioMode":"system"}}`, phase, sfu, phase, sfu)
 		case "/api/share/release":
+			payload := decodeRequestJSONMap(t, r)
+			leaseTransitions = append(leaseTransitions, fmt.Sprintf("release:%s:%s", payload["phase"], payload["mediaMode"]))
 			shareActive = false
-			_, _ = w.Write([]byte(`{"ok":true,"lease":{"room":"admin","leaseId":"lease-1","participantId":"client-test","active":false,"sfu":false,"audioMode":"off","ttl":15},"room":{"room":"admin","active":true,"origin":"client","sharing":false,"sfu":false,"audioMode":"off"}}`))
+			sharePhase = gamecast.SharePhaseIdle
+			_, _ = w.Write([]byte(`{"ok":true,"lease":{"room":"admin","leaseId":"lease-1","participantId":"client-test","active":false,"mediaMode":"sfu","phase":"stopping","sfu":false,"audioMode":"off","ttl":15},"room":{"room":"admin","active":true,"origin":"client","sharing":false,"mediaMode":"sfu","mediaProtocolVersion":1,"sharePhase":"idle","sfu":false,"audioMode":"off"}}`))
 		case "/api/room-state":
 			if r.Method != http.MethodGet {
 				http.Error(w, `{"code":"room_origin_conflict"}`, http.StatusConflict)
 				return
 			}
-			_, _ = fmt.Fprintf(w, `{"ok":true,"state":{"room":"admin","active":true,"origin":"client","sharing":%t,"sfu":%t,"audioMode":"off"}}`, shareActive, shareActive)
+			_, _ = fmt.Fprintf(w, `{"ok":true,"state":{"room":"admin","active":true,"origin":"client","sharing":%t,"mediaMode":"sfu","mediaProtocolVersion":1,"sharePhase":%q,"sfu":%t,"audioMode":"off"}}`, shareActive, sharePhase, shareActive && sharePhase == gamecast.SharePhaseLive)
 		default:
 			http.Error(w, `{"error":"unexpected endpoint"}`, http.StatusNotFound)
 		}
@@ -401,7 +613,7 @@ func TestEnterGameCastHostRoomDoesNotWriteLegacyRoomState(t *testing.T) {
 	if room.State.Origin != "client" || !room.State.Active {
 		t.Fatalf("room state = %#v, want active client room", room.State)
 	}
-	if _, _, err := application.claimGameCastShare("admin", false, "off"); err != nil {
+	if _, _, err := application.claimGameCastShare("admin", "off"); err != nil {
 		t.Fatalf("claimGameCastShare: %v", err)
 	}
 	sharing, err := application.SetGameCastHostSharing(GameCastHostShareRequest{
@@ -424,6 +636,24 @@ func TestEnterGameCastHostRoomDoesNotWriteLegacyRoomState(t *testing.T) {
 			t.Fatalf("modern room entry unexpectedly wrote legacy state: %v", requests)
 		}
 	}
+	wantTransitions := []string{
+		"claim:starting:sfu",
+		"heartbeat:live:sfu",
+		"heartbeat:stopping:sfu",
+		"release:stopping:sfu",
+	}
+	if strings.Join(leaseTransitions, ",") != strings.Join(wantTransitions, ",") {
+		t.Fatalf("share lifecycle = %v, want %v", leaseTransitions, wantTransitions)
+	}
+}
+
+func decodeRequestJSONMap(t *testing.T, request *http.Request) map[string]interface{} {
+	t.Helper()
+	var payload map[string]interface{}
+	if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode request JSON: %v", err)
+	}
+	return payload
 }
 
 type fakeRoomVoiceSession struct {
@@ -495,7 +725,7 @@ func TestGameCastPresenceStartsVoiceAndStopsItBeforeLeave(t *testing.T) {
 		return voiceSession
 	}
 
-	if _, err := application.startGameCastPresence("room-voice", "member", "client"); err != nil {
+	if _, _, err := application.startGameCastPresence("room-voice", "member", "client"); err != nil {
 		t.Fatalf("startGameCastPresence: %v", err)
 	}
 	select {

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 
 import {
   GameCastViewerLifecycle,
@@ -19,6 +20,8 @@ import {
   selectGameCastJoinAction,
   shouldReconnectGameCastViewer,
 } from '../src/media/gamecastOrchestrator.ts';
+
+const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
 
 test('viewer reconnect lifecycle permits only one in-flight attempt', () => {
   const lifecycle = new GameCastViewerLifecycle();
@@ -51,13 +54,17 @@ test('viewer websocket completion preserves attempts until a new session or medi
   assert.equal(reduceGameCastViewerReconnectAttempt(2, 'sharing-stopped'), 0);
 });
 
-test('own active rooms route by their established origin', () => {
+test('own active rooms always enter the native room regardless of origin', () => {
   assert.equal(
     selectOwnGameCastRoomAction('admin', { room: 'admin', active: true, origin: 'web' }),
-    'open-browser',
+    'enter-native',
   );
   assert.equal(
     selectOwnGameCastRoomAction('admin', { room: 'admin', active: true, origin: 'client' }),
+    'enter-native',
+  );
+  assert.equal(
+    selectOwnGameCastRoomAction('admin', { room: 'admin', active: true }),
     'enter-native',
   );
   assert.equal(selectOwnGameCastRoomAction('admin', null), 'create-client');
@@ -67,9 +74,10 @@ test('own active rooms route by their established origin', () => {
   );
 });
 
-test('own web room stays visible while own client room is represented by create button', () => {
-  assert.equal(shouldListGameCastRoom({ room: 'admin', active: true, origin: 'web' }, 'admin'), true);
+test('own active room is represented by the create or enter button regardless of origin', () => {
+  assert.equal(shouldListGameCastRoom({ room: 'admin', active: true, origin: 'web' }, 'admin'), false);
   assert.equal(shouldListGameCastRoom({ room: 'admin', active: true, origin: 'client' }, 'admin'), false);
+  assert.equal(shouldListGameCastRoom({ room: 'admin', active: true }, 'admin'), false);
   assert.equal(shouldListGameCastRoom({ room: 'other', active: true, origin: 'client' }, 'admin'), true);
   assert.equal(shouldListGameCastRoom({ room: 'other', active: false, origin: 'client' }, 'admin'), false);
 });
@@ -81,6 +89,8 @@ test('local host rooms choose native sharing', () => {
       selfPeerId: GAMECAST_HOST_SELF_PEER_ID,
       roomEntry: 'local-created',
       roomOrigin: 'client',
+      mediaMode: 'sfu',
+      mediaProtocolVersion: 1,
       role: 'host',
       hostVideoCapable: true,
       sourceKind: 'display',
@@ -89,18 +99,20 @@ test('local host rooms choose native sharing', () => {
   );
 });
 
-test('web rooms never expose a client sharing path', () => {
+test('web rooms expose the same native sharing path under the unified media contract', () => {
   assert.equal(
     selectGameCastSharePath({
       roomId: 'room-web',
       selfPeerId: GAMECAST_VIEWER_SELF_PEER_ID,
       roomEntry: 'web-joined-viewer',
       roomOrigin: 'web',
+      mediaMode: 'sfu',
+      mediaProtocolVersion: 1,
       role: 'viewer',
       hostVideoCapable: true,
       sourceKind: 'window',
     }),
-    null,
+    'native',
   );
 });
 
@@ -111,6 +123,8 @@ test('client rooms choose native sharing even after the owner switched to viewer
       selfPeerId: GAMECAST_VIEWER_SELF_PEER_ID,
       roomEntry: 'client-joined-viewer',
       roomOrigin: 'client',
+      mediaMode: 'sfu',
+      mediaProtocolVersion: 1,
       role: 'viewer',
       hostVideoCapable: true,
       sourceKind: 'display',
@@ -119,29 +133,30 @@ test('client rooms choose native sharing even after the owner switched to viewer
   );
 });
 
-test('only client rooms with native capability expose client sharing', () => {
-  assert.equal(canStartGameCastSharing(GAMECAST_VIEWER_SELF_PEER_ID, false, true, 'client'), false);
-  assert.equal(canStartGameCastSharing(GAMECAST_VIEWER_SELF_PEER_ID, true, false, 'client'), true);
-  assert.equal(canStartGameCastSharing(GAMECAST_HOST_SELF_PEER_ID, true, false, 'web'), false);
-  assert.equal(canStartGameCastSharing(GAMECAST_HOST_SELF_PEER_ID, true, false, 'client'), true);
+test('native capability and the unified media contract gate client sharing', () => {
+  const unified = { mediaMode: 'sfu', mediaProtocolVersion: 1 };
+  assert.equal(canStartGameCastSharing(GAMECAST_VIEWER_SELF_PEER_ID, false, unified), false);
+  assert.equal(canStartGameCastSharing(GAMECAST_VIEWER_SELF_PEER_ID, true, unified), true);
+  assert.equal(canStartGameCastSharing(GAMECAST_HOST_SELF_PEER_ID, true, unified), true);
+  assert.equal(canStartGameCastSharing(GAMECAST_HOST_SELF_PEER_ID, true, { mediaMode: 'legacy-p2p', mediaProtocolVersion: 0 }), false);
 });
 
-test('room origin routes web and unknown rooms to the browser', () => {
-  assert.equal(selectGameCastJoinAction('web'), 'open-browser');
-  assert.equal(selectGameCastJoinAction(''), 'open-browser');
-  assert.equal(selectGameCastJoinAction(undefined), 'open-browser');
+test('room origin never routes normal joins to the browser', () => {
+  assert.equal(selectGameCastJoinAction('web'), 'native-viewer');
+  assert.equal(selectGameCastJoinAction(''), 'native-viewer');
+  assert.equal(selectGameCastJoinAction(undefined), 'native-viewer');
   assert.equal(selectGameCastJoinAction('client'), 'native-viewer');
   assert.equal(gameCastRoomOriginLabelKey('web'), 'gamecast.originWeb');
   assert.equal(gameCastRoomOriginLabelKey('client'), 'gamecast.originClient');
   assert.equal(gameCastRoomOriginLabelKey(''), 'gamecast.originCompat');
 });
 
-test('control presence maps both clients and web tabs without duplicating self', () => {
+test('control presence keeps same-account client and web participants distinct', () => {
   const members = mergeGameCastPresenceMembers(
     [
-      { participantId: 'client-self', name: 'Desktop', clientType: 'client', role: 'owner', active: true, sharing: false },
-      { participantId: 'web-1', name: 'Browser', clientType: 'web', role: 'member', active: true, sharing: true },
-      { participantId: 'web-1', name: 'Browser duplicate', clientType: 'web', role: 'member', active: true, sharing: true },
+      { participantId: 'client-self', name: 'Ashen', clientType: 'client', role: 'owner', active: true, sharing: false },
+      { participantId: 'web-1', name: 'Ashen', clientType: 'web', role: 'member', active: true, sharing: true },
+      { participantId: 'web-1', name: 'Ashen', clientType: 'web', role: 'member', active: true, sharing: true },
     ],
     'client-self',
     GAMECAST_HOST_SELF_PEER_ID,
@@ -149,7 +164,7 @@ test('control presence maps both clients and web tabs without duplicating self',
   assert.equal(members.length, 2);
   assert.deepEqual(members[0], {
     id: GAMECAST_HOST_SELF_PEER_ID,
-    name: 'Desktop',
+    name: 'Ashen',
     online: true,
     muted: false,
     sharing: false,
@@ -159,6 +174,23 @@ test('control presence maps both clients and web tabs without duplicating self',
   assert.equal(members[1].id, 'gamecast-participant-web-1');
   assert.equal(members[1].clientType, 'web');
   assert.equal(members[1].sharing, true);
+});
+
+test('normal room joins never call BrowserOpenURL and Presence polling is origin agnostic', () => {
+  const joinStart = appSource.indexOf('const handleJoinGameCastRoom');
+  const joinEnd = appSource.indexOf('const handleDisconnectGameCast', joinStart);
+  const joinSource = appSource.slice(joinStart, joinEnd);
+  assert.ok(joinStart >= 0 && joinEnd > joinStart);
+  assert.match(joinSource, /handleJoinGameCastViewer/);
+  assert.doesNotMatch(joinSource, /BrowserOpenURL/);
+
+  const presenceStart = appSource.indexOf('async function pollPresence');
+  const presenceEnd = appSource.indexOf('\n  useEffect(', presenceStart);
+  const presenceSource = appSource.slice(presenceStart, presenceEnd);
+  assert.ok(presenceStart >= 0 && presenceEnd > presenceStart);
+  assert.match(presenceSource, /GetGameCastPresence\(roomId\)/);
+  assert.match(presenceSource, /}, 3000\)/);
+  assert.doesNotMatch(presenceSource, /origin\s*!==\s*['"]client['"]/);
 });
 
 test('control errors map to local translation keys', () => {
@@ -237,6 +269,10 @@ test('viewer reconnect is bounded and only runs for an active remote share', () 
     role: 'viewer',
     roomActive: true,
     roomSharing: true,
+    roomMediaMode: 'sfu',
+    roomMediaProtocolVersion: 1,
+    roomSharePhase: 'live',
+    roomSFU: true,
     activeSharePath: null,
     statusState: 'error',
     receiverState: 'error',
@@ -245,6 +281,9 @@ test('viewer reconnect is bounded and only runs for an active remote share', () 
   assert.equal(shouldReconnectGameCastViewer({ ...base, attempt: 0 }), true);
   assert.equal(shouldReconnectGameCastViewer({ ...base, attempt: 3 }), false);
   assert.equal(shouldReconnectGameCastViewer({ ...base, attempt: 0, roomSharing: false }), false);
+  assert.equal(shouldReconnectGameCastViewer({ ...base, attempt: 0, roomSharePhase: 'starting', roomSFU: false }), false);
+  assert.equal(shouldReconnectGameCastViewer({ ...base, attempt: 0, roomSharePhase: 'stopping', roomSFU: false }), false);
+  assert.equal(shouldReconnectGameCastViewer({ ...base, attempt: 0, roomMediaMode: 'legacy-p2p' }), false);
 });
 
 test('viewer reconnects once sharing starts after the original signaling wait expired', () => {
@@ -254,6 +293,10 @@ test('viewer reconnects once sharing starts after the original signaling wait ex
     role: 'viewer',
     roomActive: true,
     roomSharing: false,
+    roomMediaMode: 'sfu',
+    roomMediaProtocolVersion: 1,
+    roomSharePhase: 'idle',
+    roomSFU: false,
     activeSharePath: null,
     statusState: 'connected',
     receiverState: 'idle',
@@ -261,11 +304,21 @@ test('viewer reconnects once sharing starts after the original signaling wait ex
   };
 
   assert.equal(shouldReconnectGameCastViewer(viewerBeforeHost), false);
-  assert.equal(shouldReconnectGameCastViewer({ ...viewerBeforeHost, roomSharing: true }), true);
   assert.equal(
     shouldReconnectGameCastViewer({
       ...viewerBeforeHost,
       roomSharing: true,
+      roomSharePhase: 'live',
+      roomSFU: true,
+    }),
+    true,
+  );
+  assert.equal(
+    shouldReconnectGameCastViewer({
+      ...viewerBeforeHost,
+      roomSharing: true,
+      roomSharePhase: 'live',
+      roomSFU: true,
       statusState: 'connecting',
       receiverState: 'connecting',
     }),
