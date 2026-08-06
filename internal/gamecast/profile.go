@@ -10,7 +10,12 @@ import (
 	"strings"
 )
 
-const DefaultBaseURL = "https://113.142.217.42:5050"
+const DefaultBaseURL = "https://partylanapp.com"
+
+var legacyBaseURLs = map[string]struct{}{
+	"https://113.142.217.42:5050": {},
+	"https://85.137.240.159:5050": {},
+}
 
 type Profile struct {
 	BaseURL                  string
@@ -41,6 +46,18 @@ func NormalizeBaseURL(raw string) (string, error) {
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
 	return parsed.String(), nil
+}
+
+// MigrateLegacyBaseURL changes only the explicitly known historical servers.
+func MigrateLegacyBaseURL(raw string) (string, bool) {
+	normalized, err := NormalizeBaseURL(raw)
+	if err != nil {
+		return raw, false
+	}
+	if _, ok := legacyBaseURLs[strings.ToLower(normalized)]; !ok {
+		return normalized, false
+	}
+	return DefaultBaseURL, true
 }
 
 func NormalizeFingerprint(raw string) string {

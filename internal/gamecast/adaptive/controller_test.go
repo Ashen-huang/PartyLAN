@@ -27,6 +27,24 @@ func TestBuildLadderPreservesRequestedMaximumAndPrefers24FPS(t *testing.T) {
 	}
 }
 
+func TestBuildLadderStartsAtOriginal4K60AndIncludes1080p60(t *testing.T) {
+	ladder := BuildLadder(Profile{Width: 3840, Height: 2160, FPS: 60, BitrateKbps: 8000})
+	if len(ladder) < 2 {
+		t.Fatalf("4K ladder = %#v, want original and lower profiles", ladder)
+	}
+	if ladder[0] != (Profile{Width: 3840, Height: 2160, FPS: 60, BitrateKbps: 8000}) {
+		t.Fatalf("first 4K profile = %#v, want requested original profile", ladder[0])
+	}
+	if ladder[1] != (Profile{Width: 1920, Height: 1080, FPS: 60, BitrateKbps: 8000}) {
+		t.Fatalf("second 4K profile = %#v, want 1080p60", ladder[1])
+	}
+	for index := 1; index < len(ladder); index++ {
+		if ladder[index].Width > ladder[index-1].Width || ladder[index].Height > ladder[index-1].Height || ladder[index].FPS > 60 {
+			t.Fatalf("ladder increases beyond requested ceiling at %d: %#v", index, ladder)
+		}
+	}
+}
+
 func TestBuildLadderNeverExceedsOrUpscalesRequestedProfile(t *testing.T) {
 	ladder := BuildLadder(Profile{Width: 1280, Height: 720, FPS: 30, BitrateKbps: 3200})
 	if got := ladder[0]; got != (Profile{Width: 1280, Height: 720, FPS: 30, BitrateKbps: 3200}) {
@@ -35,6 +53,18 @@ func TestBuildLadderNeverExceedsOrUpscalesRequestedProfile(t *testing.T) {
 	for _, profile := range ladder {
 		if profile.Width > 1280 || profile.Height > 720 || profile.FPS > 30 || profile.BitrateKbps > 3200 {
 			t.Fatalf("profile exceeds requested maximum: %#v", profile)
+		}
+	}
+}
+
+func TestBuildLadderKeepsLowResolutionAndFrameRateCeilings(t *testing.T) {
+	ladder := BuildLadder(Profile{Width: 854, Height: 480, FPS: 24, BitrateKbps: 1200})
+	if ladder[0] != (Profile{Width: 854, Height: 480, FPS: 24, BitrateKbps: 1200}) {
+		t.Fatalf("first low-source profile = %#v", ladder[0])
+	}
+	for _, profile := range ladder {
+		if profile.Width > 854 || profile.Height > 480 || profile.FPS > 24 || profile.BitrateKbps > 1200 {
+			t.Fatalf("low-source ladder exceeds requested ceiling: %#v", profile)
 		}
 	}
 }
@@ -168,5 +198,32 @@ func TestRepeatedViewerSnapshotDoesNotManufactureADegradedWindow(t *testing.T) {
 		if decision := controller.Observe(at, nil, []ViewerSample{sample}); decision != nil {
 			t.Fatalf("repeated server snapshot manufactured a decision: %#v", decision)
 		}
+	}
+}
+
+func TestViewerGenerationChangeResetsDegradedConfirmation(t *testing.T) {
+	start := time.Unix(5000, 0)
+	controller := NewController(Profile{Width: 1280, Height: 720, FPS: 30, BitrateKbps: 3500}, start)
+	bad := ViewerSample{
+		ViewerID: "viewer-1", PairID: "pair-1", Valid: true,
+		PacketsReceivedDelta: 180, PacketsLostDelta: 20, DecodedFPS: 10,
+		IncomingBitrateKbps: 800, JitterMS: 150, FramesDroppedDelta: 3,
+	}
+	for index := 1; index <= 7; index++ {
+		at := start.Add(time.Duration(index*2) * time.Second)
+		bad.Generation = "generation-1"
+		bad.SampleID = "g1-" + time.Duration(index).String()
+		if decision := controller.Observe(at, nil, []ViewerSample{bad}); decision != nil {
+			t.Fatalf("old generation degraded too early: %#v", decision)
+		}
+	}
+
+	bad.Generation = "generation-2"
+	bad.SampleID = "g2-first"
+	if decision := controller.Observe(start.Add(16*time.Second), nil, []ViewerSample{bad}); decision != nil {
+		t.Fatalf("new generation inherited old degraded window: %#v", decision)
+	}
+	if status := controller.Status(start.Add(16 * time.Second)); status.WeakViewers != 0 {
+		t.Fatalf("new generation weak viewers = %d, want 0 during observation", status.WeakViewers)
 	}
 }

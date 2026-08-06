@@ -53,6 +53,16 @@ test('room tools and member list no longer expose audio or legacy voice controls
   assert.doesNotMatch(roomControlSource, /audioMode|audioDefault|audioProcessName|audioProcessId/);
 });
 
+test('native sharing defaults to localized original quality at 60 FPS', () => {
+  assert.match(dialogSource, /\{ label: '原始画质', width: 0, height: 0 \}/);
+  assert.doesNotMatch(dialogSource, /label: 'Original'/);
+  assert.match(dialogSource, /useState<string>\('original'\)/);
+  assert.match(dialogSource, /useState<number>\(60\)/);
+  assert.match(dialogSource, /width: selectedResolution\.width/);
+  assert.match(dialogSource, /height: selectedResolution\.height/);
+  assert.match(dialogSource, /fps: fpsValue/);
+});
+
 test('GameCast UI uses the isolated room voice API and web compatibility sharing is video-only', () => {
   assert.match(appSource, /GetRoomVoiceState/);
   assert.match(appSource, /SetRoomVoiceMicrophoneEnabled/);

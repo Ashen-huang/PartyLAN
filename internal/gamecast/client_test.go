@@ -8,9 +8,28 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestLiveGameCastProbe(t *testing.T) {
+	baseURL := strings.TrimSpace(os.Getenv("PARTYLAN_LIVE_GAMECAST_URL"))
+	if baseURL == "" {
+		t.Skip("set PARTYLAN_LIVE_GAMECAST_URL to run the live GameCast probe")
+	}
+	client, err := NewClient(Profile{BaseURL: baseURL})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+	result := client.Probe(ctx)
+	if !result.OK {
+		t.Fatalf("live probe status=%s base=%s message=%s", result.Status, result.BaseURL, result.Message)
+	}
+}
 
 func TestGetRoomState(t *testing.T) {
 	var gotRoom string

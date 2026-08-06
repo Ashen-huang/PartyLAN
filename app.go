@@ -28,6 +28,7 @@ import (
 	"PartyLAN/internal/gamecast/nativehost"
 	"PartyLAN/internal/gamecast/rooms"
 	"PartyLAN/internal/gamecast/session"
+	"PartyLAN/internal/gamecast/shareaudio"
 	"PartyLAN/internal/gamecast/sharecatalog"
 	gamecastvoice "PartyLAN/internal/gamecast/voice"
 	gamecastws "PartyLAN/internal/gamecast/ws"
@@ -98,6 +99,9 @@ type App struct {
 	gamecastVoice              roomVoiceSession
 	gamecastVoiceFactory       func(gamecastvoice.Config) roomVoiceSession
 	processLookup              func(int) (ps.Process, error)
+	gamecastShareAudioResolver gameCastShareAudioResolver
+	windowProcessResolver      func(uintptr) (sharecatalog.WindowProcess, error)
+	gamecastAudioLoopStarter   func(*nativehost.Host, *shareSession, audioCaptureTarget) error
 	gamecastMediaCancel        context.CancelFunc
 	gamecastMediaDone          chan struct{}
 	mediaCancel                context.CancelFunc
@@ -131,7 +135,9 @@ func NewApp(net network.Network) *App {
 		gamecastVoiceFactory: func(config gamecastvoice.Config) roomVoiceSession {
 			return gamecastvoice.New(config)
 		},
-		processLookup: ps.FindProcess,
+		processLookup:              ps.FindProcess,
+		gamecastShareAudioResolver: shareaudio.NewResolver(),
+		windowProcessResolver:      sharecatalog.ResolveWindowProcess,
 	}
 }
 
@@ -194,9 +200,16 @@ type GameCastHostShareRequest struct {
 }
 
 type audioCaptureTarget struct {
-	PID  uint32
-	Name string
-	Mode windowsaudio.CaptureMode
+	PID                 uint32
+	Name                string
+	Mode                windowsaudio.CaptureMode
+	ApplicationIdentity string
+	IdentityStable      bool
+	Reason              string
+}
+
+type gameCastShareAudioResolver interface {
+	ResolveWindow(shareaudio.WindowTarget) (shareaudio.Target, error)
 }
 
 type VoiceStateSnapshot struct {
@@ -218,19 +231,21 @@ type roomVoiceSession interface {
 }
 
 type shareSession struct {
-	roomID           string
-	peerID           string
-	displayIndex     int
-	windowHandle     uintptr
-	sourceKind       string
-	sourceLabel      string
-	audioProcessID   uint32
-	audioProcessName string
-	width            int
-	height           int
-	fps              int
-	audioMode        string
-	ready            <-chan struct{}
+	roomID               string
+	peerID               string
+	displayIndex         int
+	windowHandle         uintptr
+	sourceKind           string
+	sourceLabel          string
+	audioProcessID       uint32
+	audioProcessName     string
+	audioTarget          audioCaptureTarget
+	audioRebindAttempted bool
+	width                int
+	height               int
+	fps                  int
+	audioMode            string
+	ready                <-chan struct{}
 }
 
 func logVideoCapability(prefix string, capability video.BackendCapability) {
@@ -375,6 +390,11 @@ func (a *App) startup(ctx context.Context) {
 		log.Printf("load config failed: %v", err)
 		cfg = config.DefaultConfig()
 	}
+	if migrateGameCastConfig(cfg) {
+		if err := config.Save(cfg); err != nil {
+			log.Printf("migrate gamecast config failed: %v", err)
+		}
+	}
 	a.cfg = cfg
 	if err := a.ensureGameCastJar(gameCastProfileFromConfig(cfg)); err != nil {
 		log.Printf("load gamecast session jar failed: %v", err)
@@ -430,6 +450,19 @@ func (a *App) startup(ctx context.Context) {
 	a.emitAudioCapability()
 	a.emitRuntimeStatus()
 	go a.networkStatusLoop(ctx)
+}
+
+func migrateGameCastConfig(cfg *config.Config) bool {
+	if cfg == nil {
+		return false
+	}
+	normalized, migrated := gamecast.MigrateLegacyBaseURL(cfg.GameCast.BaseURL)
+	if !migrated {
+		return false
+	}
+	cfg.GameCast.BaseURL = normalized
+	cfg.GameCast.TrustedCertificateSHA256 = ""
+	return true
 }
 
 func (a *App) domReady(ctx context.Context) {
@@ -1718,6 +1751,61 @@ func (a *App) currentGameCastNativeShare(session *shareSession) bool {
 	return a.gamecastNativeShare == session
 }
 
+func (a *App) tryRebindGameCastWindowAudio(host *nativehost.Host, session *shareSession) bool {
+	if host == nil || session == nil {
+		return false
+	}
+	a.mu.Lock()
+	current := a.gamecastNativeShare == session && a.gamecastNativeHost == host
+	eligible := current &&
+		session.sourceKind == string(sharecatalog.SourceKindWindow) &&
+		!session.audioRebindAttempted &&
+		stableGameCastAudioIdentity(session.audioTarget)
+	original := session.audioTarget
+	if eligible {
+		session.audioRebindAttempted = true
+	}
+	a.mu.Unlock()
+	if !eligible {
+		return false
+	}
+
+	refreshed, enabled, mode := a.resolveGameCastAudioCaptureTarget(GameCastHostShareRequest{}, session)
+	if !enabled || mode != "process" || !sameStableGameCastAudioApplication(original, refreshed) {
+		log.Printf("[gamecast/audio] runtime rebind target rejected room=%s original_pid=%d", session.roomID, original.PID)
+		return false
+	}
+
+	a.mu.Lock()
+	current = a.gamecastNativeShare == session && a.gamecastNativeHost == host
+	a.mu.Unlock()
+	if !current {
+		return false
+	}
+	start := a.gamecastAudioLoopStarter
+	if start == nil {
+		start = a.startGameCastAudioLoop
+	}
+	if err := start(host, session, refreshed); err != nil {
+		log.Printf("[gamecast/audio] runtime rebind failed room=%s target=%s:%d reason=%s: %v", session.roomID, refreshed.Name, refreshed.PID, refreshed.Reason, err)
+		return false
+	}
+
+	a.mu.Lock()
+	current = a.gamecastNativeShare == session && a.gamecastNativeHost == host
+	if current {
+		session.audioTarget = refreshed
+		session.audioMode = mode
+	}
+	a.mu.Unlock()
+	if !current {
+		a.stopAudioMediaLoop()
+		return false
+	}
+	log.Printf("[gamecast/audio] runtime rebind succeeded room=%s target=%s:%d reason=%s", session.roomID, refreshed.Name, refreshed.PID, refreshed.Reason)
+	return true
+}
+
 func waitForGameCastShareReady(session *shareSession) {
 	if session != nil && session.ready != nil {
 		<-session.ready
@@ -1741,7 +1829,7 @@ func (a *App) handleGameCastNativeVideoFailure(session *shareSession, cause erro
 		message = "共享窗口已关闭，原生 GameCast 共享已自动停止。"
 	}
 	log.Printf("[gamecast/native-host] stopping failed %s share room=%s: %v", sourceName, session.roomID, cause)
-	a.stopGameCastNativeHost()
+	a.stopGameCastNativeHostLocked()
 	if _, err := a.SetGameCastHostSharing(GameCastHostShareRequest{
 		RoomID:    session.roomID,
 		Sharing:   false,
@@ -1772,6 +1860,15 @@ func (a *App) handleGameCastNativeAudioFailure(session *shareSession, cause erro
 
 	log.Printf("[gamecast/audio] disabling failed audio source room=%s mode=%s: %v", session.roomID, session.audioMode, cause)
 	a.stopAudioMediaLoop()
+	if !a.currentGameCastNativeShare(session) {
+		return
+	}
+	a.mu.Lock()
+	host := a.gamecastNativeHost
+	a.mu.Unlock()
+	if a.tryRebindGameCastWindowAudio(host, session) {
+		return
+	}
 	if !a.currentGameCastNativeShare(session) {
 		return
 	}
@@ -2065,6 +2162,12 @@ func waitForMediaLoopDone(done <-chan struct{}, timeout time.Duration) bool {
 }
 
 func (a *App) stopGameCastNativeHost() {
+	a.gamecastRuntimeMu.Lock()
+	defer a.gamecastRuntimeMu.Unlock()
+	a.stopGameCastNativeHostLocked()
+}
+
+func (a *App) stopGameCastNativeHostLocked() {
 	a.stopGameCastMediaLoop()
 	a.stopAudioMediaLoop()
 
@@ -3502,19 +3605,73 @@ func (a *App) startGameCastAudioLoopOrDisable(
 	primary audioCaptureTarget,
 	audioMode string,
 ) (string, bool, error) {
-	mode, enabled, err := startGameCastAudioTarget(func(target audioCaptureTarget) error {
+	start := func(target audioCaptureTarget) error {
+		if a.gamecastAudioLoopStarter != nil {
+			return a.gamecastAudioLoopStarter(host, session, target)
+		}
 		return a.startGameCastAudioLoop(host, session, target)
-	}, primary, audioMode)
-	if err != nil {
-		log.Printf(
-			"[gamecast/audio] selected audio start failed; continuing video-only mode=%s target=%s:%d: %v",
-			audioCaptureModeLabel(primary.Mode),
-			primary.Name,
-			primary.PID,
-			err,
-		)
 	}
-	return mode, enabled, err
+	mode, enabled, firstErr := startGameCastAudioTarget(start, primary, audioMode)
+	if firstErr == nil {
+		a.storeGameCastAudioTarget(session, primary, mode, false)
+		return mode, enabled, nil
+	}
+	log.Printf(
+		"[gamecast/audio] selected audio start failed mode=%s target=%s:%d reason=%s: %v",
+		audioCaptureModeLabel(primary.Mode),
+		primary.Name,
+		primary.PID,
+		primary.Reason,
+		firstErr,
+	)
+
+	if session == nil || session.sourceKind != string(sharecatalog.SourceKindWindow) || !stableGameCastAudioIdentity(primary) {
+		return "off", false, firstErr
+	}
+	refreshed, retryEnabled, retryMode := a.resolveGameCastAudioCaptureTarget(GameCastHostShareRequest{}, session)
+	if !retryEnabled || retryMode != "process" || !sameStableGameCastAudioApplication(primary, refreshed) {
+		log.Printf("[gamecast/audio] refreshed target rejected after initial failure target=%s:%d", primary.Name, primary.PID)
+		return "off", false, firstErr
+	}
+
+	mode, enabled, retryErr := startGameCastAudioTarget(start, refreshed, retryMode)
+	if retryErr != nil {
+		log.Printf(
+			"[gamecast/audio] refreshed audio start failed; continuing video-only target=%s:%d reason=%s: %v",
+			refreshed.Name,
+			refreshed.PID,
+			refreshed.Reason,
+			retryErr,
+		)
+		return "off", false, errors.Join(firstErr, retryErr)
+	}
+	a.storeGameCastAudioTarget(session, refreshed, mode, false)
+	log.Printf("[gamecast/audio] refreshed target started target=%s:%d reason=%s", refreshed.Name, refreshed.PID, refreshed.Reason)
+	return mode, enabled, nil
+}
+
+func stableGameCastAudioIdentity(target audioCaptureTarget) bool {
+	return target.Mode == windowsaudio.CaptureIncludeProcessTree &&
+		target.PID != 0 &&
+		target.IdentityStable &&
+		strings.TrimSpace(target.ApplicationIdentity) != ""
+}
+
+func sameStableGameCastAudioApplication(left, right audioCaptureTarget) bool {
+	return stableGameCastAudioIdentity(left) &&
+		stableGameCastAudioIdentity(right) &&
+		strings.EqualFold(strings.TrimSpace(left.ApplicationIdentity), strings.TrimSpace(right.ApplicationIdentity))
+}
+
+func (a *App) storeGameCastAudioTarget(session *shareSession, target audioCaptureTarget, mode string, rebindAttempted bool) {
+	if session == nil {
+		return
+	}
+	a.mu.Lock()
+	session.audioTarget = target
+	session.audioMode = mode
+	session.audioRebindAttempted = rebindAttempted
+	a.mu.Unlock()
 }
 
 func startGameCastAudioTarget(
@@ -3591,24 +3748,59 @@ func (a *App) resolveGameCastAudioCaptureTarget(_ GameCastHostShareRequest, sess
 			Mode: windowsaudio.CaptureExcludeProcessTree,
 		}, true, "exclude-process"
 	case string(sharecatalog.SourceKindWindow):
-		processID := session.audioProcessID
-		lookup := a.processLookup
-		if lookup == nil {
-			lookup = ps.FindProcess
+		resolveWindowProcess := a.windowProcessResolver
+		if resolveWindowProcess == nil {
+			resolveWindowProcess = sharecatalog.ResolveWindowProcess
 		}
-		belongsToPartyLAN, processKnown := processTreeMembership(processID, uint32(os.Getpid()), lookup)
-		if processID == 0 || !processKnown || belongsToPartyLAN {
-			log.Printf("[gamecast/audio] unsafe window process target disabled pid=%d", processID)
+		windowProcess, err := resolveWindowProcess(session.windowHandle)
+		if err != nil || windowProcess.ProcessID == 0 {
+			log.Printf("[gamecast/audio] selected window process unavailable hwnd=%d: %v", session.windowHandle, err)
 			return audioCaptureTarget{}, false, "off"
 		}
-		processName := strings.TrimSpace(session.audioProcessName)
-		if processName == "" {
-			processName = fmt.Sprintf("PID %d", processID)
+		resolver := a.gamecastShareAudioResolver
+		if resolver == nil {
+			log.Printf("[gamecast/audio] safe window audio resolver unavailable hwnd=%d pid=%d", session.windowHandle, windowProcess.ProcessID)
+			return audioCaptureTarget{}, false, "off"
 		}
+		resolved, err := resolver.ResolveWindow(shareaudio.WindowTarget{
+			WindowPID:   windowProcess.ProcessID,
+			PartyLANPID: uint32(os.Getpid()),
+		})
+		if err != nil {
+			log.Printf("[gamecast/audio] safe window audio target rejected hwnd=%d pid=%d: %v", session.windowHandle, windowProcess.ProcessID, err)
+			return audioCaptureTarget{}, false, "off"
+		}
+		identity := strings.TrimSpace(resolved.Identity)
+		if resolved.ProcessID == 0 || resolved.Mode != windowsaudio.CaptureIncludeProcessTree || !resolved.IdentityStable || identity == "" {
+			log.Printf(
+				"[gamecast/audio] invalid window audio target disabled hwnd=%d window_pid=%d target_pid=%d mode=%s stable_identity=%t reason=%s",
+				session.windowHandle,
+				windowProcess.ProcessID,
+				resolved.ProcessID,
+				audioCaptureModeLabel(resolved.Mode),
+				resolved.IdentityStable,
+				resolved.Reason,
+			)
+			return audioCaptureTarget{}, false, "off"
+		}
+		processName := strings.TrimSpace(windowProcess.ProcessName)
+		if processName == "" {
+			processName = fmt.Sprintf("PID %d", resolved.ProcessID)
+		}
+		log.Printf(
+			"[gamecast/audio] resolved window audio hwnd=%d window_pid=%d target_pid=%d reason=%s",
+			session.windowHandle,
+			windowProcess.ProcessID,
+			resolved.ProcessID,
+			resolved.Reason,
+		)
 		return audioCaptureTarget{
-			PID:  processID,
-			Name: processName,
-			Mode: windowsaudio.CaptureIncludeProcessTree,
+			PID:                 resolved.ProcessID,
+			Name:                processName,
+			Mode:                windowsaudio.CaptureIncludeProcessTree,
+			ApplicationIdentity: identity,
+			IdentityStable:      true,
+			Reason:              resolved.Reason,
 		}, true, "process"
 	}
 	return audioCaptureTarget{}, false, "off"

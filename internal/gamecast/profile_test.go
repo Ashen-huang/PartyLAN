@@ -35,6 +35,30 @@ func TestNormalizeBaseURL(t *testing.T) {
 	}
 }
 
+func TestMigrateLegacyBaseURL(t *testing.T) {
+	tests := []struct {
+		name     string
+		raw      string
+		want     string
+		migrated bool
+	}{
+		{name: "legacy ip", raw: "https://113.142.217.42:5050/", want: DefaultBaseURL, migrated: true},
+		{name: "legacy saved node", raw: "85.137.240.159:5050", want: DefaultBaseURL, migrated: true},
+		{name: "new domain", raw: "https://partylanapp.com", want: "https://partylanapp.com", migrated: false},
+		{name: "custom server", raw: "https://gamecast.example.com:5050", want: "https://gamecast.example.com:5050", migrated: false},
+		{name: "invalid", raw: "not a url", want: "not a url", migrated: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, migrated := MigrateLegacyBaseURL(tt.raw)
+			if got != tt.want || migrated != tt.migrated {
+				t.Fatalf("MigrateLegacyBaseURL(%q)=(%q, %t), want (%q, %t)", tt.raw, got, migrated, tt.want, tt.migrated)
+			}
+		})
+	}
+}
+
 func TestWSURL(t *testing.T) {
 	got, err := WSURL("https://example.com:5050/", "room 1", "viewer", "h")
 	if err != nil {

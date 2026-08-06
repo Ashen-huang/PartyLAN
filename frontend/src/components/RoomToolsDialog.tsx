@@ -29,7 +29,7 @@ interface RoomToolsDialogProps {
 }
 
 const RESOLUTION_OPTIONS: ResolutionOption[] = [
-  { label: 'Original', width: 0, height: 0 },
+  { label: '原始画质', width: 0, height: 0 },
   { label: '1920 x 1080', width: 1920, height: 1080 },
   { label: '1600 x 900', width: 1600, height: 900 },
   { label: '1280 x 720', width: 1280, height: 720 },
@@ -79,8 +79,8 @@ export default function RoomToolsDialog({
 }: RoomToolsDialogProps) {
   const [sourceKind, setSourceKind] = useState<ShareSourceKind>('display');
   const [sourceId, setSourceId] = useState('');
-  const [resolutionKey, setResolutionKey] = useState<string>('1280x720');
-  const [fpsValue, setFpsValue] = useState<number>(30);
+  const [resolutionKey, setResolutionKey] = useState<string>('original');
+  const [fpsValue, setFpsValue] = useState<number>(60);
   const selectedResolution = useMemo(() => parseResolutionKey(resolutionKey), [resolutionKey]);
   const displaySources = useMemo(() => shareSources.filter((source) => source.kind === 'display'), [shareSources]);
   const windowSources = useMemo(() => shareSources.filter((source) => source.kind === 'window'), [shareSources]);

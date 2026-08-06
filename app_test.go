@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -19,7 +20,10 @@ import (
 	"PartyLAN/internal/gamecast"
 	"PartyLAN/internal/gamecast/adaptive"
 	hostwindowcapture "PartyLAN/internal/gamecast/host/windowcapture"
+	"PartyLAN/internal/gamecast/nativehost"
 	"PartyLAN/internal/gamecast/session"
+	"PartyLAN/internal/gamecast/shareaudio"
+	"PartyLAN/internal/gamecast/sharecatalog"
 	gamecastvoice "PartyLAN/internal/gamecast/voice"
 	gamecastws "PartyLAN/internal/gamecast/ws"
 	"PartyLAN/internal/native/windowsaudio"
@@ -29,6 +33,39 @@ import (
 
 	ps "github.com/mitchellh/go-ps"
 )
+
+func TestMigrateGameCastConfigPreservesNonServerFields(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.GameCast.BaseURL = "https://85.137.240.159:5050"
+	cfg.GameCast.TrustedCertificateSHA256 = "old-pin"
+	cfg.GameCast.DisplayName = "Viewer"
+	cfg.GameCast.RoomHistory = []config.GameCastRoomHistoryEntry{{ID: "room-1", Time: 42}}
+	cfg.AudioBitrate = 96
+
+	if !migrateGameCastConfig(cfg) {
+		t.Fatal("expected legacy GameCast config to migrate")
+	}
+	if cfg.GameCast.BaseURL != "https://partylanapp.com" {
+		t.Fatalf("migrated base URL = %q", cfg.GameCast.BaseURL)
+	}
+	if cfg.GameCast.TrustedCertificateSHA256 != "" {
+		t.Fatalf("legacy certificate pin was not cleared: %q", cfg.GameCast.TrustedCertificateSHA256)
+	}
+	if cfg.GameCast.DisplayName != "Viewer" || len(cfg.GameCast.RoomHistory) != 1 || cfg.AudioBitrate != 96 {
+		t.Fatalf("non-server config changed: %#v", cfg)
+	}
+}
+
+func TestMigrateGameCastConfigIsIdempotent(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.GameCast.BaseURL = "https://113.142.217.42:5050"
+	if !migrateGameCastConfig(cfg) {
+		t.Fatal("expected first migration")
+	}
+	if migrateGameCastConfig(cfg) {
+		t.Fatal("did not expect second migration")
+	}
+}
 
 func TestNewAppAssignsStableGameCastParticipantID(t *testing.T) {
 	first := NewApp(network.NewLoopbackNetwork("first"))
@@ -278,6 +315,21 @@ func TestGameCastSharePeerIDUsesExplicitCompatPublisher(t *testing.T) {
 func TestGameCastSharePeerIDDefaultsToNativeHost(t *testing.T) {
 	if got := gameCastSharePeerID(GameCastHostShareRequest{}); got != "gamecast-host" {
 		t.Fatalf("gameCastSharePeerID(default) = %q, want gamecast-host", got)
+	}
+}
+
+func TestOriginalShareResolutionPreservesSourceAt60FPSWithoutUpscaling(t *testing.T) {
+	width, height := resolveShareResolution(3841, 2161, 0, 0)
+	if width != 3840 || height != 2160 {
+		t.Fatalf("original resolution = %dx%d, want even 3840x2160", width, height)
+	}
+	if fps := normalizeShareFPS(60); fps != 60 {
+		t.Fatalf("normalized original FPS = %d, want 60", fps)
+	}
+
+	width, height = resolveShareResolution(854, 480, 1920, 1080)
+	if width > 854 || height > 480 {
+		t.Fatalf("fixed request upscaled low-resolution source to %dx%d", width, height)
 	}
 }
 
@@ -925,7 +977,15 @@ func TestGameCastAudioStartupDoesNotFallbackToSystemMix(t *testing.T) {
 
 func TestResolveGameCastDisplayAudioExcludesPartyLANRegardlessOfRequestedMode(t *testing.T) {
 	ensureTestOpusDLL(t)
-	application := &App{audioCapability: windowsaudio.Capability{SupportsProcessCapture: true}}
+	resolver := &scriptedShareAudioResolver{}
+	application := &App{
+		audioCapability:            windowsaudio.Capability{SupportsProcessCapture: true},
+		gamecastShareAudioResolver: resolver,
+		windowProcessResolver: func(uintptr) (sharecatalog.WindowProcess, error) {
+			t.Fatal("display audio must not resolve a window process")
+			return sharecatalog.WindowProcess{}, nil
+		},
+	}
 	session := &shareSession{sourceKind: "display"}
 
 	target, enabled, mode := application.resolveGameCastAudioCaptureTarget(GameCastHostShareRequest{
@@ -945,21 +1005,33 @@ func TestResolveGameCastDisplayAudioExcludesPartyLANRegardlessOfRequestedMode(t 
 	if mode != "exclude-process" {
 		t.Fatalf("display audio mode = %q, want exclude-process", mode)
 	}
+	if len(resolver.inputs) != 0 {
+		t.Fatalf("display audio unexpectedly called window resolver: %#v", resolver.inputs)
+	}
 }
 
 func TestResolveGameCastWindowAudioIgnoresSystemOverride(t *testing.T) {
 	ensureTestOpusDLL(t)
-	safeProcessID := uint32(4242)
+	windowProcessID := uint32(4242)
+	applicationRootPID := uint32(4200)
+	resolver := &scriptedShareAudioResolver{targets: []shareaudio.Target{{
+		ProcessID:      applicationRootPID,
+		Mode:           windowsaudio.CaptureIncludeProcessTree,
+		Identity:       `c:\apps\game\game.exe`,
+		IdentityStable: true,
+		Reason:         shareaudio.ReasonSiblingAudio,
+	}}}
 	application := &App{
-		audioCapability: windowsaudio.Capability{SupportsProcessCapture: true},
-		processLookup: func(pid int) (ps.Process, error) {
-			if pid == int(safeProcessID) {
-				return testProcess{pid: pid, ppid: 0}, nil
+		audioCapability:            windowsaudio.Capability{SupportsProcessCapture: true},
+		gamecastShareAudioResolver: resolver,
+		windowProcessResolver: func(handle uintptr) (sharecatalog.WindowProcess, error) {
+			if handle != 77 {
+				t.Fatalf("window handle = %d, want 77", handle)
 			}
-			return nil, fmt.Errorf("process %d not found", pid)
+			return sharecatalog.WindowProcess{ProcessID: windowProcessID, ProcessName: "game.exe"}, nil
 		},
 	}
-	session := &shareSession{sourceKind: "window", audioProcessID: safeProcessID, audioProcessName: "game.exe"}
+	session := &shareSession{sourceKind: "window", windowHandle: 77, audioProcessID: 9999, audioProcessName: "stale.exe"}
 
 	target, enabled, mode := application.resolveGameCastAudioCaptureTarget(GameCastHostShareRequest{
 		AudioMode:        "system",
@@ -970,24 +1042,39 @@ func TestResolveGameCastWindowAudioIgnoresSystemOverride(t *testing.T) {
 	if !enabled {
 		t.Fatal("expected selected window process audio to be enabled")
 	}
-	if target.Mode != windowsaudio.CaptureIncludeProcessTree || target.PID != safeProcessID {
-		t.Fatalf("window audio target = %#v, want process tree PID %d", target, safeProcessID)
+	if target.Mode != windowsaudio.CaptureIncludeProcessTree || target.PID != applicationRootPID {
+		t.Fatalf("window audio target = %#v, want process tree PID %d", target, applicationRootPID)
 	}
 	if mode != "process" {
 		t.Fatalf("window audio mode = %q, want process", mode)
+	}
+	if target.ApplicationIdentity != `c:\apps\game\game.exe` || !target.IdentityStable || target.Reason != shareaudio.ReasonSiblingAudio {
+		t.Fatalf("window audio identity metadata = %#v", target)
+	}
+	if len(resolver.inputs) != 1 || resolver.inputs[0].WindowPID != windowProcessID || resolver.inputs[0].PartyLANPID != uint32(os.Getpid()) {
+		t.Fatalf("resolver inputs = %#v", resolver.inputs)
 	}
 }
 
 func TestResolveGameCastWindowAudioDisablesUnknownAndPartyLANProcesses(t *testing.T) {
 	ensureTestOpusDLL(t)
-	application := &App{audioCapability: windowsaudio.Capability{SupportsProcessCapture: true}}
 
-	for name, processID := range map[string]uint32{
-		"unknown":  0,
-		"partylan": uint32(os.Getpid()),
+	for name, resolveWindow := range map[string]func(uintptr) (sharecatalog.WindowProcess, error){
+		"unknown": func(uintptr) (sharecatalog.WindowProcess, error) {
+			return sharecatalog.WindowProcess{}, errors.New("window unavailable")
+		},
+		"partylan": func(uintptr) (sharecatalog.WindowProcess, error) {
+			return sharecatalog.WindowProcess{ProcessID: uint32(os.Getpid()), ProcessName: "PartyLAN.exe"}, nil
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			session := &shareSession{sourceKind: "window", audioProcessID: processID}
+			resolver := &scriptedShareAudioResolver{errs: []error{shareaudio.ErrUnsafeTarget}}
+			application := &App{
+				audioCapability:            windowsaudio.Capability{SupportsProcessCapture: true},
+				gamecastShareAudioResolver: resolver,
+				windowProcessResolver:      resolveWindow,
+			}
+			session := &shareSession{sourceKind: "window", windowHandle: 88}
 			target, enabled, mode := application.resolveGameCastAudioCaptureTarget(GameCastHostShareRequest{
 				AudioMode:      "system",
 				AudioProcessID: 4242,
@@ -1001,12 +1088,365 @@ func TestResolveGameCastWindowAudioDisablesUnknownAndPartyLANProcesses(t *testin
 
 func TestResolveGameCastWindowAudioDisablesExitedProcess(t *testing.T) {
 	ensureTestOpusDLL(t)
-	application := &App{audioCapability: windowsaudio.Capability{SupportsProcessCapture: true}}
-	session := &shareSession{sourceKind: "window", audioProcessID: ^uint32(0), audioProcessName: "exited.exe"}
+	application := &App{
+		audioCapability: windowsaudio.Capability{SupportsProcessCapture: true},
+		windowProcessResolver: func(uintptr) (sharecatalog.WindowProcess, error) {
+			return sharecatalog.WindowProcess{}, errors.New("window process exited")
+		},
+	}
+	session := &shareSession{sourceKind: "window", windowHandle: 99, audioProcessID: ^uint32(0), audioProcessName: "exited.exe"}
 
 	target, enabled, mode := application.resolveGameCastAudioCaptureTarget(GameCastHostShareRequest{}, session)
 	if enabled || mode != "off" || target.PID != 0 {
 		t.Fatalf("exited window process resolved to target=%#v enabled=%t mode=%q", target, enabled, mode)
+	}
+}
+
+func TestGameCastWindowAudioStartupRefreshesOnceForStableApplication(t *testing.T) {
+	ensureTestOpusDLL(t)
+	resolver := &scriptedShareAudioResolver{targets: []shareaudio.Target{{
+		ProcessID:      200,
+		Mode:           windowsaudio.CaptureIncludeProcessTree,
+		Identity:       `c:\apps\player\player.exe`,
+		IdentityStable: true,
+		Reason:         shareaudio.ReasonSiblingAudio,
+	}}}
+	attempts := make([]audioCaptureTarget, 0, 2)
+	application := &App{
+		audioCapability:            windowsaudio.Capability{SupportsProcessCapture: true},
+		gamecastShareAudioResolver: resolver,
+		windowProcessResolver: func(uintptr) (sharecatalog.WindowProcess, error) {
+			return sharecatalog.WindowProcess{ProcessID: 110, ProcessName: "player.exe"}, nil
+		},
+		gamecastAudioLoopStarter: func(_ *nativehost.Host, _ *shareSession, target audioCaptureTarget) error {
+			attempts = append(attempts, target)
+			if len(attempts) == 1 {
+				return errors.New("initial process capture start failed")
+			}
+			return nil
+		},
+	}
+	session := &shareSession{sourceKind: "window", windowHandle: 77}
+	primary := stableWindowAudioTarget(100, `c:\apps\player\player.exe`)
+
+	mode, enabled, err := application.startGameCastAudioLoopOrDisable(nil, session, primary, "process")
+	if err != nil || !enabled || mode != "process" {
+		t.Fatalf("startup result = (%q, %t, %v), want successful process retry", mode, enabled, err)
+	}
+	if len(attempts) != 2 || attempts[0].PID != 100 || attempts[1].PID != 200 {
+		t.Fatalf("startup attempts = %#v, want original then refreshed application root", attempts)
+	}
+	if len(resolver.inputs) != 1 {
+		t.Fatalf("resolver calls = %d, want one refresh", len(resolver.inputs))
+	}
+	if session.audioTarget.PID != 200 || session.audioRebindAttempted {
+		t.Fatalf("stored session audio state = %#v rebind=%t", session.audioTarget, session.audioRebindAttempted)
+	}
+}
+
+func TestGameCastWindowAudioStartupStopsAfterOneFailedRefreshRetry(t *testing.T) {
+	ensureTestOpusDLL(t)
+	resolver := &scriptedShareAudioResolver{targets: []shareaudio.Target{{
+		ProcessID:      200,
+		Mode:           windowsaudio.CaptureIncludeProcessTree,
+		Identity:       `c:\apps\player\player.exe`,
+		IdentityStable: true,
+		Reason:         shareaudio.ReasonSiblingAudio,
+	}}}
+	attempts := 0
+	application := &App{
+		audioCapability:            windowsaudio.Capability{SupportsProcessCapture: true},
+		gamecastShareAudioResolver: resolver,
+		windowProcessResolver: func(uintptr) (sharecatalog.WindowProcess, error) {
+			return sharecatalog.WindowProcess{ProcessID: 110, ProcessName: "player.exe"}, nil
+		},
+		gamecastAudioLoopStarter: func(_ *nativehost.Host, _ *shareSession, target audioCaptureTarget) error {
+			attempts++
+			if target.Mode == windowsaudio.CaptureSystemMix {
+				t.Fatal("startup attempted forbidden system-mix fallback")
+			}
+			return fmt.Errorf("capture attempt %d failed", attempts)
+		},
+	}
+	session := &shareSession{sourceKind: "window", windowHandle: 77}
+
+	mode, enabled, err := application.startGameCastAudioLoopOrDisable(
+		nil,
+		session,
+		stableWindowAudioTarget(100, `c:\apps\player\player.exe`),
+		"process",
+	)
+	if err == nil || enabled || mode != "off" {
+		t.Fatalf("startup result = (%q, %t, %v), want video-only failure", mode, enabled, err)
+	}
+	if attempts != 2 || len(resolver.inputs) != 1 {
+		t.Fatalf("startup attempts=%d resolver refreshes=%d, want 2 and 1", attempts, len(resolver.inputs))
+	}
+}
+
+func TestGameCastWindowAudioStartupRejectsDifferentOrUnstableRetry(t *testing.T) {
+	ensureTestOpusDLL(t)
+	tests := []struct {
+		name        string
+		primary     audioCaptureTarget
+		refreshed   shareaudio.Target
+		wantRefresh bool
+	}{
+		{
+			name:    "different application",
+			primary: stableWindowAudioTarget(100, `c:\apps\player\player.exe`),
+			refreshed: shareaudio.Target{ProcessID: 200, Mode: windowsaudio.CaptureIncludeProcessTree,
+				Identity: `c:\apps\other\other.exe`, IdentityStable: true},
+			wantRefresh: true,
+		},
+		{
+			name:        "unstable original identity",
+			primary:     audioCaptureTarget{PID: 100, Mode: windowsaudio.CaptureIncludeProcessTree},
+			wantRefresh: false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			resolver := &scriptedShareAudioResolver{targets: []shareaudio.Target{test.refreshed}}
+			attempts := 0
+			application := &App{
+				audioCapability:            windowsaudio.Capability{SupportsProcessCapture: true},
+				gamecastShareAudioResolver: resolver,
+				windowProcessResolver: func(uintptr) (sharecatalog.WindowProcess, error) {
+					return sharecatalog.WindowProcess{ProcessID: 110, ProcessName: "player.exe"}, nil
+				},
+				gamecastAudioLoopStarter: func(_ *nativehost.Host, _ *shareSession, target audioCaptureTarget) error {
+					attempts++
+					if target.Mode == windowsaudio.CaptureSystemMix {
+						t.Fatal("startup attempted forbidden system-mix fallback")
+					}
+					return errors.New("capture unavailable")
+				},
+			}
+			session := &shareSession{sourceKind: "window", windowHandle: 77}
+
+			mode, enabled, err := application.startGameCastAudioLoopOrDisable(nil, session, test.primary, "process")
+			if err == nil || enabled || mode != "off" || attempts != 1 {
+				t.Fatalf("startup result = (%q, %t, %v) attempts=%d", mode, enabled, err, attempts)
+			}
+			if got := len(resolver.inputs); (got == 1) != test.wantRefresh {
+				t.Fatalf("resolver refresh calls = %d, wantRefresh=%t", got, test.wantRefresh)
+			}
+		})
+	}
+}
+
+func TestGameCastRuntimeWindowAudioRebindsOnlyOnceWithinSameApplication(t *testing.T) {
+	ensureTestOpusDLL(t)
+	resolver := &scriptedShareAudioResolver{targets: []shareaudio.Target{{
+		ProcessID:      200,
+		Mode:           windowsaudio.CaptureIncludeProcessTree,
+		Identity:       `c:\apps\player\player.exe`,
+		IdentityStable: true,
+		Reason:         shareaudio.ReasonSiblingAudio,
+	}}}
+	starts := 0
+	videoStopped := atomic.Bool{}
+	voiceSession := &fakeRoomVoiceSession{started: make(chan struct{})}
+	lease := &gamecast.ShareLease{Room: "room-1", LeaseID: "lease-1", Active: true}
+	session := &shareSession{
+		roomID:       "room-1",
+		sourceKind:   "window",
+		windowHandle: 77,
+		audioMode:    "process",
+		audioTarget:  stableWindowAudioTarget(100, `c:\apps\player\player.exe`),
+	}
+	host := nativehost.New(nativehost.Config{})
+	application := &App{
+		audioCapability:            windowsaudio.Capability{SupportsProcessCapture: true},
+		gamecastNativeShare:        session,
+		gamecastNativeHost:         host,
+		gamecastShareLease:         lease,
+		gamecastVoice:              voiceSession,
+		gamecastMediaCancel:        func() { videoStopped.Store(true) },
+		gamecastShareAudioResolver: resolver,
+		windowProcessResolver: func(uintptr) (sharecatalog.WindowProcess, error) {
+			return sharecatalog.WindowProcess{ProcessID: 110, ProcessName: "player.exe"}, nil
+		},
+		gamecastAudioLoopStarter: func(_ *nativehost.Host, _ *shareSession, target audioCaptureTarget) error {
+			starts++
+			if target.Mode != windowsaudio.CaptureIncludeProcessTree {
+				t.Fatalf("runtime target mode = %v", target.Mode)
+			}
+			return nil
+		},
+	}
+
+	if !application.tryRebindGameCastWindowAudio(host, session) {
+		t.Fatal("expected one safe runtime audio rebind")
+	}
+	if application.tryRebindGameCastWindowAudio(host, session) {
+		t.Fatal("second runtime audio rebind must be refused")
+	}
+	if starts != 1 || len(resolver.inputs) != 1 || !session.audioRebindAttempted || session.audioTarget.PID != 200 {
+		t.Fatalf("runtime rebind state starts=%d resolver=%d attempted=%t target=%#v", starts, len(resolver.inputs), session.audioRebindAttempted, session.audioTarget)
+	}
+	if videoStopped.Load() || application.gamecastNativeHost != host || application.gamecastNativeShare != session {
+		t.Fatal("audio rebind changed the active video host or session")
+	}
+	if application.gamecastShareLease != lease || application.gamecastVoice != voiceSession || voiceSession.stopped.Load() {
+		t.Fatal("audio rebind changed the share lease or room voice session")
+	}
+}
+
+func TestGameCastRuntimeAudioDoesNotRebindStaleDisplayOrDifferentApplication(t *testing.T) {
+	ensureTestOpusDLL(t)
+	for _, name := range []string{"stale generation", "display", "different application"} {
+		t.Run(name, func(t *testing.T) {
+			resolver := &scriptedShareAudioResolver{targets: []shareaudio.Target{{
+				ProcessID: 200, Mode: windowsaudio.CaptureIncludeProcessTree,
+				Identity: `c:\apps\other\other.exe`, IdentityStable: true,
+			}}}
+			session := &shareSession{
+				sourceKind: "window", windowHandle: 77, audioMode: "process",
+				audioTarget: stableWindowAudioTarget(100, `c:\apps\player\player.exe`),
+			}
+			current := session
+			if name == "stale generation" {
+				current = &shareSession{}
+			}
+			if name == "display" {
+				session.sourceKind = "display"
+			}
+			starts := 0
+			host := nativehost.New(nativehost.Config{})
+			application := &App{
+				audioCapability:            windowsaudio.Capability{SupportsProcessCapture: true},
+				gamecastNativeShare:        current,
+				gamecastNativeHost:         host,
+				gamecastShareAudioResolver: resolver,
+				windowProcessResolver: func(uintptr) (sharecatalog.WindowProcess, error) {
+					return sharecatalog.WindowProcess{ProcessID: 110, ProcessName: "player.exe"}, nil
+				},
+				gamecastAudioLoopStarter: func(_ *nativehost.Host, _ *shareSession, _ audioCaptureTarget) error {
+					starts++
+					return nil
+				},
+			}
+
+			if application.tryRebindGameCastWindowAudio(host, session) {
+				t.Fatal("unsafe runtime audio rebind was accepted")
+			}
+			if starts != 0 {
+				t.Fatalf("runtime audio starts = %d, want 0", starts)
+			}
+		})
+	}
+}
+
+func TestGameCastRuntimeAudioFailureDisablesOnlySharedAudio(t *testing.T) {
+	var heartbeat gamecast.ShareLeaseRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/share/heartbeat" {
+			http.Error(w, `{"error":"unexpected endpoint"}`, http.StatusNotFound)
+			return
+		}
+		if err := json.NewDecoder(r.Body).Decode(&heartbeat); err != nil {
+			http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"lease":{"room":"room-1","leaseId":"lease-1","participantId":"client-1","active":true,"sfu":true,"audioMode":"off","ttl":15},"room":{"room":"room-1","active":true,"origin":"client","sharing":true,"sfu":true,"audioMode":"off"}}`))
+	}))
+	defer server.Close()
+
+	jar, err := session.New(filepath.Join(t.TempDir(), "cookies.json"))
+	if err != nil {
+		t.Fatalf("create test cookie jar: %v", err)
+	}
+	ready := make(chan struct{})
+	close(ready)
+	videoStopped := atomic.Bool{}
+	voiceSession := &fakeRoomVoiceSession{started: make(chan struct{})}
+	host := nativehost.New(nativehost.Config{})
+	share := &shareSession{
+		roomID:               "room-1",
+		peerID:               "gamecast-host",
+		sourceKind:           "window",
+		windowHandle:         77,
+		width:                1920,
+		height:               1080,
+		fps:                  60,
+		audioMode:            "process",
+		audioTarget:          stableWindowAudioTarget(100, `c:\apps\player\player.exe`),
+		audioRebindAttempted: true,
+		ready:                ready,
+	}
+	application := NewApp(network.NewLoopbackNetwork("self"))
+	application.cfg = config.DefaultConfig()
+	application.cfg.GameCast.BaseURL = server.URL
+	application.gamecastJar = jar
+	application.gamecastParticipantID = "client-1"
+	application.gamecastPresenceCancel = func() {}
+	application.gamecastPresenceRoom = "room-1"
+	application.gamecastNativeHost = host
+	application.gamecastNativeShare = share
+	application.gamecastShareLease = &gamecast.ShareLease{
+		Room: "room-1", LeaseID: "lease-1", ParticipantID: "client-1", Active: true, SFU: true, AudioMode: "process", TTL: 15,
+	}
+	application.gamecastVoice = voiceSession
+	application.gamecastMediaCancel = func() { videoStopped.Store(true) }
+	defer func() {
+		application.mu.Lock()
+		cancel := application.gamecastShareCancel
+		application.gamecastShareCancel = nil
+		application.mu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+	}()
+
+	application.handleGameCastNativeAudioFailure(share, errors.New("process loopback ended"))
+
+	if heartbeat.Room != "room-1" || heartbeat.LeaseID != "lease-1" || !heartbeat.SFU || heartbeat.AudioMode != "off" {
+		t.Fatalf("audio-disabled heartbeat = %#v", heartbeat)
+	}
+	if share.audioMode != "off" {
+		t.Fatalf("share audio mode = %q, want off", share.audioMode)
+	}
+	if videoStopped.Load() || application.gamecastNativeHost != host || application.gamecastNativeShare != share {
+		t.Fatal("shared-audio failure stopped or replaced the active video session")
+	}
+	if application.gamecastVoice != voiceSession || voiceSession.stopped.Load() {
+		t.Fatal("shared-audio failure stopped or replaced the room voice session")
+	}
+	if application.gamecastShareLease == nil || application.gamecastShareLease.LeaseID != "lease-1" || !application.gamecastShareLease.Active {
+		t.Fatalf("shared-audio failure lost the share lease: %#v", application.gamecastShareLease)
+	}
+}
+
+type scriptedShareAudioResolver struct {
+	targets []shareaudio.Target
+	errs    []error
+	inputs  []shareaudio.WindowTarget
+}
+
+func (r *scriptedShareAudioResolver) ResolveWindow(input shareaudio.WindowTarget) (shareaudio.Target, error) {
+	r.inputs = append(r.inputs, input)
+	index := len(r.inputs) - 1
+	if index < len(r.errs) && r.errs[index] != nil {
+		return shareaudio.Target{}, r.errs[index]
+	}
+	if index >= len(r.targets) {
+		return shareaudio.Target{}, shareaudio.ErrSnapshotUnavailable
+	}
+	return r.targets[index], nil
+}
+
+func stableWindowAudioTarget(pid uint32, identity string) audioCaptureTarget {
+	return audioCaptureTarget{
+		PID:                 pid,
+		Name:                "player.exe",
+		Mode:                windowsaudio.CaptureIncludeProcessTree,
+		ApplicationIdentity: identity,
+		IdentityStable:      true,
+		Reason:              shareaudio.ReasonWindowProcess,
 	}
 }
 

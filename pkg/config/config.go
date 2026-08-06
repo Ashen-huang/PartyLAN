@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 )
 
+const defaultGameCastBaseURL = "https://partylanapp.com"
+
 type Config struct {
 	DisplayName         string          `json:"displayName"`
 	TailscaleAuthKey    string          `json:"tailscaleAuthKey,omitempty"`
@@ -44,7 +46,7 @@ func DefaultConfig() *Config {
 		AudioShareSources: []string{},
 		AutoJoin:          false,
 		GameCast: GameCastProfile{
-			BaseURL: "https://113.142.217.42:5050",
+			BaseURL: defaultGameCastBaseURL,
 		},
 	}
 }
@@ -108,5 +110,27 @@ func Save(cfg *Config) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0644)
+	temporary, err := os.CreateTemp(dir, ".config.json-*.tmp")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+
+	if err := temporary.Chmod(0644); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(data); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporaryPath, path)
 }

@@ -251,3 +251,26 @@ powershell -ExecutionPolicy Bypass -File scripts\Package-PartyLAN.ps1 -Mode game
 - 新客户端默认原始 `60 FPS`、动态降档/恢复、窗口应用树音频和全屏语音排除均有对应
   自动化或实机证据。
 - `v0.5.6` 与 `v0.5.5` 回滚包并存，并分别记录大小和 SHA256。
+
+## 执行记录（2026-08-06）
+
+- Task 1 至 Task 8 已完成。客户端默认值已改为“原始画质 + 60 FPS”，窗口共享音频
+  使用重新校验的安全应用进程树，初始失败与运行期致命失败均仅允许一次同应用重绑定；
+  全屏共享继续排除 PartyLAN 进程树，未引入 `CaptureSystemMix` 回退。
+- 前端 36 项 Node 测试、TypeScript/Vite 生产构建、目标 Go 测试、全仓普通 Go 测试、
+  `partylan_native_media` 全仓测试及目标竞态测试均通过。正式 EXE 包含
+  `desktop,partylan_native_media,wv2runtime.download,production` 标签且
+  `CGO_ENABLED=1`。
+- 广州网页端首页及 9 个静态资源返回 200，控制台无错误；现有会话可进入临时房间，
+  Presence、房间状态以及共享租约 claim、heartbeat、release 和离房请求均返回 200。
+  自动化 Chrome 未能完成原生屏幕选择，因此网页真实共享、停止及另一观看端收流未形成
+  完整证据，不以租约接口冒烟替代该项验收。
+- `release/PartyLAN-v0.5.6-win64.zip` 为 8,647,163 字节，SHA256 为
+  `37A4566F17BCA7F002864B7FCBA9CF249BF2CD7B32D154DAFAAD225FFA406E56`；
+  包内 10 个文件均在生产白名单中，内部 7 项哈希、版本、原生标签、解压启动与进程
+  清理审计通过。`v0.5.5` 回滚包保持 8,823,413 字节，SHA256 为
+  `E163490259A374D566431DCB93D2823FE13868B82E0CE5727FA56A7C0CC15E8A`。
+- Task 9 保留为未完成：当前没有三个独立 Windows 音频环境和可控弱网设备，尚未取得
+  数字音频标记、PartyLAN 语音不泄漏以及真实弱网降档/恢复的实机证据。
+- 本次仅形成客户端本地实施提交；`server/`、网页部署资源、Nginx、SFU、路由和服务
+  配置无差异，未部署、未重启广州节点、未推送、未创建 PR。
