@@ -48,6 +48,14 @@ service's systemd unit (or its environment file), not on the Screego container.
 Use the safe aggregate video egress budget in Kbps; leave it unset or `0` to
 disable proactive per-viewer budget division.
 
+Unified screen SFU rollout is controlled by the Registration Control service,
+not the Screego container. `GAMECAST_UNIFIED_SFU_ENABLED` defaults to disabled,
+`GAMECAST_UNIFIED_SFU_CANARY_ROOMS` is a comma-separated room allowlist, and
+`GAMECAST_LEGACY_P2P_ALLOWED` defaults to enabled. Deploy the compatible control
+fields first with those defaults. Enable only named test rooms before a global
+switch, and disable new legacy P2P claims only after active legacy shares have
+drained. A room's media mode must not change during an active share.
+
 Every production compose command, including rollback, must load the runtime
 environment explicitly:
 

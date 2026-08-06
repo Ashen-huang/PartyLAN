@@ -26,6 +26,17 @@ LISTEN_PORT = 5052
 ROOM_STATE_TTL = 15
 VOICE_TOKEN_TTL = 15
 GAMECAST_VOICE_SECRET = os.environ.get('GAMECAST_VOICE_SECRET', '').strip()
+GAMECAST_UNIFIED_SFU_ENABLED = os.environ.get(
+    'GAMECAST_UNIFIED_SFU_ENABLED', ''
+).strip().lower() in ('1', 'true', 'yes', 'on')
+GAMECAST_UNIFIED_SFU_CANARY_ROOMS = set(
+    room.strip().lower()
+    for room in os.environ.get('GAMECAST_UNIFIED_SFU_CANARY_ROOMS', '').split(',')
+    if room.strip()
+)
+GAMECAST_LEGACY_P2P_ALLOWED = os.environ.get(
+    'GAMECAST_LEGACY_P2P_ALLOWED', 'true'
+).strip().lower() not in ('0', 'false', 'no', 'off')
 MAX_POST_BODY = 256 * 1024
 USERNAME_RE = re.compile(r'^[a-zA-Z0-9_\-]{2,20}$')
 BACKEND_CONFIG_URL = 'http://127.0.0.1:5060/config'
@@ -71,7 +82,12 @@ STATS_NUMBER_FIELDS = set([
 ])
 STATS_BOOL_FIELDS = set(['valid', 'visible'])
 
-control_plane = ControlPlane(ttl=ROOM_STATE_TTL)
+control_plane = ControlPlane(
+    ttl=ROOM_STATE_TTL,
+    unified_sfu_enabled=GAMECAST_UNIFIED_SFU_ENABLED,
+    canary_rooms=GAMECAST_UNIFIED_SFU_CANARY_ROOMS,
+    legacy_p2p_allowed=GAMECAST_LEGACY_P2P_ALLOWED,
+)
 
 os.makedirs(HISTORY_DIR, exist_ok=True)
 os.makedirs(STATS_DIR, exist_ok=True)
@@ -578,7 +594,10 @@ def normalize_sfu_room_state(item):
         'room': room_id,
         'active': True,
         'sharing': bool(sharing),
-        'sfu': True,
+        'mediaMode': 'sfu',
+        'mediaProtocolVersion': 1,
+        'sharePhase': 'live' if sharing and host_connected else 'idle',
+        'sfu': bool(sharing and host_connected),
         'audioMode': normalize_room_audio_mode(item.get('audioMode')),
         'user': user or None,
         'ttl': ROOM_STATE_TTL,
@@ -616,8 +635,18 @@ def merge_room_state(base, live):
         return live
     merged = dict(base)
     merged['active'] = bool(base.get('active')) or bool(live.get('active'))
-    merged['sharing'] = bool(base.get('sharing')) or bool(live.get('sharing'))
-    merged['sfu'] = bool(base.get('sfu')) or bool(live.get('sfu'))
+    authoritative_lease = bool(base.get('shareOwnerParticipantId')) and base.get(
+        'sharePhase'
+    ) in ('starting', 'live', 'stopping')
+    if not authoritative_lease:
+        merged['sharing'] = bool(base.get('sharing')) or bool(live.get('sharing'))
+        merged['sfu'] = bool(base.get('sfu')) or bool(live.get('sfu'))
+        if live.get('sharing') and live.get('sharePhase') == 'live':
+            merged['sharePhase'] = 'live'
+            if not merged.get('mediaMode'):
+                merged['mediaMode'] = 'sfu'
+            if not merged.get('mediaProtocolVersion'):
+                merged['mediaProtocolVersion'] = 1
     if not merged.get('audioMode') and live.get('audioMode'):
         merged['audioMode'] = live.get('audioMode')
     if not merged.get('user') and live.get('user'):

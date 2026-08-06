@@ -158,6 +158,119 @@ class RegisterControlAPITest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertFalse(released["room"]["sharing"])
 
+    def test_unified_api_exposes_phase_and_capability_contract(self):
+        register.control_plane = ControlPlane(
+            lease_id_factory=lambda: "unified-api-lease",
+            unified_sfu_enabled=True,
+        )
+        capabilities = {
+            "sfuViewer": True,
+            "sfuHost": True,
+            "h264": True,
+            "opus": True,
+        }
+        status, joined = self.request(
+            "POST",
+            "/api/presence/join",
+            {
+                "room": "unified-api-room",
+                "participantId": "web-api",
+                "clientType": "web",
+                "origin": "web",
+                "role": "owner",
+                "name": "Browser",
+                "mediaProtocolVersion": 1,
+                "capabilities": capabilities,
+            },
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(joined["participant"]["mediaProtocolVersion"], 1)
+        self.assertEqual(joined["participant"]["capabilities"], capabilities)
+        self.assertEqual(joined["room"]["mediaMode"], "sfu")
+
+        status, claimed = self.request(
+            "POST",
+            "/api/share/claim",
+            {
+                "room": "unified-api-room",
+                "participantId": "web-api",
+                "mediaMode": "sfu",
+                "phase": "starting",
+            },
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(claimed["lease"]["phase"], "starting")
+        self.assertFalse(claimed["room"]["sfu"])
+
+        status, live = self.request(
+            "POST",
+            "/api/share/heartbeat",
+            {
+                "room": "unified-api-room",
+                "participantId": "web-api",
+                "leaseId": "unified-api-lease",
+                "phase": "live",
+            },
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(live["lease"]["phase"], "live")
+        self.assertTrue(live["room"]["sfu"])
+
+    def test_sfu_session_snapshot_cannot_promote_a_starting_lease(self):
+        register.control_plane = ControlPlane(
+            lease_id_factory=lambda: "starting-api-lease",
+            unified_sfu_enabled=True,
+        )
+        status, _ = self.request(
+            "POST",
+            "/api/presence/join",
+            {
+                "room": "starting-api-room",
+                "participantId": "client-api",
+                "clientType": "client",
+                "origin": "client",
+                "role": "owner",
+                "name": "Desktop",
+                "mediaProtocolVersion": 1,
+                "capabilities": {
+                    "sfuViewer": True,
+                    "sfuHost": True,
+                    "h264": True,
+                    "opus": True,
+                },
+            },
+        )
+        self.assertEqual(status, 200)
+        status, _ = self.request(
+            "POST",
+            "/api/share/claim",
+            {
+                "room": "starting-api-room",
+                "participantId": "client-api",
+                "mediaMode": "sfu",
+                "phase": "starting",
+            },
+        )
+        self.assertEqual(status, 200)
+        register.fetch_sfu_room_states = lambda: [
+            {
+                "room": "starting-api-room",
+                "active": True,
+                "sharing": True,
+                "sfu": True,
+                "hostConnected": True,
+                "trackCount": 1,
+            }
+        ]
+
+        status, response = self.request(
+            "GET", "/api/room-state?room=starting-api-room"
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(response["state"]["sharePhase"], "starting")
+        self.assertTrue(response["state"]["sharing"])
+        self.assertFalse(response["state"]["sfu"])
+
     def test_voice_token_requires_authenticated_client_presence(self):
         status, _ = self.request(
             "POST",

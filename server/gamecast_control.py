@@ -12,6 +12,15 @@ VALID_ORIGINS = {"web", "client"}
 VALID_CLIENT_TYPES = {"web", "client"}
 VALID_ROLES = {"owner", "member"}
 VALID_AUDIO_MODES = {"app", "exclude-process", "off", "system", "process"}
+VALID_MEDIA_MODES = {"sfu", "legacy-p2p"}
+VALID_SHARE_PHASES = {"starting", "live", "stopping"}
+MEDIA_PROTOCOL_VERSION = 1
+MEDIA_CAPABILITY_KEYS = ("sfuViewer", "sfuHost", "h264", "opus")
+SHARE_PHASE_TRANSITIONS = {
+    "starting": {"starting", "live"},
+    "live": {"live", "stopping"},
+    "stopping": {"stopping"},
+}
 
 
 class ControlError(Exception):
@@ -111,10 +120,25 @@ def verify_voice_token(secret, token, now=None, audience=VOICE_TOKEN_AUDIENCE):
 
 
 class ControlPlane:
-    def __init__(self, ttl=15, clock=None, lease_id_factory=None):
+    def __init__(
+        self,
+        ttl=15,
+        clock=None,
+        lease_id_factory=None,
+        unified_sfu_enabled=False,
+        canary_rooms=None,
+        legacy_p2p_allowed=True,
+    ):
         self.ttl = self._clamp_ttl(ttl)
         self._clock = clock or time.time
         self._lease_id_factory = lease_id_factory or (lambda: uuid.uuid4().hex)
+        self._unified_sfu_enabled = bool(unified_sfu_enabled)
+        self._canary_rooms = {
+            self._clean_text(room_id, 120).lower()
+            for room_id in (canary_rooms or set())
+            if self._clean_text(room_id, 120)
+        }
+        self._legacy_p2p_allowed = bool(legacy_p2p_allowed)
         self._lock = threading.RLock()
         self._rooms = {}
         self._presence = {}
@@ -135,6 +159,10 @@ class ControlPlane:
             data.get("origin"), VALID_ORIGINS, "room_origin_conflict"
         )
         name = self._clean_text(data.get("name") or auth_user or "member", 80)
+        media_protocol_version = self._media_protocol_version(
+            data.get("mediaProtocolVersion")
+        )
+        capabilities = self._media_capabilities(data.get("capabilities"))
         ttl = self._clamp_ttl(data.get("ttl"))
         now = self._clock()
 
@@ -175,6 +203,8 @@ class ControlPlane:
                 "client_type": client_type,
                 "role": requested_role,
                 "auth_user": auth_user,
+                "media_protocol_version": media_protocol_version,
+                "capabilities": capabilities,
                 "ttl": ttl,
                 "updated_at": now,
             }
@@ -279,24 +309,50 @@ class ControlPlane:
         with self._lock:
             self._prune_locked(now)
             participant = self._get_participant_locked(room_id, participant_id, auth_user)
+            room = self._rooms.get(room_id)
+            if not room:
+                raise ControlError("room_not_found", 404)
             current = self._leases.get(room_id)
             if current:
                 if current.get("participant_id") != participant_id:
                     raise ControlError("share_locked", 409)
                 return self._build_lease(room_id, current, now)
+            media_mode = self._optional_choice(
+                data.get("mediaMode"), VALID_MEDIA_MODES, "media_protocol_unsupported"
+            ) or room.get("media_mode") or "legacy-p2p"
+            if media_mode != room.get("media_mode"):
+                raise ControlError("media_protocol_unsupported", 409)
+            if media_mode == "legacy-p2p" and not self._legacy_p2p_allowed:
+                raise ControlError("media_protocol_unsupported", 409)
+            if media_mode == "sfu" and not self._participant_supports_unified_sfu(participant):
+                raise ControlError("media_protocol_unsupported", 409)
+
+            requested_phase = self._optional_choice(
+                data.get("phase"), VALID_SHARE_PHASES, "share_phase_invalid"
+            )
+            if requested_phase and requested_phase != "starting":
+                raise ControlError("share_phase_invalid", 409)
+            if requested_phase:
+                phase = requested_phase
+            elif media_mode == "sfu" and participant.get("media_protocol_version") == MEDIA_PROTOCOL_VERSION:
+                phase = "starting"
+            else:
+                phase = "live"
+
             ttl = self._clamp_ttl(data.get("ttl"))
             lease = {
                 "lease_id": self._lease_id_factory(),
                 "participant_id": participant_id,
                 "client_type": participant["client_type"],
                 "name": participant["name"],
-                "sfu": bool(data.get("sfu", True)),
+                "media_mode": media_mode,
+                "phase": phase,
+                "legacy_sfu": bool(data.get("sfu", True)),
                 "audio_mode": self._audio_mode(data.get("audioMode")),
                 "ttl": ttl,
                 "updated_at": now,
             }
             self._leases[room_id] = lease
-            room = self._rooms.get(room_id)
             if room:
                 room["legacy_sharing"] = False
                 room["legacy_sfu"] = False
@@ -314,10 +370,23 @@ class ControlPlane:
             self._get_participant_locked(room_id, participant_id, auth_user)
             lease = self._leases.get(room_id)
             self._validate_lease_locked(lease, participant_id, lease_id)
+            requested_media_mode = self._optional_choice(
+                data.get("mediaMode"), VALID_MEDIA_MODES, "media_protocol_unsupported"
+            )
+            if requested_media_mode and requested_media_mode != lease.get("media_mode"):
+                raise ControlError("media_protocol_unsupported", 409)
+            requested_phase = self._optional_choice(
+                data.get("phase"), VALID_SHARE_PHASES, "share_phase_invalid"
+            )
+            if requested_phase:
+                current_phase = lease.get("phase") or "live"
+                if requested_phase not in SHARE_PHASE_TRANSITIONS.get(current_phase, set()):
+                    raise ControlError("share_phase_invalid", 409)
+                lease["phase"] = requested_phase
             lease["updated_at"] = now
             lease["ttl"] = self._clamp_ttl(data.get("ttl") or lease["ttl"])
-            if "sfu" in data:
-                lease["sfu"] = bool(data.get("sfu"))
+            if "sfu" in data and lease.get("media_mode") == "legacy-p2p":
+                lease["legacy_sfu"] = bool(data.get("sfu"))
             if "audioMode" in data:
                 lease["audio_mode"] = self._audio_mode(data.get("audioMode"))
             room = self._rooms.get(room_id)
@@ -433,6 +502,7 @@ class ControlPlane:
     def _build_room_locked(self, room_id, now):
         room = self._rooms.get(room_id)
         if not room:
+            media_mode = self._media_mode_for_room(room_id)
             return {
                 "room": room_id,
                 "active": False,
@@ -441,6 +511,9 @@ class ControlPlane:
                 "ownerName": "",
                 "user": None,
                 "sharing": False,
+                "mediaMode": media_mode,
+                "mediaProtocolVersion": MEDIA_PROTOCOL_VERSION if media_mode == "sfu" else 0,
+                "sharePhase": "idle",
                 "shareOwnerParticipantId": "",
                 "shareOwnerName": "",
                 "shareOrigin": "",
@@ -452,7 +525,8 @@ class ControlPlane:
             }
         lease = self._leases.get(room_id)
         sharing = bool(lease) or bool(room.get("legacy_sharing"))
-        sfu = bool(lease.get("sfu")) if lease else bool(room.get("legacy_sfu"))
+        share_phase = lease.get("phase") if lease else ("live" if sharing else "idle")
+        sfu = self._lease_sfu(lease) if lease else bool(room.get("legacy_sfu"))
         audio_mode = lease.get("audio_mode") if lease else room.get("legacy_audio_mode")
         participants = self._presence.get(room_id) or {}
         return {
@@ -463,6 +537,9 @@ class ControlPlane:
             "ownerName": room.get("owner_name") or "",
             "user": room.get("owner_name") or None,
             "sharing": sharing,
+            "mediaMode": room.get("media_mode") or "legacy-p2p",
+            "mediaProtocolVersion": room.get("media_protocol_version", 0),
+            "sharePhase": share_phase or "idle",
             "shareOwnerParticipantId": lease.get("participant_id") if lease else "",
             "shareOwnerName": lease.get("name") if lease else "",
             "shareOrigin": lease.get("client_type") if lease else "",
@@ -484,12 +561,14 @@ class ControlPlane:
             "role": participant["role"],
             "active": True,
             "sharing": bool(lease and lease.get("participant_id") == participant["participant_id"]),
+            "mediaProtocolVersion": participant.get("media_protocol_version", 0),
+            "capabilities": dict(participant.get("capabilities") or {}),
             "ttl": participant["ttl"],
             "ageSeconds": max(0.0, now - participant["updated_at"]),
         }
 
-    @staticmethod
-    def _build_lease(room_id, lease, now):
+    @classmethod
+    def _build_lease(cls, room_id, lease, now):
         return {
             "room": room_id,
             "leaseId": lease["lease_id"],
@@ -497,7 +576,9 @@ class ControlPlane:
             "clientType": lease["client_type"],
             "name": lease["name"],
             "active": True,
-            "sfu": bool(lease.get("sfu")),
+            "mediaMode": lease.get("media_mode") or "legacy-p2p",
+            "phase": lease.get("phase") or "live",
+            "sfu": cls._lease_sfu(lease),
             "audioMode": lease.get("audio_mode") or "off",
             "ttl": lease["ttl"],
             "expiresAtUnix": lease["updated_at"] + lease["ttl"],
@@ -513,7 +594,11 @@ class ControlPlane:
                 self._presence.pop(room_id, None)
 
         for room_id, lease in list(self._leases.items()):
-            if now - lease.get("updated_at", 0) > lease.get("ttl", self.ttl):
+            owner_present = lease.get("participant_id") in (self._presence.get(room_id) or {})
+            if (
+                not owner_present
+                or now - lease.get("updated_at", 0) > lease.get("ttl", self.ttl)
+            ):
                 self._leases.pop(room_id, None)
 
         for room_id, room in list(self._rooms.items()):
@@ -523,8 +608,8 @@ class ControlPlane:
             if not room.get("active") or (expired and not has_presence and not has_lease):
                 self._rooms.pop(room_id, None)
 
-    @staticmethod
-    def _new_room(room_id, origin, owner_participant_id, owner_name, ttl, now):
+    def _new_room(self, room_id, origin, owner_participant_id, owner_name, ttl, now):
+        media_mode = self._media_mode_for_room(room_id)
         return {
             "room": room_id,
             "active": True,
@@ -536,6 +621,8 @@ class ControlPlane:
             "legacy_sharing": False,
             "legacy_sfu": False,
             "legacy_audio_mode": "off",
+            "media_mode": media_mode,
+            "media_protocol_version": MEDIA_PROTOCOL_VERSION if media_mode == "sfu" else 0,
             "ttl": ttl,
             "updated_at": now,
         }
@@ -582,3 +669,44 @@ class ControlPlane:
     def _audio_mode(self, value):
         normalized = self._clean_text(value, 32).lower()
         return normalized if normalized in VALID_AUDIO_MODES else "off"
+
+    def _media_mode_for_room(self, room_id):
+        normalized = self._clean_text(room_id, 120).lower()
+        if self._unified_sfu_enabled or normalized in self._canary_rooms:
+            return "sfu"
+        return "legacy-p2p"
+
+    @staticmethod
+    def _media_protocol_version(value):
+        if value in (None, ""):
+            return 0
+        try:
+            version = int(value)
+        except (TypeError, ValueError):
+            raise ControlError("media_protocol_unsupported", 400)
+        if version < 0 or version > MEDIA_PROTOCOL_VERSION:
+            raise ControlError("media_protocol_unsupported", 400)
+        return version
+
+    @staticmethod
+    def _media_capabilities(value):
+        source = value if isinstance(value, dict) else {}
+        return {key: source.get(key) is True for key in MEDIA_CAPABILITY_KEYS}
+
+    @staticmethod
+    def _participant_supports_unified_sfu(participant):
+        capabilities = participant.get("capabilities") or {}
+        return (
+            participant.get("media_protocol_version") == MEDIA_PROTOCOL_VERSION
+            and capabilities.get("sfuHost")
+            and capabilities.get("h264")
+            and capabilities.get("opus")
+        )
+
+    @staticmethod
+    def _lease_sfu(lease):
+        if not lease:
+            return False
+        if lease.get("media_mode") == "sfu":
+            return lease.get("phase") == "live"
+        return bool(lease.get("legacy_sfu"))

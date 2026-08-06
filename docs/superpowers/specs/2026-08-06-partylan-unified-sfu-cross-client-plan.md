@@ -55,7 +55,9 @@
 先运行：
 
 ```powershell
-python -m unittest server.test_gamecast_control server.test_register_control_api
+Push-Location server
+python -m unittest test_gamecast_control test_register_control_api
+Pop-Location
 ```
 
 确认新增断言因当前缺少字段、状态机和开关而失败。

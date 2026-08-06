@@ -265,6 +265,255 @@ class ControlPlaneTest(unittest.TestCase):
                 )
             self.assertEqual(caught.exception.code, code)
 
+    def test_unified_presence_exposes_protocol_capabilities_and_room_mode(self):
+        control = ControlPlane(
+            ttl=15,
+            clock=self.clock,
+            unified_sfu_enabled=True,
+        )
+        capabilities = {
+            "sfuViewer": True,
+            "sfuHost": True,
+            "h264": True,
+            "opus": True,
+        }
+        participant = control.join_presence(
+            {
+                "room": "unified-room",
+                "participantId": "web-1",
+                "clientType": "web",
+                "origin": "web",
+                "role": "owner",
+                "name": "Browser",
+                "mediaProtocolVersion": 1,
+                "capabilities": capabilities,
+            },
+            "browser-user",
+        )
+        self.assertEqual(participant["mediaProtocolVersion"], 1)
+        self.assertEqual(participant["capabilities"], capabilities)
+        room = control.get_room("unified-room")
+        self.assertEqual(room["mediaMode"], "sfu")
+        self.assertEqual(room["mediaProtocolVersion"], 1)
+        self.assertEqual(room["sharePhase"], "idle")
+
+    def test_unified_share_phase_is_lease_driven_and_sfu_only_when_live(self):
+        control = ControlPlane(
+            ttl=15,
+            clock=self.clock,
+            lease_id_factory=lambda: "unified-lease",
+            unified_sfu_enabled=True,
+        )
+        for participant_id, client_type, user in (
+            ("client-1", "client", "client-user"),
+            ("web-1", "web", "web-user"),
+        ):
+            control.join_presence(
+                {
+                    "room": "unified-room",
+                    "participantId": participant_id,
+                    "clientType": client_type,
+                    "role": "owner" if participant_id == "client-1" else "member",
+                    "name": participant_id,
+                    "mediaProtocolVersion": 1,
+                    "capabilities": {
+                        "sfuViewer": True,
+                        "sfuHost": True,
+                        "h264": True,
+                        "opus": True,
+                    },
+                    **({"origin": "client"} if participant_id == "client-1" else {}),
+                },
+                user,
+            )
+
+        lease = control.claim_share(
+            {
+                "room": "unified-room",
+                "participantId": "client-1",
+                "mediaMode": "sfu",
+                "phase": "starting",
+                "audioMode": "system",
+            },
+            "client-user",
+        )
+        self.assertEqual(lease["phase"], "starting")
+        self.assertTrue(control.get_room("unified-room")["sharing"])
+        self.assertFalse(control.get_room("unified-room")["sfu"])
+
+        with self.assertRaises(ControlError) as caught:
+            control.heartbeat_share(
+                {
+                    "room": "unified-room",
+                    "participantId": "client-1",
+                    "leaseId": "unified-lease",
+                    "phase": "stopping",
+                },
+                "client-user",
+            )
+        self.assertEqual(caught.exception.code, "share_phase_invalid")
+
+        live = control.heartbeat_share(
+            {
+                "room": "unified-room",
+                "participantId": "client-1",
+                "leaseId": "unified-lease",
+                "phase": "live",
+            },
+            "client-user",
+        )
+        self.assertEqual(live["phase"], "live")
+        self.assertTrue(control.get_room("unified-room")["sfu"])
+
+        stopping = control.heartbeat_share(
+            {
+                "room": "unified-room",
+                "participantId": "client-1",
+                "leaseId": "unified-lease",
+                "phase": "stopping",
+            },
+            "client-user",
+        )
+        self.assertEqual(stopping["phase"], "stopping")
+        self.assertTrue(control.get_room("unified-room")["sharing"])
+        self.assertFalse(control.get_room("unified-room")["sfu"])
+
+        with self.assertRaises(ControlError) as caught:
+            control.heartbeat_share(
+                {
+                    "room": "unified-room",
+                    "participantId": "client-1",
+                    "leaseId": "unified-lease",
+                    "phase": "live",
+                },
+                "client-user",
+            )
+        self.assertEqual(caught.exception.code, "share_phase_invalid")
+
+        with self.assertRaises(ControlError) as caught:
+            control.claim_share(
+                {
+                    "room": "unified-room",
+                    "participantId": "web-1",
+                    "mediaMode": "sfu",
+                    "phase": "starting",
+                },
+                "web-user",
+            )
+        self.assertEqual(caught.exception.code, "share_locked")
+
+    def test_starting_lease_cannot_be_promoted_by_sfu_session_snapshot(self):
+        control = ControlPlane(
+            ttl=15,
+            clock=self.clock,
+            lease_id_factory=lambda: "unified-lease",
+            unified_sfu_enabled=True,
+        )
+        control.join_presence(
+            {
+                "room": "unified-room",
+                "participantId": "client-1",
+                "clientType": "client",
+                "origin": "client",
+                "role": "owner",
+                "name": "Desktop",
+                "mediaProtocolVersion": 1,
+                "capabilities": {"sfuViewer": True, "sfuHost": True, "h264": True, "opus": True},
+            },
+            "client-user",
+        )
+        control.claim_share(
+            {
+                "room": "unified-room",
+                "participantId": "client-1",
+                "mediaMode": "sfu",
+                "phase": "starting",
+            },
+            "client-user",
+        )
+        room = control.set_legacy_room_state(
+            {
+                "room": "unified-room",
+                "active": True,
+                "sharing": True,
+                "sfu": True,
+                "origin": "client",
+            },
+            "client-user",
+            "legacy-session",
+        )
+        self.assertEqual(room["sharePhase"], "starting")
+        self.assertFalse(room["sfu"])
+
+    def test_rollout_flags_choose_canary_mode_and_gate_legacy_claims(self):
+        control = ControlPlane(
+            ttl=15,
+            clock=self.clock,
+            canary_rooms={"canary-room"},
+            legacy_p2p_allowed=False,
+        )
+        for room_id in ("plain-room", "canary-room"):
+            control.join_presence(
+                {
+                    "room": room_id,
+                    "participantId": "client-" + room_id,
+                    "clientType": "client",
+                    "origin": "client",
+                    "role": "owner",
+                    "name": room_id,
+                },
+                room_id,
+            )
+        self.assertEqual(control.get_room("plain-room")["mediaMode"], "legacy-p2p")
+        self.assertEqual(control.get_room("canary-room")["mediaMode"], "sfu")
+        with self.assertRaises(ControlError) as caught:
+            control.claim_share(
+                {
+                    "room": "plain-room",
+                    "participantId": "client-plain-room",
+                    "mediaMode": "legacy-p2p",
+                },
+                "plain-room",
+            )
+        self.assertEqual(caught.exception.code, "media_protocol_unsupported")
+
+    def test_unified_capabilities_require_json_booleans(self):
+        control = ControlPlane(
+            ttl=15,
+            clock=self.clock,
+            unified_sfu_enabled=True,
+        )
+        participant = control.join_presence(
+            {
+                "room": "typed-capabilities",
+                "participantId": "web-typed",
+                "clientType": "web",
+                "origin": "web",
+                "role": "owner",
+                "name": "Browser",
+                "mediaProtocolVersion": 1,
+                "capabilities": {
+                    "sfuViewer": True,
+                    "sfuHost": True,
+                    "h264": "true",
+                    "opus": True,
+                },
+            },
+            "web-user",
+        )
+        self.assertFalse(participant["capabilities"]["h264"])
+        with self.assertRaises(ControlError) as caught:
+            control.claim_share(
+                {
+                    "room": "typed-capabilities",
+                    "participantId": "web-typed",
+                    "mediaMode": "sfu",
+                    "phase": "starting",
+                },
+                "web-user",
+            )
+        self.assertEqual(caught.exception.code, "media_protocol_unsupported")
+
 
 if __name__ == "__main__":
     unittest.main()
