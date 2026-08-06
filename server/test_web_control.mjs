@@ -7,8 +7,11 @@ const {
   decidePresenceJoin,
   mergePresence,
   canStartShare,
+  isUnifiedSfuRoom,
   desiredSfuRole,
   runShareStart,
+  runShareStop,
+  webMediaContract,
   canSendProtectedControl,
   shouldPostRoomState,
 } = require('./web_control.js');
@@ -36,9 +39,26 @@ test('another active lease blocks sharing while the current owner remains recogn
 });
 
 test('cross-client room state selects the existing SFU role', () => {
-  assert.equal(desiredSfuRole({ active: true, sharing: true, sfu: true, shareOwnerParticipantId: 'desktop' }, 'web', false), 'viewer');
-  assert.equal(desiredSfuRole({ active: true, sharing: true, sfu: true, shareOwnerParticipantId: 'web' }, 'web', true), 'host');
+  const live = { active: true, mediaMode: 'sfu', mediaProtocolVersion: 1, sharing: true, sharePhase: 'live', sfu: true };
+  assert.equal(desiredSfuRole({ ...live, shareOwnerParticipantId: 'desktop' }, 'web', false), 'viewer');
+  assert.equal(desiredSfuRole({ ...live, shareOwnerParticipantId: 'web' }, 'web', true), 'host');
   assert.equal(desiredSfuRole({ active: true, sharing: false, sfu: false }, 'web', false), '');
+  assert.equal(desiredSfuRole({ ...live, sharePhase: 'starting', sfu: false }, 'web', false), '');
+  assert.equal(desiredSfuRole({ ...live, sharePhase: 'stopping', sfu: false }, 'web', false), '');
+});
+
+test('unified web mode depends on the explicit room contract, not origin', () => {
+  assert.equal(isUnifiedSfuRoom({ active: true, origin: 'web', mediaMode: 'sfu', mediaProtocolVersion: 1 }), true);
+  assert.equal(isUnifiedSfuRoom({ active: true, origin: 'client', mediaMode: 'sfu', mediaProtocolVersion: 1 }), true);
+  assert.equal(isUnifiedSfuRoom({ active: true, origin: 'client', mediaMode: 'legacy-p2p', mediaProtocolVersion: 1 }), false);
+  assert.equal(isUnifiedSfuRoom({ active: true, origin: 'client', mediaMode: 'sfu', mediaProtocolVersion: 0 }), false);
+});
+
+test('web presence advertises the complete H264 and Opus SFU contract', () => {
+  assert.deepEqual(webMediaContract(), {
+    mediaProtocolVersion: 1,
+    capabilities: { sfuViewer: true, sfuHost: true, h264: true, opus: true },
+  });
 });
 
 test('share workflow claims before capture and releases when capture is cancelled', async () => {
@@ -79,6 +99,26 @@ test('share workflow never captures when claim fails and releases on publish fai
     /publish failed/,
   );
   assert.deepEqual(calls, ['capture', 'publish', 'release']);
+});
+
+test('unified share workflow marks live only after publishing and stops in phase order', async () => {
+  const startCalls = [];
+  await runShareStart({
+    claim: async () => { startCalls.push('claim'); return { leaseId: 'lease-live' }; },
+    capture: async () => { startCalls.push('capture'); return { id: 'stream' }; },
+    publish: async () => { startCalls.push('publish'); return { ready: true }; },
+    markLive: async () => { startCalls.push('live'); },
+    release: async () => { startCalls.push('release'); },
+  });
+  assert.deepEqual(startCalls, ['claim', 'capture', 'publish', 'live']);
+
+  const stopCalls = [];
+  await runShareStop({
+    markStopping: async () => { stopCalls.push('stopping'); },
+    closeMedia: async () => { stopCalls.push('close'); },
+    release: async () => { stopCalls.push('release'); },
+  });
+  assert.deepEqual(stopCalls, ['stopping', 'close', 'release']);
 });
 
 test('protected control writes require an authenticated non-guest user', () => {

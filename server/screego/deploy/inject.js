@@ -9,19 +9,19 @@
   var ROOM_STATE_URL = '/api/room-state';
   var PRESENCE_URL = '/api/presence';
   var SHARE_URL = '/api/share';
-  var VIEWER_INTENT_URL = '/api/viewer-intent';
   var PRESENT_TO_ALL_ICON_PATH = 'M21 3H3c-1.11 0-2 .89-2 2v14c0 1.11.89 2 2 2h18c1.11 0 2-.89 2-2V5c0-1.11-.89-2-2-2m0 16.02H3V4.98h18zM10 12H8l4-4 4 4h-2v4h-4z';
   var ROOM_STATE_TTL = 15;
   var ROOM_STATE_HEARTBEAT_MS = 5000;
+  var PRESENCE_REFRESH_MS = 3000;
+  var SFU_SHARE_START_TIMEOUT_MS = 15000;
   var RECOVERY_STABLE_MS = 20000;
   var RECOVERY_BITRATE_STEPS = [6000000, 8000000];
-  var AUTO_SFU_MIN_PARTICIPANTS = 3;
   var NativeWebSocket = window.WebSocket;
+  var NativeRTCPeerConnection = window.RTCPeerConnection;
+  if (!window.__PARTYLAN_NATIVE_RTC_PEER_CONNECTION__ && NativeRTCPeerConnection) {
+    window.__PARTYLAN_NATIVE_RTC_PEER_CONNECTION__ = NativeRTCPeerConnection;
+  }
   var currentUser = null;
-  var sfuMode = false;
-  var autoSfuActive = false;
-  var nativeViewerIntentActive = false;
-  var autoSfuSuppressedForCurrentShare = false;
   var adaptiveStreamingMonitorTimer = 0;
   var adaptiveServerBudgetPeerCount = 0;
   var sfuConnection = null;
@@ -54,10 +54,13 @@
   var webPresenceRole = '';
   var webPresenceName = '';
   var webPresenceTimer = 0;
+  var webPresenceRefreshTimer = 0;
   var webPresenceMembers = [];
   var webShareLease = null;
   var webShareHeartbeatTimer = 0;
   var webShareSafetyTimer = 0;
+  var webShareStopPromise = null;
+  var webShareAbortPromise = null;
   var webAudioCaptureNoticeTimer = 0;
   var activeCaptureAudioMode = 'off';
 
@@ -145,7 +148,6 @@
   }
   function extCfg() {
     var s = loadCfg();
-    sfuMode = s.sfuMode || false;
     return {
       res: normalizeResolutionKey(s.resolution || '1280x720'),
       fps: normalizeFramerateValue(s.framerate || 35),
@@ -162,6 +164,42 @@
   function currentRoomId() {
     var match = location.search.match(/[?&]room=([^&]+)/);
     return match ? decodeURIComponent(match[1]) : '';
+  }
+
+  function isUnifiedSfuRoom(state) {
+    return !!(
+      state &&
+      state.active &&
+      state.mediaMode === 'sfu' &&
+      Number(state.mediaProtocolVersion) === 1
+    );
+  }
+
+  function applyRoomMediaMode(state) {
+    var stateRoom = String(state && state.room || '').trim();
+    var roomId = currentRoomId();
+    var unified = !!roomId && sameRoomId(stateRoom, roomId) && isUnifiedSfuRoom(state);
+    window.__PARTYLAN_SFU_ONLY__ = unified;
+    document.querySelectorAll('[data-partylan-legacy-roster]').forEach(function (roster) {
+      roster.style.display = unified ? 'none' : '';
+    });
+    return unified;
+  }
+
+  function clearRoomMediaMode() {
+    try { delete window.__PARTYLAN_SFU_ONLY__; } catch (e) { window.__PARTYLAN_SFU_ONLY__ = false; }
+    document.querySelectorAll('[data-partylan-legacy-roster]').forEach(function (roster) {
+      roster.style.display = '';
+    });
+  }
+
+  function rememberRoomState(state) {
+    if (!state) return state;
+    lastRoomState = state;
+    applyRoomMediaMode(state);
+    renderWebPresenceMembers();
+    syncShareButtonAvailability();
+    return state;
   }
 
   function getWebParticipantId() {
@@ -197,7 +235,9 @@
     lastKnownLoggedIn = false;
     clearRoomStateHeartbeat();
     if (webPresenceTimer) clearInterval(webPresenceTimer);
+    if (webPresenceRefreshTimer) clearInterval(webPresenceRefreshTimer);
     webPresenceTimer = 0;
+    webPresenceRefreshTimer = 0;
     clearWebShareTimers();
   }
 
@@ -250,29 +290,35 @@
   }
 
   function renderWebPresenceMembers() {
-    document.querySelectorAll('[data-gc-presence-member="1"]').forEach(function (item) { item.remove(); });
-    if (!currentRoomId() || !webPresenceMembers.length) return;
-    var list = null;
-    var candidates = document.querySelectorAll('ul.MuiList-root, .MuiList-root');
-    for (var i = 0; i < candidates.length; i++) {
-      if (candidates[i].closest && candidates[i].closest('[role="dialog"]')) continue;
-      if (candidates[i].querySelector('.MuiListItem-root')) {
-        list = candidates[i];
-        break;
-      }
-    }
-    if (!list) return;
-    var existingText = (list.textContent || '').toLowerCase();
-    var template = list.querySelector('.MuiListItem-root');
+    var anchor = document.getElementById('partylan-presence-roster');
+    var unified = applyRoomMediaMode(lastRoomState);
+    if (!anchor) return;
+    anchor.replaceChildren();
+    if (!currentRoomId() || !unified || !webPresenceMembers.length) return;
+
     webPresenceMembers.forEach(function (participant) {
-      if (participant.clientType !== 'client') return;
       var name = participant.name || participant.participantId;
-      if (existingText.indexOf(name.toLowerCase()) >= 0) return;
-      var item = template ? template.cloneNode(false) : document.createElement('li');
-      item.removeAttribute('id');
+      var labels = [participant.clientType === 'client' ? '客户端' : '网页端'];
+      labels.push(participant.role === 'owner' ? '房主' : '成员');
+      if (participant.participantId === getWebParticipantId()) labels.push('当前');
+      if (participant.sharing) labels.push('共享中');
+
+      var item = document.createElement('div');
       item.dataset.gcPresenceMember = '1';
-      item.textContent = name + ' · 客户端' + (participant.sharing ? ' · 共享中' : '');
-      list.appendChild(item);
+      item.setAttribute('data-gc-presence-member', '1');
+      item.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;padding:4px 0;font-size:13px;line-height:1.45';
+
+      var memberName = document.createElement('span');
+      memberName.textContent = name;
+      memberName.style.cssText = 'min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#f8fafc';
+
+      var memberMeta = document.createElement('span');
+      memberMeta.textContent = labels.join(' · ');
+      memberMeta.style.cssText = 'flex-shrink:0;color:#94a3b8;font-size:11px';
+
+      item.appendChild(memberName);
+      item.appendChild(memberMeta);
+      anchor.appendChild(item);
     });
   }
 
@@ -281,7 +327,7 @@
     if (!roomId || webPresenceRoom !== roomId) return Promise.resolve(null);
     return controlRequest(PRESENCE_URL + '?room=' + encodeURIComponent(roomId)).then(function (data) {
       webPresenceMembers = mergeWebPresence(data.participants);
-      if (data.room) lastRoomState = data.room;
+      if (data.room) rememberRoomState(data.room);
       renderWebPresenceMembers();
       syncShareButtonAvailability();
       return data;
@@ -305,15 +351,21 @@
 
   function startWebPresenceHeartbeat() {
     if (webPresenceTimer) clearInterval(webPresenceTimer);
+    if (webPresenceRefreshTimer) clearInterval(webPresenceRefreshTimer);
     webPresenceTimer = setInterval(function () {
       heartbeatWebPresence();
     }, ROOM_STATE_HEARTBEAT_MS);
+    webPresenceRefreshTimer = setInterval(function () {
+      refreshWebPresence();
+    }, PRESENCE_REFRESH_MS);
   }
 
   function leaveWebPresence(useBeacon) {
     var roomId = webPresenceRoom;
     if (webPresenceTimer) clearInterval(webPresenceTimer);
+    if (webPresenceRefreshTimer) clearInterval(webPresenceRefreshTimer);
     webPresenceTimer = 0;
+    webPresenceRefreshTimer = 0;
     webPresenceRoom = '';
     webPresenceRole = '';
     webPresenceName = '';
@@ -343,6 +395,13 @@
         role: active ? 'member' : 'owner',
         origin: active ? '' : 'web',
         name: name,
+        mediaProtocolVersion: 1,
+        capabilities: {
+          sfuViewer: true,
+          sfuHost: true,
+          h264: true,
+          opus: true
+        },
         ttl: ROOM_STATE_TTL
       };
       function join() {
@@ -359,7 +418,7 @@
         webPresenceRoom = roomId;
         webPresenceRole = data.participant && data.participant.role || request.role;
         webPresenceName = name;
-        if (data.room) lastRoomState = data.room;
+        if (data.room) rememberRoomState(data.room);
         startWebPresenceHeartbeat();
         refreshWebPresence();
         return data;
@@ -381,20 +440,25 @@
     return activeDisplayStream ? activeCaptureAudioMode : 'off';
   }
 
-  function heartbeatWebShare() {
+  function heartbeatWebShare(phase) {
     if (!webShareLease) return Promise.resolve(null);
+    var mediaMode = webShareLease.mediaMode || (isUnifiedSfuRoom(lastRoomState) ? 'sfu' : 'legacy-p2p');
+    phase = phase || webShareLease.phase || (mediaMode === 'sfu' ? 'starting' : 'live');
     return controlRequest(SHARE_URL + '/heartbeat', {
       method: 'POST',
       body: JSON.stringify({
         room: webShareLease.room,
         participantId: getWebParticipantId(),
         leaseId: webShareLease.leaseId,
-        sfu: currentSfuMode(),
+        mediaMode: mediaMode,
+        phase: phase,
+        sfu: mediaMode === 'legacy-p2p' ? false : undefined,
         audioMode: effectiveWebShareAudioMode(),
         ttl: ROOM_STATE_TTL
       })
     }).then(function (data) {
-      if (data.room) lastRoomState = data.room;
+      if (data.lease) webShareLease = data.lease;
+      if (data.room) rememberRoomState(data.room);
       return data;
     }).catch(function (error) {
       if (error && (error.code === 'share_lease_expired' || error.code === 'share_lease_invalid')) {
@@ -416,18 +480,24 @@
     return ensureWebPresence(roomId).then(function () { return fetchRoomState(roomId, true); }).then(function (state) {
       if (!webCanStartShare(state)) throw new Error('share_locked');
       if (webShareLease && webShareLease.room === roomId) return webShareLease;
+      var unified = isUnifiedSfuRoom(state);
+      var request = {
+        room: roomId,
+        participantId: getWebParticipantId(),
+        mediaMode: unified ? 'sfu' : 'legacy-p2p',
+        audioMode: extCfg().audio,
+        ttl: ROOM_STATE_TTL
+      };
+      if (unified) {
+        request.mediaMode = 'sfu';
+        request.phase = 'starting';
+      }
       return controlRequest(SHARE_URL + '/claim', {
         method: 'POST',
-        body: JSON.stringify({
-          room: roomId,
-          participantId: getWebParticipantId(),
-          sfu: currentSfuMode(),
-          audioMode: extCfg().audio,
-          ttl: ROOM_STATE_TTL
-        })
+        body: JSON.stringify(request)
       }).then(function (data) {
         webShareLease = data.lease;
-        if (data.room) lastRoomState = data.room;
+        if (data.room) rememberRoomState(data.room);
         startWebShareHeartbeat();
         syncShareButtonAvailability();
         return webShareLease;
@@ -448,6 +518,71 @@
       return Promise.resolve(null);
     }
     return controlRequest(SHARE_URL + '/release', { method: 'POST', body: payload }).catch(function () { return null; });
+  }
+
+  function sendWebSharePhaseBeacon(phase) {
+    if (!webShareLease || !navigator.sendBeacon || !canSendProtectedControl()) return false;
+    try {
+      return navigator.sendBeacon(SHARE_URL + '/heartbeat', JSON.stringify({
+        room: webShareLease.room,
+        participantId: getWebParticipantId(),
+        leaseId: webShareLease.leaseId,
+        mediaMode: webShareLease.mediaMode || 'sfu',
+        phase: phase,
+        audioMode: effectiveWebShareAudioMode(),
+        ttl: ROOM_STATE_TTL
+      }));
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function stopWebShare(useBeacon) {
+    if (webShareStopPromise) return webShareStopPromise;
+    var stream = activeDisplayStream;
+    var markStopping = Promise.resolve(null);
+    if (webShareLease && (webShareLease.mediaMode === 'sfu' || isUnifiedSfuRoom(lastRoomState))) {
+      if (useBeacon) sendWebSharePhaseBeacon('stopping');
+      else markStopping = heartbeatWebShare('stopping');
+    }
+
+    webShareStopPromise = markStopping.catch(function () { return null; }).then(function () {
+      sfuDisconnect();
+      stopDisplayStreamTracks(stream);
+      activeDisplayStream = null;
+      activeVideoTrack = null;
+      activeCaptureAudioMode = 'off';
+      resetAdaptiveStreamingState();
+      return releaseWebShare(useBeacon);
+    }).finally(function () {
+      webShareStopPromise = null;
+    });
+    return webShareStopPromise;
+  }
+
+  function notifyDisplayStreamEnded(stream) {
+    if (!stream || typeof stream.getVideoTracks !== 'function') return;
+    var track = stream.getVideoTracks()[0];
+    if (!track || typeof track.dispatchEvent !== 'function' || typeof Event === 'undefined') return;
+    try { track.dispatchEvent(new Event('ended')); } catch (e) {}
+  }
+
+  function abortWebShare(error) {
+    if (webShareStopPromise) return webShareStopPromise;
+    if (webShareAbortPromise) return webShareAbortPromise;
+    var failedStream = activeDisplayStream;
+    activeDisplayStream = null;
+    activeVideoTrack = null;
+    activeCaptureAudioMode = 'off';
+    sfuDisconnect();
+    stopDisplayStreamTracks(failedStream);
+    notifyDisplayStreamEnded(failedStream);
+    resetAdaptiveStreamingState();
+    showSfuStatus('错误: ' + (error && error.code || 'sfu_unavailable'));
+    webShareAbortPromise = releaseWebShare(false).finally(function () {
+      webShareAbortPromise = null;
+    });
+    return webShareAbortPromise;
   }
 
   function syncShareButtonAvailability() {
@@ -480,22 +615,17 @@
   }
 
   function currentSfuMode() {
-    return !!(autoSfuActive || nativeViewerIntentActive) || !!(
-      lastRoomState && lastRoomState.origin === 'client' && currentRoomId()
-    );
-  }
-
-  function sfuEnabledNow() {
-    return currentSfuMode();
+    return isUnifiedSfuRoom(lastRoomState);
   }
 
   function roomStateSfuActive(roomId) {
     return !!(
       lastRoomState &&
       lastRoomState.room === roomId &&
-      lastRoomState.active &&
-      lastRoomState.sfu &&
-      lastRoomState.sharing
+      isUnifiedSfuRoom(lastRoomState) &&
+      lastRoomState.sharing &&
+      lastRoomState.sharePhase === 'live' &&
+      lastRoomState.sfu
     );
   }
 
@@ -504,11 +634,6 @@
       clearInterval(roomStateHeartbeatTimer);
       roomStateHeartbeatTimer = 0;
     }
-  }
-
-  function resetAutoSfuState() {
-    autoSfuActive = false;
-    autoSfuSuppressedForCurrentShare = false;
   }
 
   function resetAdaptiveStreamingState() {
@@ -522,15 +647,6 @@
       pc._gcAdaptiveProfile = null;
       pc._gcAdaptivePendingDecision = '';
     });
-  }
-
-  function isSfuMediaReady() {
-    return typeof GC_SFU !== 'undefined' &&
-      !!GC_SFU &&
-      typeof GC_SFU.isConnected === 'function' &&
-      typeof GC_SFU.isMediaReady === 'function' &&
-      GC_SFU.isConnected() &&
-      GC_SFU.isMediaReady();
   }
 
   function getSfuPeerConnection() {
@@ -563,6 +679,7 @@
   }
 
   function getMemberCountEstimate() {
+    if (webPresenceMembers.length) return webPresenceMembers.length;
     var seen = {};
     var count = 0;
     document.querySelectorAll('.MuiListItem-root, .user-item, [class*="user"]').forEach(function (item) {
@@ -574,31 +691,6 @@
     return count;
   }
 
-  function shouldPromoteAutoSfu() {
-    return getMemberCountEstimate() >= AUTO_SFU_MIN_PARTICIPANTS;
-  }
-
-  function refreshAutoSfuState() {
-    if (!activeDisplayStream || !currentRoomId()) {
-      resetAutoSfuState();
-      return false;
-    }
-    if (nativeViewerIntentActive) {
-      autoSfuActive = true;
-      sfuStatusText = '???????????? SFU';
-      return true;
-    }
-    if (!sfuMode) {
-      autoSfuActive = false;
-      return false;
-    }
-    if (!autoSfuActive && shouldPromoteAutoSfu()) {
-      autoSfuActive = true;
-      sfuStatusText = '检测到多个观众，已自动切换 SFU';
-    }
-    return autoSfuActive;
-  }
-
   function syncHostSfuState(roomId) {
     if (!roomId || !activeDisplayStream) {
       if (canMaintainRoomState(roomId)) startRoomStateHeartbeat();
@@ -606,9 +698,8 @@
       return;
     }
 
-    refreshAutoSfuState();
     if (currentSfuMode()) {
-      if (!sfuConnection || typeof GC_SFU === 'undefined' || !GC_SFU || !GC_SFU.isConnected()) sfuConnect(roomId, 'host', activeDisplayStream);
+      if (!sfuConnection || getSfuRole() !== 'host') sfuConnect(roomId, 'host', activeDisplayStream);
       else startRoomStateHeartbeat();
       return;
     }
@@ -1014,18 +1105,19 @@
   }
 
   function getSfuStatusLabel() {
-    if (!currentSfuMode() && !sfuConnection) return sfuMode ? '待多观众时自动开启' : '未启用';
+    if (!currentSfuMode() && !sfuConnection) return '未启用';
     return sfuStatusText || (currentSfuMode() ? '连接中...' : '未启用');
   }
 
   function postRoomState(active, roomOverride) {
     var roomId = roomOverride || currentRoomId();
     if (!roomId || !canSendProtectedControl()) return Promise.resolve(null);
+    var unified = isUnifiedSfuRoom(lastRoomState);
     var payload = {
       room: roomId,
       active: !!active,
-      sharing: !!active && !!activeDisplayStream,
-      sfu: !!active && currentSfuMode(),
+      sharing: !!active && !!activeDisplayStream && !unified,
+      sfu: false,
       audioMode: active ? effectiveWebShareAudioMode() : 'off',
       ttl: ROOM_STATE_TTL
     };
@@ -1041,7 +1133,7 @@
       method: 'POST',
       body: JSON.stringify(payload)
     }).then(function (data) {
-      if (data && data.state) lastRoomState = data.state;
+      if (data && data.state) rememberRoomState(data.state);
       return data;
     }).catch(function () {
       return null;
@@ -1051,12 +1143,13 @@
   function sendRoomStateBeacon(active, roomOverride) {
     var roomId = roomOverride || currentRoomId();
     if (!roomId || !navigator.sendBeacon || !canSendProtectedControl()) return;
+    var unified = isUnifiedSfuRoom(lastRoomState);
     try {
       navigator.sendBeacon(ROOM_STATE_URL, JSON.stringify({
         room: roomId,
         active: !!active,
-        sharing: !!active && !!activeDisplayStream,
-        sfu: !!active && currentSfuMode(),
+        sharing: !!active && !!activeDisplayStream && !unified,
+        sfu: false,
         audioMode: active ? effectiveWebShareAudioMode() : 'off',
         ttl: ROOM_STATE_TTL
       }));
@@ -1097,17 +1190,17 @@
       cache: 'no-store'
     }).then(function (r) { return r.json(); }).then(function (data) {
       if (data && data.ok && data.state) {
-        lastRoomState = data.state;
-        syncShareButtonAvailability();
-        return data.state;
+        return rememberRoomState(data.state);
       }
-      lastRoomState = {
+      return rememberRoomState({
         room: roomId,
         active: false,
+        mediaMode: '',
+        mediaProtocolVersion: 0,
         sharing: false,
+        sharePhase: 'idle',
         sfu: false
-      };
-      return lastRoomState;
+      });
     }).catch(function () {
       return lastRoomState && lastRoomState.room === roomId ? lastRoomState : null;
     }).finally(function () {
@@ -1118,27 +1211,6 @@
     return roomStateFetchPromise;
   }
 
-  function fetchViewerIntent(roomId) {
-    if (!roomId) return Promise.resolve(null);
-    return fetch(VIEWER_INTENT_URL + '?room=' + encodeURIComponent(roomId), {
-      credentials: 'same-origin',
-      cache: 'no-store'
-    }).then(function (r) { return r.json(); }).then(function (data) {
-      return data && data.ok && data.intent ? data.intent : null;
-    }).catch(function () {
-      return null;
-    });
-  }
-
-  function applyViewerIntent(intent) {
-    nativeViewerIntentActive = !!(intent && intent.active && intent.wantsSfu && intent.viewerCount > 0);
-    if (nativeViewerIntentActive) {
-      autoSfuActive = true;
-      sfuStatusText = '???????????? SFU';
-    }
-    return nativeViewerIntentActive;
-  }
-
   function syncViewerSfuState(roomId, amStreamer) {
     var remoteActive = roomStateSfuActive(roomId);
     var shareOwnedByThisTab = !!(
@@ -1147,25 +1219,23 @@
     if (remoteActive && !shareOwnedByThisTab && !amStreamer && !activeDisplayStream) {
       if (!sfuConnection) {
         console.log('[SFU] 房主已开启 SFU，观看者自动接入');
-        sfuConnect(roomId, 'viewer', null);
+        return sfuConnect(roomId, 'viewer', null);
       }
-      return;
+      return Promise.resolve(sfuConnection);
     }
 
     if ((!remoteActive || amStreamer) && sfuConnection && !activeDisplayStream) {
       sfuDisconnect();
     }
+    return Promise.resolve(null);
   }
 
   function shouldDropNativePeerMessage(event) {
     if (!event || typeof event.data !== 'string') return false;
     var msg;
     try { msg = JSON.parse(event.data); } catch (e) { return false; }
-    if (msg.type === 'hostsession') {
-      return !!activeDisplayStream && sfuEnabledNow() && isSfuMediaReady();
-    }
-    if (msg.type === 'clientsession') {
-      return roomStateSfuActive(currentRoomId()) && isSfuMediaReady();
+    if (msg.type === 'hostsession' || msg.type === 'clientsession') {
+      return window.__PARTYLAN_SFU_ONLY__ === true;
     }
     return false;
   }
@@ -1384,26 +1454,21 @@
   }
 
   function leaveRoomGracefully() {
-    if (activeDisplayStream) {
-      resetAutoSfuState();
-      resetAdaptiveStreamingState();
+    stopRoomStateHeartbeat();
+    var stopPromise = activeDisplayStream || webShareLease
+      ? stopWebShare(false)
+      : Promise.resolve(null);
+    stopPromise.finally(function () {
+      sfuDisconnect();
       sendRoomStateBeacon(false);
-      stopRoomStateHeartbeat();
-      try {
-        activeDisplayStream.getTracks().forEach(function (track) { track.stop(); });
-      } catch (e) {}
-      activeDisplayStream = null;
-      activeVideoTrack = null;
-      activeCaptureAudioMode = 'off';
-    }
-    sfuDisconnect();
-    releaseWebShare(false);
-    leaveWebPresence(false);
-    closeActivePeerConnections();
-    closeRoomSocket();
-    setTimeout(function () {
-      window.location.href = '/';
-    }, 80);
+      leaveWebPresence(false);
+      clearRoomMediaMode();
+      closeActivePeerConnections();
+      closeRoomSocket();
+      setTimeout(function () {
+        window.location.href = '/';
+      }, 80);
+    });
   }
 
   /* ── 房间历史（云端同步） ── */
@@ -1701,33 +1766,51 @@
   function sfuConnect(roomId, role, stream) {
     if (typeof GC_SFU === 'undefined') {
       console.warn('[SFU] GC_SFU 未加载');
-      return;
+      var missingClient = new Error('sfu_unavailable');
+      missingClient.code = 'sfu_unavailable';
+      return role === 'host' ? abortWebShare(missingClient) : Promise.resolve(null);
     }
     if (sfuConnection && GC_SFU.isConnected() && getSfuRole() === role) {
       console.log('[SFU] 已连接，跳过');
-      return;
+      return role === 'host' && typeof GC_SFU.waitUntilMediaReady === 'function'
+        ? GC_SFU.waitUntilMediaReady(SFU_SHARE_START_TIMEOUT_MS).then(function () {
+          return heartbeatWebShare('live');
+        })
+        : Promise.resolve(GC_SFU);
     }
     if (sfuConnection) sfuDisconnect();
-    GC_SFU.connect(roomId, role, {
-      name: currentUser || loadCfg().name || role,
-      onRemoteStream: function (remoteStream) {
-        showSfuViewer(remoteStream);
-        showSfuStatus('连接成功，正在接收画面');
-      },
-      onStatus: function (msg) {
-        showSfuStatus(msg);
-        if (role === 'host' && /error|failed/i.test(String(msg || ''))) {
-          releaseWebShare(false);
+    return Promise.resolve().then(function () {
+      if (stream && role === 'host') GC_SFU.shareScreen(stream);
+      GC_SFU.connect(roomId, role, {
+        name: currentUser || loadCfg().name || role,
+        onRemoteStream: function (remoteStream) {
+          showSfuViewer(remoteStream);
+          showSfuStatus('连接成功，正在接收画面');
+        },
+        onStatus: function (msg) {
+          showSfuStatus(msg);
+          if (role === 'host' && /^错误:\s*(?:codec_unavailable|sfu_unavailable|share_start_timeout)/.test(String(msg || ''))) {
+            var fatal = new Error(String(msg).replace(/^错误:\s*/, '') || 'sfu_unavailable');
+            fatal.code = fatal.message;
+            abortWebShare(fatal);
+          }
         }
+      });
+      sfuConnection = GC_SFU;
+      if (role !== 'host') return GC_SFU;
+      if (typeof GC_SFU.waitUntilMediaReady !== 'function') {
+        var unsupported = new Error('sfu_unavailable');
+        unsupported.code = 'sfu_unavailable';
+        throw unsupported;
       }
+      startRoomStateHeartbeat();
+      return GC_SFU.waitUntilMediaReady(SFU_SHARE_START_TIMEOUT_MS).then(function () {
+        return heartbeatWebShare('live');
+      });
+    }).catch(function (error) {
+      showSfuStatus('错误: ' + (error && error.code || 'sfu_unavailable'));
+      return role === 'host' ? abortWebShare(error).then(function () { return null; }) : null;
     });
-    if (stream && role === 'host') {
-      setTimeout(function () {
-        GC_SFU.shareScreen(stream);
-        startRoomStateHeartbeat();
-      }, 500);
-    }
-    sfuConnection = GC_SFU;
   }
 
   function sfuDisconnect() {
@@ -1781,18 +1864,16 @@
   }
 
   function monitorSfuMode() {
-    var lastSfuState = false;
     function tick() {
       var roomId = currentRoomId();
       var inRoom = !!roomId;
       if (!inRoom) {
         if (activeDisplayStream) stopRoomStateHeartbeat();
-        nativeViewerIntentActive = false;
-        resetAutoSfuState();
         resetAdaptiveStreamingState();
-        sfuDisconnect();
-        lastSfuState = false;
+        if (activeDisplayStream || webShareLease) stopWebShare(false);
+        else sfuDisconnect();
         lastRoomState = null;
+        clearRoomMediaMode();
         closeRoomSocket();
         sfuStatusText = '???';
         return;
@@ -1800,45 +1881,16 @@
 
       refreshWebPresence();
 
-      var hasStreamer = false;
-      var amStreamer = false;
-      document.querySelectorAll('[data-streaming="true"], .streaming-indicator').forEach(function () {
-        hasStreamer = true;
-      });
-
-      var memberItems = document.querySelectorAll('.MuiListItem-root, .user-item, [class*="user"]');
-      memberItems.forEach(function (item) {
-        var text = item.textContent || '';
-        if (text.indexOf('???') >= 0 || text.indexOf('Streaming') >= 0) {
-          hasStreamer = true;
-          if (text.indexOf('(?)') >= 0 || text.indexOf('(You)') >= 0) {
-            amStreamer = true;
-          }
-        }
-      });
-
-      fetchViewerIntent(roomId).then(function (intent) {
-        var hasNativeViewerIntent = applyViewerIntent(intent);
-        if (hasNativeViewerIntent && activeDisplayStream) {
-          syncHostSfuState(roomId);
-          return;
-        }
+      fetchRoomState(roomId, true).then(function () {
         if (activeDisplayStream) {
           syncHostSfuState(roomId);
           return;
         }
-        fetchRoomState(roomId, true).then(function (state) {
-          syncViewerSfuState(roomId, amStreamer);
-          lastSfuState = !!(state && state.active && state.sfu && state.sharing && !amStreamer);
-
-          if (!lastSfuState && sfuConnection && !hasStreamer) {
-            sfuDisconnect();
-          }
-        });
+        syncViewerSfuState(roomId, false);
       });
     }
     tick();
-    setInterval(tick, ROOM_STATE_HEARTBEAT_MS);
+    setInterval(tick, PRESENCE_REFRESH_MS);
   }
 
   /* ── 画质补丁 ── */
@@ -2005,28 +2057,42 @@
     activeCaptureAudioMode = audioResult.effectiveMode;
     if (audioResult.shouldNotify) showWebAudioCaptureNotice(audioResult.noticeReason);
 
+    if (currentSfuMode()) {
+      try {
+        if (typeof GC_SFU === 'undefined' || !GC_SFU || typeof GC_SFU.validateMediaCodecs !== 'function') {
+          var unavailable = new Error('sfu_unavailable');
+          unavailable.code = 'sfu_unavailable';
+          throw unavailable;
+        }
+        GC_SFU.validateMediaCodecs();
+      } catch (error) {
+        activeCaptureAudioMode = 'off';
+        stopDisplayStreamTracks(stream);
+        throw error;
+      }
+    }
+
     stream._gcCaptureActivated = true;
     markPeerStatsChange('_gcSourceChanged');
     activeDisplayStream = stream;
     if (webShareLease) heartbeatWebShare();
-    resetAutoSfuState();
     resetAdaptiveStreamingState();
-    refreshAutoSfuState();
 
     var vt = stream.getVideoTracks()[0];
     if (vt) {
       try { vt.contentHint = getContentHint(settings && settings.qm ? settings.qm : extCfg().qm); } catch (e) {}
       activeVideoTrack = vt;
+      if (!vt._gcUnifiedStopWrapped && typeof vt.stop === 'function') {
+        var nativeStop = vt.stop.bind(vt);
+        vt.stop = function () {
+          var result = nativeStop();
+          if (activeDisplayStream === stream) stopWebShare(false);
+          return result;
+        };
+        vt._gcUnifiedStopWrapped = true;
+      }
       vt.addEventListener('ended', function () {
-        activeVideoTrack = null;
-        activeDisplayStream = null;
-        activeCaptureAudioMode = 'off';
-        resetAutoSfuState();
-        resetAdaptiveStreamingState();
-        if (canMaintainRoomState(currentRoomId())) startRoomStateHeartbeat();
-        else stopRoomStateHeartbeat();
-        sfuDisconnect();
-        releaseWebShare(false);
+        if (activeDisplayStream === stream) stopWebShare(false);
       }, { once: true });
     }
 
@@ -2097,6 +2163,9 @@
         var primedSettings = extCfg();
         return primedPromise.then(function (stream) {
           return activateCapturedDisplayStream(stream, primedSettings);
+        }).catch(function (error) {
+          releaseWebShare(false);
+          throw error;
         });
       }
 
@@ -2863,13 +2932,6 @@
     html += '</select><div id="gc-audio-hint" style="font-size:11px;color:#64748b;margin-top:4px">' + (AUDIO_MODES[c.audio] ? AUDIO_MODES[c.audio].desc : '') + '</div>';
     html += '<div style="font-size:11px;color:#fbbf24;margin-top:4px">音频模式会在下次重新开始共享时生效。</div></div>';
 
-    html += '<div style="margin-bottom:10px;padding:8px 10px;background:rgba(6,182,212,.08);border:1px solid rgba(6,182,212,.2);border-radius:6px">';
-    html += '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;color:#e2e8f0">';
-    html += '<input type="checkbox" id="gc-sfu-toggle" style="accent-color:#06b6d4"' + (sfuMode ? ' checked' : '') + '>';
-    html += '<span style="font-weight:600">允许多人时自动启用 SFU</span></label>';
-    html += '<div style="font-size:11px;color:#64748b;margin-top:4px;margin-left:24px">开启后，只有在房主之外还有 2 位及以上观众时，当前共享才会自动切到 SFU；只有 1 位观众时仍保持默认共享方式。关闭后将始终使用默认共享方式。</div>';
-    html += '</div>';
-
     html += '<button id="gc-apply" style="width:100%;padding:8px;margin-top:6px;background:linear-gradient(135deg,#7c3aed,#06b6d4);color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600">应用画质设置</button>';
 
     wrap.innerHTML = html;
@@ -2902,8 +2964,6 @@
       var myAudio = audioSelect.value;
       var act = wrap.querySelector('.gc-active');
       var myQm = act ? act.dataset.m : 'balanced';
-      var sfuToggle = document.getElementById('gc-sfu-toggle');
-      sfuMode = sfuToggle ? sfuToggle.checked : false;
 
       var hiddenSave = document.getElementById('gc-hidden-save');
       if (hiddenSave) hiddenSave.click();
@@ -2911,14 +2971,12 @@
       setTimeout(function () {
         var s = loadCfg();
         var oldAudio = AUDIO_MODES[s.audioMode] ? s.audioMode : 'app';
-        var oldSfuMode = !!s.sfuMode;
         s.resolution = normalizeResolutionKey(myRes);
         s.framerate = normalizeFramerateValue(myFps);
         s.qualityMode = myQm;
         s.audioMode = myAudio;
-        s.sfuMode = sfuMode;
+        delete s.sfuMode;
         saveCfg(s);
-        if (oldSfuMode && !sfuMode) resetAutoSfuState();
 
         if (activeDisplayStream) {
           var roomId = currentRoomId();
@@ -2928,7 +2986,7 @@
         var err = applyLiveConstraints();
         applyAll();
         var btn = document.getElementById('gc-apply');
-        var modeText = currentSfuMode() ? ' [自动 SFU]' : '';
+        var modeText = currentSfuMode() ? ' [SFU]' : '';
         var audioText = activeDisplayStream && oldAudio !== myAudio ? '，音频下次共享生效' : '';
         if (err) { btn.textContent = err; btn.style.color = '#fbbf24'; }
         else {
@@ -3394,12 +3452,13 @@
         var previousRoomId = lastRoomId;
         var roomId = currentRoomId();
         if (previousRoomId && !roomId) {
-          releaseWebShare(false);
-          leaveWebPresence(false);
-          if (activeDisplayStream) {
-            resetAutoSfuState();
-            resetAdaptiveStreamingState();
-          }
+          var stopPromise = activeDisplayStream || webShareLease
+            ? stopWebShare(false)
+            : releaseWebShare(false);
+          Promise.resolve(stopPromise).finally(function () {
+            leaveWebPresence(false);
+            clearRoomMediaMode();
+          });
           stopRoomStateHeartbeat();
           closeRoomSocket();
         }
@@ -3607,6 +3666,7 @@
           hideScreegoSettings(nd);
           interceptShareButtonClicks(nd);
           syncShareButtonAvailability();
+          renderWebPresenceMembers();
           injectRegisterButton(nd);
           injectHistoryDropdown();
           fillRoomIdDefault();
@@ -3642,9 +3702,18 @@
     console.log('[GameCast] 初始化 v5.0');
     ensureDefaultShareSettings();
     window.addEventListener('beforeunload', function () {
-      if (canMaintainRoomState(currentRoomId())) sendRoomStateBeacon(false, roomStateHeartbeatRoomId || currentRoomId());
+      if (webShareLease && (webShareLease.mediaMode === 'sfu' || isUnifiedSfuRoom(lastRoomState))) {
+        sendWebSharePhaseBeacon('stopping');
+      }
+      var unloadingStream = activeDisplayStream;
+      activeDisplayStream = null;
+      activeVideoTrack = null;
+      sfuDisconnect();
+      stopDisplayStreamTracks(unloadingStream);
       releaseWebShare(true);
+      if (canMaintainRoomState(currentRoomId())) sendRoomStateBeacon(false, roomStateHeartbeatRoomId || currentRoomId());
       leaveWebPresence(true);
+      clearRoomMediaMode();
       closeRoomSocket();
     });
     patchWebSocket();

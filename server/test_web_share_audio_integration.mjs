@@ -42,7 +42,7 @@ test('every captured stream is sanitized before it becomes active', () => {
 
 test('room state and share heartbeat report the effective audio mode', () => {
   const heartbeat = inject.slice(
-    inject.indexOf('function heartbeatWebShare()'),
+    inject.indexOf('function heartbeatWebShare(phase)'),
     inject.indexOf('function startWebShareHeartbeat()'),
   );
   const roomState = inject.slice(
@@ -73,5 +73,5 @@ test('audio mode labels describe window, tab and full-screen scope', () => {
 
 test('changed audio assets use new cache versions', () => {
   assert.match(nginx, /web-share-audio\.js\?v=2/);
-  assert.match(nginx, /inject\.js\?v=6\.22/);
+  assert.match(nginx, /inject\.js\?v=6\.23/);
 });

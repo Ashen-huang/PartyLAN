@@ -31,8 +31,34 @@ function canStartShare(roomState, participantId) {
   return !!participantId && roomState.shareOwnerParticipantId === participantId;
 }
 
+function isUnifiedSfuRoom(roomState) {
+  return !!(
+    roomState &&
+    roomState.active &&
+    roomState.mediaMode === 'sfu' &&
+    Number(roomState.mediaProtocolVersion) === 1
+  );
+}
+
+function webMediaContract() {
+  return {
+    mediaProtocolVersion: 1,
+    capabilities: {
+      sfuViewer: true,
+      sfuHost: true,
+      h264: true,
+      opus: true
+    }
+  };
+}
+
 function desiredSfuRole(roomState, participantId, hasLocalStream) {
-  if (!roomState || !roomState.active || !roomState.sharing || !roomState.sfu) return '';
+  if (
+    !isUnifiedSfuRoom(roomState) ||
+    !roomState.sharing ||
+    roomState.sharePhase !== 'live' ||
+    !roomState.sfu
+  ) return '';
   if (hasLocalStream && roomState.shareOwnerParticipantId === participantId) return 'host';
   if (roomState.shareOwnerParticipantId !== participantId) return 'viewer';
   return '';
@@ -44,11 +70,18 @@ async function runShareStart(steps) {
   try {
     var stream = await steps.capture(lease);
     var result = await steps.publish(stream, lease);
+    if (steps.markLive) await steps.markLive(lease, stream, result);
     committed = true;
     return { lease: lease, stream: stream, result: result };
   } finally {
     if (!committed) await steps.release(lease);
   }
+}
+
+async function runShareStop(steps) {
+  await steps.markStopping();
+  await steps.closeMedia();
+  await steps.release();
 }
 
 function canSendProtectedControl(loggedIn, user) {
@@ -64,8 +97,11 @@ module.exports = {
   decidePresenceJoin: decidePresenceJoin,
   mergePresence: mergePresence,
   canStartShare: canStartShare,
+  isUnifiedSfuRoom: isUnifiedSfuRoom,
   desiredSfuRole: desiredSfuRole,
   runShareStart: runShareStart,
+  runShareStop: runShareStop,
+  webMediaContract: webMediaContract,
   canSendProtectedControl: canSendProtectedControl,
   shouldPostRoomState: shouldPostRoomState
 };

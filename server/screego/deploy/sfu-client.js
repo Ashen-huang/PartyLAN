@@ -2,7 +2,8 @@ var GC_SFU = (function () {
   'use strict';
 
   var SFU_URL = 'wss://' + location.host + '/sfu-ws';
-  var BaseRTC = window.RTCPeerConnection;
+  var MAX_RECONNECT_ATTEMPTS = 5;
+  var BaseRTC = window.__PARTYLAN_NATIVE_RTC_PEER_CONNECTION__ || window.RTCPeerConnection;
   var ws = null;
   var pc = null;
   var localStream = null;
@@ -21,9 +22,108 @@ var GC_SFU = (function () {
   var reconnectAttempts = 0;
   var manualDisconnect = false;
   var viewerLayerSwitchTimer = null;
+  var mediaReadyWaiters = [];
 
   function log(msg) { console.log('[SFU] ' + msg); }
   function setStatus(msg) { if (onStatus) onStatus(msg); log(msg); }
+
+  function codedError(code, message) {
+    var error = new Error(message || code);
+    error.code = code;
+    return error;
+  }
+
+  function removeMediaReadyWaiter(waiter) {
+    var index = mediaReadyWaiters.indexOf(waiter);
+    if (index >= 0) mediaReadyWaiters.splice(index, 1);
+  }
+
+  function settleMediaReadyWaiters(error) {
+    var waiters = mediaReadyWaiters.slice();
+    mediaReadyWaiters = [];
+    waiters.forEach(function (waiter) {
+      clearTimeout(waiter.timer);
+      if (error) waiter.reject(error);
+      else waiter.resolve(pc);
+    });
+  }
+
+  function markMediaReady() {
+    mediaReady = true;
+    resetReconnectState();
+    settleMediaReadyWaiters(null);
+  }
+
+  function rejectMediaReady(error) {
+    var stableError = error && error.code
+      ? error
+      : codedError('sfu_unavailable', 'SFU 媒体连接不可用');
+    settleMediaReadyWaiters(stableError);
+  }
+
+  function waitUntilMediaReady(timeoutMs) {
+    if (mediaReady && pc) return Promise.resolve(pc);
+    var timeout = Math.max(1, Number(timeoutMs) || 15000);
+    return new Promise(function (resolve, reject) {
+      var waiter = { resolve: resolve, reject: reject, timer: 0 };
+      waiter.timer = setTimeout(function () {
+        removeMediaReadyWaiter(waiter);
+        reject(codedError('share_start_timeout', 'SFU 媒体连接超时'));
+      }, timeout);
+      mediaReadyWaiters.push(waiter);
+    });
+  }
+
+  function codecCapabilities(kind) {
+    var capabilities = null;
+    if (typeof RTCRtpSender !== 'undefined' && RTCRtpSender.getCapabilities) {
+      capabilities = RTCRtpSender.getCapabilities(kind);
+    }
+    if ((!capabilities || !capabilities.codecs) &&
+        typeof RTCRtpReceiver !== 'undefined' && RTCRtpReceiver.getCapabilities) {
+      capabilities = RTCRtpReceiver.getCapabilities(kind);
+    }
+    return capabilities && Array.isArray(capabilities.codecs) ? capabilities.codecs : [];
+  }
+
+  function requiredCodecPreferences(kind) {
+    return codecCapabilities(kind).filter(function (codec) {
+      var mimeType = String(codec && codec.mimeType || '').toLowerCase();
+      if (kind === 'video') return mimeType === 'video/h264';
+      return mimeType === 'audio/opus' &&
+        Number(codec.clockRate || 48000) === 48000 &&
+        Number(codec.channels || 2) === 2;
+    });
+  }
+
+  function requireMediaCodecs() {
+    var video = requiredCodecPreferences('video');
+    var audio = requiredCodecPreferences('audio');
+    if (!video.length || !audio.length) {
+      throw codedError('codec_unavailable', 'H.264 或 Opus 编解码能力不可用');
+    }
+    return { video: video, audio: audio };
+  }
+
+  function applyCodecPreferences(transceiver, kind, codecs) {
+    if (!transceiver || typeof transceiver.setCodecPreferences !== 'function') {
+      throw codedError('codec_unavailable', '浏览器无法锁定共享编解码格式');
+    }
+    transceiver.setCodecPreferences(codecs[kind]);
+  }
+
+  function applyAnswerCodecPreferences(codecs) {
+    if (!pc || typeof pc.getTransceivers !== 'function') {
+      throw codedError('codec_unavailable', '浏览器无法锁定接收编解码格式');
+    }
+    pc.getTransceivers().forEach(function (transceiver) {
+      var track = transceiver && transceiver.receiver && transceiver.receiver.track;
+      var kind = track && track.kind;
+      if (kind === 'video' || kind === 'audio') {
+        applyCodecPreferences(transceiver, kind, codecs);
+      }
+    });
+  }
 
   function clearReconnectTimer() {
     if (reconnectTimer) {
@@ -50,6 +150,10 @@ var GC_SFU = (function () {
   function scheduleReconnect(reason) {
     if (manualDisconnect || reconnectTimer || !currentRoomId) return;
     if (currentRole !== 'viewer' && !(currentRole === 'host' && hasLiveLocalStream())) return;
+    if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+      setStatus('错误: sfu_unavailable');
+      return;
+    }
     reconnectAttempts += 1;
     var delay = Math.min(6000, 1000 * Math.pow(2, reconnectAttempts - 1));
     setStatus('连接不稳定，' + Math.round(delay / 1000) + ' 秒后重试');
@@ -58,12 +162,15 @@ var GC_SFU = (function () {
       reconnectTimer = null;
       if (manualDisconnect || !currentRoomId) return;
       if (currentRole !== 'viewer' && !(currentRole === 'host' && hasLiveLocalStream())) return;
-      try { if (pc) pc.close(); } catch (e) {}
+      var previousPeer = pc;
       pc = null;
-      try { if (ws) ws.close(); } catch (e2) {}
+      try { if (previousPeer) previousPeer.close(); } catch (e) {}
+      var previousSocket = ws;
       ws = null;
+      try { if (previousSocket) previousSocket.close(); } catch (e2) {}
       connecting = false;
       mediaReady = false;
+      hostReady = false;
       connect(currentRoomId, currentRole, currentOpts || {});
     }, delay);
   }
@@ -168,7 +275,7 @@ var GC_SFU = (function () {
 
   function addRemoteTrack(track) {
     var stream = ensureRemoteStream();
-    mediaReady = true;
+    markMediaReady();
     if (!stream.getTracks().some(function (existing) { return existing.id === track.id; })) {
       stream.addTrack(track);
     }
@@ -199,10 +306,11 @@ var GC_SFU = (function () {
       if (!pc) return;
       log('连接状态: ' + pc.connectionState);
       if (pc.connectionState === 'connected') {
-        mediaReady = true;
+        markMediaReady();
         resetReconnectState();
         setStatus('连接成功');
       } else if (pc.connectionState === 'failed') {
+        rejectMediaReady(codedError('sfu_unavailable', 'SFU 媒体连接失败'));
         setStatus('连接失败');
         scheduleReconnect('pc-failed');
       } else if (pc.connectionState === 'disconnected') {
@@ -247,7 +355,8 @@ var GC_SFU = (function () {
     }
     currentRoomId = roomId;
     currentRole = role;
-    currentOpts = opts || {};
+    opts = opts || {};
+    currentOpts = opts;
     manualDisconnect = false;
     connecting = true;
     onRemoteStream = opts.onRemoteStream || null;
@@ -263,11 +372,15 @@ var GC_SFU = (function () {
     socket.onopen = function () {
       if (ws !== socket) return;
       log('WebSocket 已连接');
-      resetReconnectState();
       connecting = false;
       setStatus('已连接 SFU');
       if (role === 'host' && localStream) {
-        setupHostPeer();
+        try {
+          setupHostPeer();
+        } catch (error) {
+          rejectMediaReady(error);
+          setStatus('错误: ' + (error.code || 'sfu_unavailable'));
+        }
       }
     };
 
@@ -281,6 +394,7 @@ var GC_SFU = (function () {
     socket.onerror = function () {
       if (ws !== socket) return;
       log('WebSocket 错误');
+      rejectMediaReady(codedError('sfu_unavailable', 'SFU WebSocket 连接错误'));
       setStatus('连接错误');
     };
 
@@ -300,8 +414,9 @@ var GC_SFU = (function () {
 
   function handleMessage(msg) {
     if (msg.error) {
-      log('错误: ' + msg.error);
-      setStatus('错误: ' + msg.error);
+      log('SFU 返回错误');
+      rejectMediaReady(codedError('sfu_unavailable', 'SFU 拒绝了媒体会话'));
+      setStatus('错误: sfu_unavailable');
       return;
     }
     switch (msg.type) {
@@ -318,24 +433,32 @@ var GC_SFU = (function () {
     }
     hostReady = true;
     log('创建 host PeerConnection');
+    var codecs = requireMediaCodecs();
     createPC();
 
     if (localStream) {
       localStream.getTracks().forEach(function (track) {
-        if (track.kind === 'video' && typeof pc.addTransceiver === 'function') {
+        if (typeof pc.addTransceiver === 'function') {
           try {
-            pc.addTransceiver(track, {
+            var options = {
               direction: 'sendonly',
-              streams: [localStream],
-              sendEncodings: buildSimulcastEncodings()
-            });
-            log('添加 simulcast 视频轨道');
+              streams: [localStream]
+            };
+            if (track.kind === 'video') options.sendEncodings = buildSimulcastEncodings();
+            var transceiver = pc.addTransceiver(track, options);
+            applyCodecPreferences(transceiver, track.kind, codecs);
+            log(track.kind === 'video' ? '添加 H.264 simulcast 视频轨道' : '添加 Opus 音频轨道');
             return;
           } catch (e) {
-            log('simulcast 添加失败，回退单轨发送: ' + e.message);
+            if (e && e.code === 'codec_unavailable') throw e;
+            log('transceiver 添加失败，回退单轨发送: ' + e.message);
           }
         }
-        pc.addTrack(track, localStream);
+        var sender = pc.addTrack(track, localStream);
+        var fallback = typeof pc.getTransceivers === 'function' && pc.getTransceivers().find(function (item) {
+          return item.sender === sender || item.sender && item.sender.track === track;
+        });
+        applyCodecPreferences(fallback, track.kind, codecs);
         log('添加轨道: ' + track.kind);
       });
     }
@@ -352,7 +475,8 @@ var GC_SFU = (function () {
     }).catch(function (e) {
       hostReady = false;
       log('创建 offer 失败: ' + e.message);
-      setStatus('错误: ' + e.message);
+      rejectMediaReady(e && e.code ? e : codedError('sfu_unavailable', 'SFU offer 创建失败'));
+      setStatus('错误: ' + (e.code || 'sfu_unavailable'));
     });
   }
 
@@ -367,8 +491,18 @@ var GC_SFU = (function () {
 
     createPC();
 
+    var codecs;
+    try {
+      codecs = requireMediaCodecs();
+    } catch (error) {
+      rejectMediaReady(error);
+      setStatus('错误: ' + error.code);
+      return;
+    }
+
     pc.setRemoteDescription(new RTCSessionDescription(sdp)).then(function () {
       flushPendingIce();
+      applyAnswerCodecPreferences(codecs);
       return pc.createAnswer();
     }).then(function (answer) {
       return pc.setLocalDescription(answer).then(function () { return answer; });
@@ -380,7 +514,8 @@ var GC_SFU = (function () {
       log('已发送 answer 给 SFU');
     }).catch(function (e) {
       log('处理 offer 失败: ' + e.message);
-      setStatus('错误: ' + e.message);
+      rejectMediaReady(e && e.code ? e : codedError('sfu_unavailable', 'SFU offer 处理失败'));
+      setStatus('错误: ' + (e.code || 'sfu_unavailable'));
     });
   }
 
@@ -406,6 +541,7 @@ var GC_SFU = (function () {
   }
 
   function shareScreen(stream) {
+    requireMediaCodecs();
     localStream = stream;
     if (ws && ws.readyState === WebSocket.OPEN) {
       setupHostPeer();
@@ -430,6 +566,7 @@ var GC_SFU = (function () {
     clearViewerLayerSwitchTimer();
     pendingIce = [];
     mediaReady = false;
+    rejectMediaReady(codedError('sfu_unavailable', 'SFU 媒体连接已关闭'));
     remoteStream = null;
     if (pc) {
       try { pc.close(); } catch (e) {}
@@ -445,6 +582,8 @@ var GC_SFU = (function () {
     connect: connect,
     disconnect: disconnect,
     shareScreen: shareScreen,
+    validateMediaCodecs: requireMediaCodecs,
+    waitUntilMediaReady: waitUntilMediaReady,
     maybeRefreshViewerLayer: maybeRefreshViewerLayer,
     isConnected: function () { return ws && ws.readyState === WebSocket.OPEN; },
     isMediaReady: function () { return !!mediaReady; },
