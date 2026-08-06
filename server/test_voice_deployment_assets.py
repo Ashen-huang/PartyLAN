@@ -1,3 +1,4 @@
+import hashlib
 import re
 import unittest
 from pathlib import Path
@@ -5,9 +6,34 @@ from pathlib import Path
 
 SERVER_DIR = Path(__file__).resolve().parent
 DEPLOY_DIR = SERVER_DIR / "screego" / "deploy"
+SCREEGO_DIR = SERVER_DIR / "screego"
+PRODUCTION_SFU_CLIENT_SHA256 = (
+    "74826211f05c512f0ac403984ded48778d16692eb1f5054c6a84db4324a22450"
+)
 
 
 class VoiceDeploymentAssetsTests(unittest.TestCase):
+    def test_sfu_client_is_versioned_with_the_production_hash(self):
+        asset = DEPLOY_DIR / "sfu-client.js"
+        self.assertTrue(asset.is_file(), "production sfu-client.js is not version controlled")
+        lock = (SCREEGO_DIR / "upstream.lock").read_text(encoding="utf-8")
+        self.assertIn(
+            "productionSfuClientSha256=" + PRODUCTION_SFU_CLIENT_SHA256,
+            lock,
+        )
+        current_hash = re.search(r"(?m)^sfuClientSha256=([0-9a-f]{64})$", lock)
+        self.assertIsNotNone(current_hash)
+        self.assertEqual(
+            hashlib.sha256(asset.read_bytes()).hexdigest(),
+            current_hash.group(1),
+        )
+
+        nginx = (DEPLOY_DIR / "nginx-screego.conf").read_text(encoding="utf-8")
+        self.assertRegex(
+            nginx,
+            r"(?s)location = /sfu-client\.js\s*\{.*?alias /var/www/screego/sfu-client\.js;.*?\}",
+        )
+
     def test_nginx_proxies_voice_control_and_websocket_without_sensitive_logging(self):
         nginx = (DEPLOY_DIR / "nginx-screego.conf").read_text(encoding="utf-8")
 
