@@ -1,6 +1,6 @@
 # PartyLAN 原生客户端 Screego P2P 实施计划
 
-**状态：** 待实施
+**状态：** 本地实施完成，待外部实机验收
 **日期：** 2026-08-08
 **设计依据：**
 `docs/superpowers/specs/2026-08-08-partylan-native-screego-p2p-design.md`
@@ -207,3 +207,40 @@ Task 8 不能被自动测试替代；未取得实机结果前状态只能是“�
 - 原生 viewer 使用 Screego 临时 UDP TURN 配置并在客户端界面内播放。
 - Presence、共享租约、独立语音、音频排除和回滚路径保持有效。
 - 正式客户端实测包构建完成；Task 8 明确记录为外部验收。
+
+## 实施结果（2026-08-08）
+
+Task 1 至 Task 7 已完成，Task 8 保持为外部实机门禁。实现没有修改、重启或重新部署
+广州节点，也没有推送远端。
+
+- 协议客户端、持久房间连接和多观看者发布分别落在提交 `2c5c925`、`b9557e5`、
+  `6b5d04d`。
+- 原生观看桥、模式感知路由、双向媒体集成与重连共享重宣告落在提交 `646b569`。
+- `legacy-p2p` 使用 Screego `/stream`，客户端发布为每个观看者建立独立 Pion 连接；客户端
+  观看继续使用应用内 `GameCastReceiver`，不打开或嵌入 Screego 网页。
+- `sfu` 房间继续使用原有 `/sfu-ws` 路径；未知媒体模式被拒绝，不进行跨协议自动回退。
+- P2P claim 使用 `mediaMode=legacy-p2p`、`sfu=false` 且不发送 `starting`；P2P 停止不发送
+  SFU stopping 转换，离开房间前仍会释放共享租约。
+- 内存 Screego 信令集成测试已验证一个原生发布器同时向两个浏览器式观看端协商并发送
+  H.264 与 Opus，目标包竞态测试通过。
+
+验证结果：
+
+- 服务器 Python：37 项通过。
+- 服务器 Node：106 项通过。
+- 客户端前端 Node：40 项通过，前端生产构建通过。
+- 普通 Go 全仓与 `partylan_native_media` 标签全仓通过。
+- `go test -race ./internal/gamecast/screegop2p` 通过。
+- Screego 补丁校验、上游 UI 构建和 Go 测试通过。
+- `git diff --check` 通过；Wails 生成文件只有空白噪声，已清理。
+
+正式实测包：
+
+- `build/bin/PartyLAN.exe`：21,352,960 字节，SHA-256
+  `A7D754A4126157EB0B921CEFD4EB8F0E8B9F7EF790F663DAF3415C8D3A22766C`。
+- 构建时间：`2026-08-08 14:39:08.508 +08:00`。
+- 构建标签：`desktop,partylan_native_media,wv2runtime.download,production`，
+  `CGO_ENABLED=1`。
+- `build/bin/opus.dll`：731,936 字节，SHA-256
+  `2134411EA3DAF238B9FA163917292E8C9CF80593822A338A7938B3685269AF1F`。
+- 构建结束后没有 PartyLAN 残留进程。
