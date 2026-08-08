@@ -1503,7 +1503,7 @@ func TestGameCastWindowAudioStartupRefreshesOnceForStableApplication(t *testing.
 		windowProcessResolver: func(uintptr) (sharecatalog.WindowProcess, error) {
 			return sharecatalog.WindowProcess{ProcessID: 110, ProcessName: "player.exe"}, nil
 		},
-		gamecastAudioLoopStarter: func(_ *nativehost.Host, _ *shareSession, target audioCaptureTarget) error {
+		gamecastAudioLoopStarter: func(_ gameCastNativePublisher, _ *shareSession, target audioCaptureTarget) error {
 			attempts = append(attempts, target)
 			if len(attempts) == 1 {
 				return errors.New("initial process capture start failed")
@@ -1545,7 +1545,7 @@ func TestGameCastWindowAudioStartupStopsAfterOneFailedRefreshRetry(t *testing.T)
 		windowProcessResolver: func(uintptr) (sharecatalog.WindowProcess, error) {
 			return sharecatalog.WindowProcess{ProcessID: 110, ProcessName: "player.exe"}, nil
 		},
-		gamecastAudioLoopStarter: func(_ *nativehost.Host, _ *shareSession, target audioCaptureTarget) error {
+		gamecastAudioLoopStarter: func(_ gameCastNativePublisher, _ *shareSession, target audioCaptureTarget) error {
 			attempts++
 			if target.Mode == windowsaudio.CaptureSystemMix {
 				t.Fatal("startup attempted forbidden system-mix fallback")
@@ -1601,7 +1601,7 @@ func TestGameCastWindowAudioStartupRejectsDifferentOrUnstableRetry(t *testing.T)
 				windowProcessResolver: func(uintptr) (sharecatalog.WindowProcess, error) {
 					return sharecatalog.WindowProcess{ProcessID: 110, ProcessName: "player.exe"}, nil
 				},
-				gamecastAudioLoopStarter: func(_ *nativehost.Host, _ *shareSession, target audioCaptureTarget) error {
+				gamecastAudioLoopStarter: func(_ gameCastNativePublisher, _ *shareSession, target audioCaptureTarget) error {
 					attempts++
 					if target.Mode == windowsaudio.CaptureSystemMix {
 						t.Fatal("startup attempted forbidden system-mix fallback")
@@ -1654,7 +1654,7 @@ func TestGameCastRuntimeWindowAudioRebindsOnlyOnceWithinSameApplication(t *testi
 		windowProcessResolver: func(uintptr) (sharecatalog.WindowProcess, error) {
 			return sharecatalog.WindowProcess{ProcessID: 110, ProcessName: "player.exe"}, nil
 		},
-		gamecastAudioLoopStarter: func(_ *nativehost.Host, _ *shareSession, target audioCaptureTarget) error {
+		gamecastAudioLoopStarter: func(_ gameCastNativePublisher, _ *shareSession, target audioCaptureTarget) error {
 			starts++
 			if target.Mode != windowsaudio.CaptureIncludeProcessTree {
 				t.Fatalf("runtime target mode = %v", target.Mode)
@@ -1709,7 +1709,7 @@ func TestGameCastRuntimeAudioDoesNotRebindStaleDisplayOrDifferentApplication(t *
 				windowProcessResolver: func(uintptr) (sharecatalog.WindowProcess, error) {
 					return sharecatalog.WindowProcess{ProcessID: 110, ProcessName: "player.exe"}, nil
 				},
-				gamecastAudioLoopStarter: func(_ *nativehost.Host, _ *shareSession, _ audioCaptureTarget) error {
+				gamecastAudioLoopStarter: func(_ gameCastNativePublisher, _ *shareSession, _ audioCaptureTarget) error {
 					starts++
 					return nil
 				},

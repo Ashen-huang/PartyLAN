@@ -85,7 +85,7 @@ type App struct {
 	gamecastWS                 *gamecastws.Client
 	gamecastWSGeneration       uint64
 	gamecastP2PRoom            *screegop2p.Client
-	gamecastNativeHost         *nativehost.Host
+	gamecastNativeHost         gameCastNativePublisher
 	gamecastNativeShare        *shareSession
 	gamecastJar                *session.Jar
 	gamecastRoomCancel         context.CancelFunc
@@ -104,7 +104,7 @@ type App struct {
 	processLookup              func(int) (ps.Process, error)
 	gamecastShareAudioResolver gameCastShareAudioResolver
 	windowProcessResolver      func(uintptr) (sharecatalog.WindowProcess, error)
-	gamecastAudioLoopStarter   func(*nativehost.Host, *shareSession, audioCaptureTarget) error
+	gamecastAudioLoopStarter   func(gameCastNativePublisher, *shareSession, audioCaptureTarget) error
 	gamecastMediaCancel        context.CancelFunc
 	gamecastMediaDone          chan struct{}
 	mediaCancel                context.CancelFunc
@@ -124,6 +124,15 @@ type App struct {
 	voiceVolume         float32
 	voicePeerID         string
 	audioShareSelection map[string]bool
+}
+
+type gameCastNativePublisher interface {
+	Close() error
+	WriteH264Sample(data []byte, duration time.Duration) error
+	WriteH264LayerSample(rid string, data []byte, duration time.Duration) error
+	WriteOpusSample(data []byte, duration time.Duration) error
+	SessionCount() int
+	ActiveVideoLayers() []nativehost.VideoLayer
 }
 
 func NewApp(net network.Network) *App {
@@ -901,7 +910,7 @@ func closeGameCastVideoEncoders(encoders []gameCastVideoEncoder) {
 	}
 }
 
-func (a *App) startGameCastNativeVideoLoop(host *nativehost.Host, session *shareSession) error {
+func (a *App) startGameCastNativeVideoLoop(host gameCastNativePublisher, session *shareSession) error {
 	if host == nil || session == nil {
 		return fmt.Errorf("GameCast native video loop requires an active host session")
 	}
@@ -962,7 +971,7 @@ func (a *App) startGameCastNativeVideoLoop(host *nativehost.Host, session *share
 	return nil
 }
 
-func (a *App) startGameCastWindowVideoLoop(host *nativehost.Host, session *shareSession) error {
+func (a *App) startGameCastWindowVideoLoop(host gameCastNativePublisher, session *shareSession) error {
 	if host == nil || session == nil || session.windowHandle == 0 {
 		return fmt.Errorf("GameCast window video loop requires a selected window")
 	}
@@ -996,7 +1005,7 @@ func (a *App) startGameCastWindowVideoLoop(host *nativehost.Host, session *share
 	return nil
 }
 
-func (a *App) startGameCastVideoLoop(host *nativehost.Host, session *shareSession) error {
+func (a *App) startGameCastVideoLoop(host gameCastNativePublisher, session *shareSession) error {
 	if session == nil {
 		return fmt.Errorf("GameCast video loop requires an active host session")
 	}
@@ -1008,7 +1017,7 @@ func (a *App) startGameCastVideoLoop(host *nativehost.Host, session *shareSessio
 
 func (a *App) runGameCastVideoLoop(
 	ctx context.Context,
-	host *nativehost.Host,
+	host gameCastNativePublisher,
 	getFrame func() (*video.Frame, error),
 	stopCapture func() error,
 	encoders []gameCastVideoEncoder,
@@ -1251,7 +1260,7 @@ func (a *App) runGameCastVideoLoop(
 
 func (a *App) runGameCastNativeWindowVideoLoop(
 	ctx context.Context,
-	host *nativehost.Host,
+	host gameCastNativePublisher,
 	capturer *hostwindowcapture.Capturer,
 	encoders []gameCastVideoEncoder,
 	session *shareSession,
@@ -1347,7 +1356,7 @@ func (a *App) startWebRTCAudioLoop(manager *media.Manager, target audioCaptureTa
 	return nil
 }
 
-func (a *App) startGameCastAudioLoop(host *nativehost.Host, session *shareSession, target audioCaptureTarget) error {
+func (a *App) startGameCastAudioLoop(host gameCastNativePublisher, session *shareSession, target audioCaptureTarget) error {
 	if host == nil {
 		return fmt.Errorf("GameCast audio loop requires an active host")
 	}
@@ -1755,7 +1764,7 @@ func (a *App) currentGameCastNativeShare(session *shareSession) bool {
 	return a.gamecastNativeShare == session
 }
 
-func (a *App) tryRebindGameCastWindowAudio(host *nativehost.Host, session *shareSession) bool {
+func (a *App) tryRebindGameCastWindowAudio(host gameCastNativePublisher, session *shareSession) bool {
 	if host == nil || session == nil {
 		return false
 	}
@@ -3673,7 +3682,7 @@ func gameCastNativeHostReadyResult(status gamecastws.Status) (bool, error) {
 }
 
 func (a *App) startGameCastAudioLoopOrDisable(
-	host *nativehost.Host,
+	host gameCastNativePublisher,
 	session *shareSession,
 	primary audioCaptureTarget,
 	audioMode string,
