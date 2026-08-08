@@ -1,6 +1,6 @@
 # PartyLAN P2P 自适应稳定性修复实施计划
 
-**状态：** 实施中
+**状态：** 已完成，待实机 A/B 验收
 **日期：** 2026-08-08
 **设计依据：** `docs/superpowers/specs/2026-08-08-partylan-p2p-adaptive-stability-design.md`
 
@@ -40,3 +40,28 @@
 与生产构建。审计差异、敏感信息和生成噪声，重建 PartyLAN 客户端。生产变更只允许原子
 替换网页静态资源和 Nginx 中的缓存版本，不重启屏幕/语音 SFU 或 Screego 容器；完成
 `test` baseline 与修复策略的服务端可达性检查并保留回滚备份。
+
+## 执行记录
+
+- 网页策略升级为 `adaptive-per-peer-v3`，部署资产版本为
+  `webrtc-adaptive.js?v=4`、`inject.js?v=6.25`。
+- `test` 房间可通过 `?room=test&adaptive=baseline` 启用
+  `browser-bwe-baseline-v1`；其他房间忽略该参数。
+- 原生策略升级为 `native-global-adaptive-v2`，非标准源先生成同尺寸 45/30 FPS 档；
+  单个弱观看者只进入诊断，不改变共享编码层。
+- 采集暂不可用、编码失败/过载和传输写入失败分别归因为 `capture-stalled`、
+  `encoder-overload`、`transport-write`。
+- 自动化通过：服务器 Node 112、Python 37、前端 Node 40；普通 Go 全仓与
+  `partylan_native_media` Go 全仓通过；前端生产构建与 Wails 原生构建通过。
+- 广州节点回滚备份：
+  `/root/screego/backups/p2p-adaptive-20260808T174531+0800`。
+- 线上 `inject.js` SHA-256：
+  `6f30ae3a7a558c90ee0e79a946b86e69b324c2f39d148dadf47bcc9cfeb59445`。
+- 线上 `webrtc-adaptive.js` SHA-256：
+  `597c42727c045121b3a8b857a038877f2e2976786bc21bbd0804a40b15c94ce8`。
+- 部署后 `screego-register`、屏幕 SFU、Screego 容器和语音容器 PID 均未变化；
+  屏幕媒体开关保持 `SFU=false`、canary 为空、legacy P2P 允许。
+- 最终 `PartyLAN.exe` SHA-256：
+  `D15D263D482529F3C0C00CCDEED35DE895BED42C7C6E23418E647B20372ED682`。
+- `opus.dll` SHA-256：
+  `2134411EA3DAF238B9FA163917292E8C9CF80593822A338A7938B3685269AF1F`。

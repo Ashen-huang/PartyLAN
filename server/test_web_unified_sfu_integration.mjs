@@ -131,6 +131,7 @@ function loadHarness(fetchImpl = async () => jsonResponse({ ok: false })) {
       '    shouldDropNativePeerMessage: shouldDropNativePeerMessage,',
       '    renderWebPresenceMembers: renderWebPresenceMembers,',
       '    ensureWebPresence: ensureWebPresence,',
+      '    leaveWebPresence: leaveWebPresence,',
       '    fetchRoomState: fetchRoomState,',
       '    syncViewerSfuState: syncViewerSfuState,',
       '    claimWebShare: claimWebShare,',
@@ -343,6 +344,34 @@ test('web Presence advertises the unified contract and owns the stable complete 
   assert.equal(harness.document.anchor.children.length, 2, 'React redraw must not lose the Presence roster');
 });
 
+test('web Presence activates unified mode without a room query and clears it on leave', async () => {
+  const room = {
+    room: 'room-a', active: true, mediaMode: 'sfu', mediaProtocolVersion: 1,
+    sharing: false, sharePhase: 'idle', sfu: false,
+  };
+  const harness = loadHarness(async (url) => {
+    const pathname = String(url);
+    if (pathname.startsWith('/api/room-state?')) return jsonResponse({ ok: true, state: room });
+    if (pathname === '/api/presence/join') {
+      return jsonResponse({ ok: true, participant: { participantId: 'web-self', role: 'member' }, room });
+    }
+    if (pathname.startsWith('/api/presence?')) {
+      return jsonResponse({ ok: true, room, participants: [] });
+    }
+    return jsonResponse({ ok: true });
+  });
+  harness.context.location.href = 'https://partylanapp.com/';
+  harness.context.location.search = '';
+
+  await harness.api.ensureWebPresence('room-a');
+  await flushPromises();
+
+  assert.equal(harness.context.window.__PARTYLAN_SFU_ONLY__, true);
+
+  await harness.api.leaveWebPresence(false);
+  assert.equal(harness.context.window.__PARTYLAN_SFU_ONLY__, false);
+});
+
 test('viewer connects only for a compatible live SFU lease and disconnects on stopping', async () => {
   const harness = loadHarness();
   const base = {
@@ -468,7 +497,7 @@ test('web host claim, readiness and normal stop follow the four-phase lease cont
 test('versioned assets load inject before the SFU client without exposing sensitive material', () => {
   const replacement = nginxSource.match(/sub_filter '<\/head>' '([^']+)<\/head>'/);
   assert.ok(replacement);
-  assert.ok(replacement[1].indexOf('/inject.js?v=6.23') >= 0);
+  assert.ok(replacement[1].indexOf('/inject.js?v=6.25') >= 0);
   assert.ok(replacement[1].indexOf('/sfu-client.js?v=1.9') >= 0);
   assert.ok(replacement[1].indexOf('/inject.js') < replacement[1].indexOf('/sfu-client.js'));
 

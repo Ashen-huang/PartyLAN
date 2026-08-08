@@ -21,9 +21,26 @@ test('adaptive policy loads before inject', () => {
 });
 
 test('single-viewer sharing uses per-peer adaptive state', () => {
-  assert.match(inject, /pc\._gcAdaptiveState\s*=\s*GameCastWebRTCAdaptive\.createAdaptiveState/);
+  assert.match(inject, /pc\._gcAdaptiveState\s*=\s*createCurrentAdaptiveState/);
   assert.match(inject, /function shouldUseAdaptiveStreaming\(pc\)/);
   assert.doesNotMatch(inject, /getConnectedVideoSenderPeerCount\(\) > 1/);
+});
+
+test('test-room baseline bypasses custom sender parameters but keeps policy telemetry', () => {
+  assert.match(inject, /resolveAdaptiveMode\(currentRoomId\(\), location\.search/);
+  assert.match(inject, /function browserBWEBaselineEnabled\(\)/);
+  const applyBitrate = inject.slice(
+    inject.indexOf('function applyBitrate(pc)'),
+    inject.indexOf('function requestPeerIceRecovery'),
+  );
+  assert.match(applyBitrate, /if \(browserBWEBaselineEnabled\(\)\) return Promise\.resolve\(false\)/);
+  assert.match(inject, /state\.policyVersion\s*=\s*currentAdaptivePolicyMode\(\)/);
+  assert.match(inject, /adaptivePolicyVersion:\s*adaptiveState\.policyVersion/);
+});
+
+test('recovery samples include the next higher profile bitrate', () => {
+  assert.match(inject, /computePeerAdaptiveProfile\(pc, adaptiveState\.level - 1\)/);
+  assert.match(inject, /nextProfileKbps:\s*nextAdaptiveProfile/);
 });
 
 test('monitor samples every connected video sender independently', () => {

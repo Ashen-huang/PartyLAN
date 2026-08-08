@@ -5,21 +5,37 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
-  var POLICY_VERSION = 'adaptive-per-peer-v2';
-  var OBSERVATION_MS = 15000;
-  var WINDOW_SIZE = 7;
-  var REQUIRED_BAD = 5;
-  var REQUIRED_CONSECUTIVE = 3;
-  var DOWNSHIFT_COOLDOWN_MS = 20000;
-  var RECOVERY_STABLE_MS = 30000;
-  var RECOVERY_COOLDOWN_MS = 30000;
-  var MAX_LEVEL = 4;
+  var POLICY_VERSION = 'adaptive-per-peer-v3';
+  var BASELINE_POLICY_VERSION = 'browser-bwe-baseline-v1';
+  var OBSERVATION_MS = 4000;
+  var WINDOW_SIZE = 3;
+  var REQUIRED_BAD = 2;
+  var REQUIRED_CONSECUTIVE = 2;
+  var DOWNSHIFT_COOLDOWN_MS = 8000;
+  var RECOVERY_STABLE_MS = 10000;
+  var RECOVERY_COOLDOWN_MS = 12000;
+  var RECOVERY_HEADROOM = 1.2;
+  var MAX_LEVEL = 5;
   var PROFILES = {
-    1: {maxWidth: 1280, maxHeight: 720, maxFramerate: 24, maxBitrate: 3000000},
-    2: {maxWidth: 960, maxHeight: 540, maxFramerate: 24, maxBitrate: 1700000},
-    3: {maxWidth: 854, maxHeight: 480, maxFramerate: 20, maxBitrate: 1000000},
-    4: {maxWidth: 640, maxHeight: 360, maxFramerate: 15, maxBitrate: 600000}
+    0: {preserveSource: true, maxFramerate: 60, maxBitrate: 10000000},
+    1: {preserveSource: true, maxFramerate: 45, maxBitrate: 8000000},
+    2: {preserveSource: true, maxFramerate: 30, maxBitrate: 5000000},
+    3: {maxWidth: 1280, maxHeight: 720, maxFramerate: 30, maxBitrate: 3000000},
+    4: {maxWidth: 960, maxHeight: 540, maxFramerate: 24, maxBitrate: 1700000},
+    5: {maxWidth: 640, maxHeight: 360, maxFramerate: 18, maxBitrate: 600000}
   };
+
+  function resolveAdaptiveMode(roomId, search) {
+    if (String(roomId || '').toLowerCase() !== 'test') return POLICY_VERSION;
+    var query = String(search || '').replace(/^\?/, '').split('&');
+    for (var index = 0; index < query.length; index++) {
+      var parts = query[index].split('=');
+      var key = decodeURIComponent(parts[0] || '');
+      var value = decodeURIComponent(parts.slice(1).join('=') || '');
+      if (key === 'adaptive' && value === 'baseline') return BASELINE_POLICY_VERSION;
+    }
+    return POLICY_VERSION;
+  }
 
   function createAdaptiveState(connectedAt) {
     return {
@@ -61,7 +77,7 @@
     var lowAvailable =
       profileKbps > 0 &&
       Number(sample.availableOutgoingBitrate) > 0 &&
-      Number(sample.availableOutgoingBitrate) < profileKbps * 1000 * 0.7;
+      Number(sample.availableOutgoingBitrate) < profileKbps * 1000 * 0.8;
     var highLoss = Number(sample.lossPercent) > 5;
     var bandwidthLimited = sample.qualityLimitationReason === 'bandwidth';
     return bandwidthLimited || lowAvailable || (
@@ -71,6 +87,7 @@
 
   function isStableSample(sample) {
     var profileKbps = Number(sample.profileKbps) || 0;
+    var nextProfileKbps = Number(sample.nextProfileKbps) || profileKbps;
     var availableOutgoingBitrate = Number(sample.availableOutgoingBitrate) || 0;
     return (
       sample.valid &&
@@ -78,7 +95,8 @@
       Number(sample.jitterMs) < 40 &&
       sample.qualityLimitationReason !== 'bandwidth' &&
       profileKbps > 0 &&
-      availableOutgoingBitrate >= profileKbps * 1000
+      nextProfileKbps > 0 &&
+      availableOutgoingBitrate >= nextProfileKbps * 1000 * RECOVERY_HEADROOM
     );
   }
 
@@ -201,11 +219,11 @@
     var targetBitrate = Math.max(1, Number(options.targetBitrate) || 1);
     var viewerCount = Math.max(1, Number(options.viewerCount) || 1);
     var serverSafeBitrate = Math.max(1, Number(options.serverSafeBitrate) || targetBitrate);
-    var profile = PROFILES[level] || null;
-    var maxWidth = profile ? Math.min(sourceWidth, profile.maxWidth) : sourceWidth;
-    var maxHeight = profile ? Math.min(sourceHeight, profile.maxHeight) : sourceHeight;
-    var maxFramerate = profile ? Math.min(configuredFps, profile.maxFramerate) : configuredFps;
-    var profileBitrate = profile ? profile.maxBitrate : targetBitrate;
+    var profile = PROFILES[level] || PROFILES[0];
+    var maxWidth = profile.preserveSource ? sourceWidth : Math.min(sourceWidth, profile.maxWidth);
+    var maxHeight = profile.preserveSource ? sourceHeight : Math.min(sourceHeight, profile.maxHeight);
+    var maxFramerate = Math.min(configuredFps, profile.maxFramerate);
+    var profileBitrate = profile.maxBitrate;
     var applyServerBudget = options.applyServerBudget === true;
     var protectionMaxWidth = Math.max(0, Number(options.protectionMaxWidth) || 0);
     var protectionMaxHeight = Math.max(0, Number(options.protectionMaxHeight) || 0);
@@ -232,6 +250,8 @@
 
   return {
     POLICY_VERSION: POLICY_VERSION,
+    BASELINE_POLICY_VERSION: BASELINE_POLICY_VERSION,
+    resolveAdaptiveMode: resolveAdaptiveMode,
     createAdaptiveState: createAdaptiveState,
     evaluateAdaptiveSample: evaluateAdaptiveSample,
     computeEncodingProfile: computeEncodingProfile,
@@ -244,7 +264,8 @@
       requiredConsecutive: REQUIRED_CONSECUTIVE,
       downshiftCooldownMs: DOWNSHIFT_COOLDOWN_MS,
       recoveryStableMs: RECOVERY_STABLE_MS,
-      recoveryCooldownMs: RECOVERY_COOLDOWN_MS
+      recoveryCooldownMs: RECOVERY_COOLDOWN_MS,
+      recoveryHeadroom: RECOVERY_HEADROOM
     }
   };
 });

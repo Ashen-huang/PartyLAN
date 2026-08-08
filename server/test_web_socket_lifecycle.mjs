@@ -67,7 +67,10 @@ function loadLifecycleHarness() {
     [
       '  globalThis.__gcLifecycle = {',
       '    patchWebSocket: patchWebSocket,',
-      '    activeRoomSocket: function () { return activeRoomSocket; }',
+      '    activeRoomSocket: function () { return activeRoomSocket; },',
+      '    currentRoomId: currentRoomId,',
+      '    setPresenceRoom: function (roomId) { webPresenceRoom = roomId; },',
+      '    applyRoomState: function (state) { lastRoomState = state; applyRoomMediaMode(state); }',
       '  };',
       '})();',
     ].join('\n'),
@@ -132,6 +135,10 @@ function loadLifecycleHarness() {
   return {
     WebSocket: context.window.WebSocket,
     activeRoomSocket: context.__gcLifecycle.activeRoomSocket,
+    currentRoomId: context.__gcLifecycle.currentRoomId,
+    setPresenceRoom: context.__gcLifecycle.setPresenceRoom,
+    applyRoomState: context.__gcLifecycle.applyRoomState,
+    sfuOnly: () => context.window.__PARTYLAN_SFU_ONLY__ === true,
   };
 }
 
@@ -176,4 +183,23 @@ test('non-stream sockets remain transparent to the room lifecycle', () => {
   assert.equal(socket instanceof FakeWebSocket, true);
   assert.equal(harness.activeRoomSocket(), null);
   assert.equal(socket.closeCalls.length, 0);
+});
+
+test('a confirmed room without a query is cleared when its active socket closes', () => {
+  const harness = loadLifecycleHarness();
+  const socket = new harness.WebSocket('wss://gamecast.test/stream');
+  socket.onmessage = () => undefined;
+  socket.emit('message', { data: JSON.stringify({ type: 'room', payload: { id: 'room-a' } }) });
+  harness.setPresenceRoom('room-a');
+  harness.applyRoomState({
+    room: 'room-a', active: true, mediaMode: 'sfu', mediaProtocolVersion: 1,
+  });
+
+  assert.equal(harness.currentRoomId(), 'room-a');
+  assert.equal(harness.sfuOnly(), true);
+
+  socket.close(1000, '');
+
+  assert.equal(harness.currentRoomId(), '');
+  assert.equal(harness.sfuOnly(), false);
 });

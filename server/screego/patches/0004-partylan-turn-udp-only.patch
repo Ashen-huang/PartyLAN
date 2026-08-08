@@ -1,0 +1,217 @@
+diff --git a/config/config.go b/config/config.go
+index 134743b..7c55966 100644
+--- a/config/config.go
++++ b/config/config.go
+@@ -48,6 +48,7 @@ type Config struct {
+ 
+ 	TurnAddress   string `default:":3478" required:"true" split_words:"true"`
+ 	TurnPortRange string `split_words:"true"`
++	TurnEnableTCP bool   `default:"true" split_words:"true"`
+ 
+ 	TurnExternalIP     []string `split_words:"true"`
+ 	TurnExternalPort   string   `default:"3478" split_words:"true"`
+diff --git a/config/turn_transport_test.go b/config/turn_transport_test.go
+new file mode 100644
+index 0000000..1506ab1
+--- /dev/null
++++ b/config/turn_transport_test.go
+@@ -0,0 +1,39 @@
++package config
++
++import (
++	"os"
++	"testing"
++
++	"github.com/rs/zerolog"
++)
++
++func TestTurnEnableTCPDefaultsToTrue(t *testing.T) {
++	for _, name := range []string{
++		"SCREEGO_TURN_ENABLE_TCP",
++		"SCREEGO_EXTERNAL_IP",
++		"SCREEGO_TURN_EXTERNAL_IP",
++		"SCREEGO_SECRET",
++	} {
++		value, present := os.LookupEnv(name)
++		_ = os.Unsetenv(name)
++		t.Cleanup(func() {
++			if present {
++				_ = os.Setenv(name, value)
++			} else {
++				_ = os.Unsetenv(name)
++			}
++		})
++	}
++	_ = os.Setenv("SCREEGO_EXTERNAL_IP", "127.0.0.1")
++	_ = os.Setenv("SCREEGO_SECRET", "partylan-test-secret")
++
++	conf, logs := Get()
++	for _, entry := range logs {
++		if entry.Level == zerolog.FatalLevel {
++			t.Fatalf("load config: %s", entry.Msg)
++		}
++	}
++	if !conf.TurnEnableTCP {
++		t.Fatal("TURN TCP should remain enabled by default")
++	}
++}
+diff --git a/turn/server.go b/turn/server.go
+index 9d78e2a..fedce54 100644
+--- a/turn/server.go
++++ b/turn/server.go
+@@ -86,9 +86,17 @@ func newInternalServer(conf config.Config) (Server, error) {
+ 	if err != nil {
+ 		return nil, fmt.Errorf("udp: could not listen on %s: %s", conf.TurnAddress, err)
+ 	}
+-	tcpListener, err := net.Listen("tcp", conf.TurnAddress)
+-	if err != nil {
+-		return nil, fmt.Errorf("tcp: could not listen on %s: %s", conf.TurnAddress, err)
++
++	listenerConfigs := []turn.ListenerConfig{}
++	if conf.TurnEnableTCP {
++		tcpListener, err := net.Listen("tcp", conf.TurnAddress)
++		if err != nil {
++			_ = udpListener.Close()
++			return nil, fmt.Errorf("tcp: could not listen on %s: %s", conf.TurnAddress, err)
++		}
++		listenerConfigs = append(listenerConfigs, turn.ListenerConfig{
++			Listener: tcpListener,
++		})
+ 	}
+ 
+ 	svr := &InternalServer{lookup: map[string]Entry{}}
+@@ -108,12 +116,15 @@ func newInternalServer(conf config.Config) (Server, error) {
+ 		return true
+ 	}
+ 
++	for index := range listenerConfigs {
++		listenerConfigs[index].RelayAddressGenerator = gen
++		listenerConfigs[index].PermissionHandler = permissions
++	}
++
+ 	_, err = turn.NewServer(turn.ServerConfig{
+-		Realm:       Realm,
+-		AuthHandler: svr.authenticate,
+-		ListenerConfigs: []turn.ListenerConfig{
+-			{Listener: tcpListener, RelayAddressGenerator: gen, PermissionHandler: permissions},
+-		},
++		Realm:           Realm,
++		AuthHandler:     svr.authenticate,
++		ListenerConfigs: listenerConfigs,
+ 		PacketConnConfigs: []turn.PacketConnConfig{
+ 			{PacketConn: udpListener, RelayAddressGenerator: gen, PermissionHandler: permissions},
+ 		},
+@@ -122,7 +133,7 @@ func newInternalServer(conf config.Config) (Server, error) {
+ 		return nil, err
+ 	}
+ 
+-	log.Info().Str("addr", conf.TurnAddress).Msg("Start TURN/STUN")
++	log.Info().Str("addr", conf.TurnAddress).Bool("tcp", conf.TurnEnableTCP).Msg("Start TURN/STUN")
+ 	return svr, nil
+ }
+ 
+diff --git a/turn/udp_only_test.go b/turn/udp_only_test.go
+new file mode 100644
+index 0000000..8bb03b8
+--- /dev/null
++++ b/turn/udp_only_test.go
+@@ -0,0 +1,43 @@
++package turn
++
++import (
++	"net"
++	"testing"
++
++	"github.com/rs/zerolog"
++	"github.com/screego/server/config"
++)
++
++func TestInternalServerDoesNotListenOnTCPWhenDisabled(t *testing.T) {
++	probe, err := net.ListenPacket("udp", "127.0.0.1:0")
++	if err != nil {
++		t.Fatalf("reserve TURN port: %v", err)
++	}
++	turnAddress := probe.LocalAddr().String()
++	if err := probe.Close(); err != nil {
++		t.Fatalf("release TURN probe port: %v", err)
++	}
++
++	t.Setenv("SCREEGO_EXTERNAL_IP", "127.0.0.1")
++	t.Setenv("SCREEGO_SECRET", "partylan-test-secret")
++	t.Setenv("SCREEGO_TURN_ADDRESS", turnAddress)
++	t.Setenv("SCREEGO_TURN_ENABLE_TCP", "false")
++
++	conf, logs := config.Get()
++	for _, entry := range logs {
++		if entry.Level == zerolog.FatalLevel {
++			t.Fatalf("load config: %s", entry.Msg)
++		}
++	}
++	if _, err := newInternalServer(conf); err != nil {
++		t.Fatalf("start UDP-only TURN server: %v", err)
++	}
++
++	tcpListener, err := net.Listen("tcp", turnAddress)
++	if err != nil {
++		t.Fatalf("TCP address %s should remain unused: %v", turnAddress, err)
++	}
++	if err := tcpListener.Close(); err != nil {
++		t.Fatalf("close TCP probe: %v", err)
++	}
++}
+diff --git a/ws/room.go b/ws/room.go
+index 758ea01..11a9367 100644
+--- a/ws/room.go
++++ b/ws/room.go
+@@ -69,13 +69,13 @@ func (r *Room) newSession(host, client xid.ID, rooms *Rooms, v4, v6 net.IP) {
+ func (r *Rooms) addresses(prefix string, v4, v6 net.IP, tcp bool) (result []string) {
+ 	if v4 != nil {
+ 		result = append(result, fmt.Sprintf("%s:%s:%s", prefix, v4.String(), r.config.TurnPort))
+-		if tcp {
++		if tcp && r.config.TurnEnableTCP {
+ 			result = append(result, fmt.Sprintf("%s:%s:%s?transport=tcp", prefix, v4.String(), r.config.TurnPort))
+ 		}
+ 	}
+ 	if v6 != nil {
+ 		result = append(result, fmt.Sprintf("%s:[%s]:%s", prefix, v6.String(), r.config.TurnPort))
+-		if tcp {
++		if tcp && r.config.TurnEnableTCP {
+ 			result = append(result, fmt.Sprintf("%s:[%s]:%s?transport=tcp", prefix, v6.String(), r.config.TurnPort))
+ 		}
+ 	}
+diff --git a/ws/turn_transport_test.go b/ws/turn_transport_test.go
+new file mode 100644
+index 0000000..50bf9b6
+--- /dev/null
++++ b/ws/turn_transport_test.go
+@@ -0,0 +1,30 @@
++package ws
++
++import (
++	"net"
++	"reflect"
++	"testing"
++
++	"github.com/rs/zerolog"
++	"github.com/screego/server/config"
++)
++
++func TestTurnAddressesOmitTCPWhenDisabled(t *testing.T) {
++	t.Setenv("SCREEGO_EXTERNAL_IP", "127.0.0.1")
++	t.Setenv("SCREEGO_SECRET", "partylan-test-secret")
++	t.Setenv("SCREEGO_TURN_ENABLE_TCP", "false")
++
++	conf, logs := config.Get()
++	for _, entry := range logs {
++		if entry.Level == zerolog.FatalLevel {
++			t.Fatalf("load config: %s", entry.Msg)
++		}
++	}
++
++	rooms := &Rooms{config: conf}
++	got := rooms.addresses("turn", net.ParseIP("203.0.113.10"), nil, true)
++	want := []string{"turn:203.0.113.10:3478"}
++	if !reflect.DeepEqual(got, want) {
++		t.Fatalf("TURN URLs = %v, want UDP-only %v", got, want)
++	}
++}

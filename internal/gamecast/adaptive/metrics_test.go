@@ -53,6 +53,20 @@ func TestLocalMetricsUsesP95EncodeBudgetAndResetsWindow(t *testing.T) {
 	}
 }
 
+func TestLocalMetricsSeparatesEncoderAndTransportFailures(t *testing.T) {
+	start := time.Unix(6250, 0)
+	metrics := NewLocalMetrics(start)
+	metrics.RecordEncode(10*time.Millisecond, 0, false, false)
+	metrics.RecordEncode(10*time.Millisecond, 1000, false, false)
+	sample, ok := metrics.Snapshot(start.Add(2*time.Second), Profile{FPS: 30})
+	if !ok {
+		t.Fatal("expected local sample")
+	}
+	if sample.EncodeFailures != 1 || sample.WriteFailures != 1 {
+		t.Fatalf("failures = encode:%d write:%d, want one each", sample.EncodeFailures, sample.WriteFailures)
+	}
+}
+
 func TestLocalMetricsDoesNotTreatSparseStaticUpdatesAsFreshFPSPressure(t *testing.T) {
 	start := time.Unix(6500, 0)
 	metrics := NewLocalMetrics(start)
@@ -82,6 +96,9 @@ func TestControllerRejectDecisionRestoresOldProfileAndFreezesAfterTwoFailures(t 
 		at := start.Add(time.Duration(index*2) * time.Second)
 		bad.At = at
 		decision = controller.Observe(at, &bad, nil)
+		if decision != nil {
+			break
+		}
 	}
 	if decision == nil || controller.Current().FPS != 45 {
 		t.Fatalf("decision=%#v current=%#v", decision, controller.Current())
@@ -96,6 +113,9 @@ func TestControllerRejectDecisionRestoresOldProfileAndFreezesAfterTwoFailures(t 
 		at := start.Add(time.Duration(11+index*2) * time.Second)
 		bad.At = at
 		decision = controller.Observe(at, &bad, nil)
+		if decision != nil {
+			break
+		}
 	}
 	if decision == nil {
 		t.Fatal("expected second downshift decision")

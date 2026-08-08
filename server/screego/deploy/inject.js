@@ -161,9 +161,30 @@
     return (p && p.w) ? { width: { ideal: p.w }, height: { ideal: p.h } } : {};
   }
 
-  function currentRoomId() {
+  function roomIdFromLocation() {
     var match = location.search.match(/[?&]room=([^&]+)/);
     return match ? decodeURIComponent(match[1]) : '';
+  }
+
+  function currentRoomId() {
+    return roomIdFromLocation() || String(activeRoomSocketRoomId || webPresenceRoom || '').trim();
+  }
+
+  function currentAdaptivePolicyMode() {
+    if (typeof GameCastWebRTCAdaptive === 'undefined') return '';
+    return GameCastWebRTCAdaptive.resolveAdaptiveMode(currentRoomId(), location.search || '');
+  }
+
+  function browserBWEBaselineEnabled() {
+    return typeof GameCastWebRTCAdaptive !== 'undefined' &&
+      currentAdaptivePolicyMode() === GameCastWebRTCAdaptive.BASELINE_POLICY_VERSION;
+  }
+
+  function createCurrentAdaptiveState(connectedAt) {
+    if (typeof GameCastWebRTCAdaptive === 'undefined') return null;
+    var state = GameCastWebRTCAdaptive.createAdaptiveState(connectedAt);
+    state.policyVersion = currentAdaptivePolicyMode() || GameCastWebRTCAdaptive.POLICY_VERSION;
+    return state;
   }
 
   function isUnifiedSfuRoom(state) {
@@ -639,10 +660,7 @@
   function resetAdaptiveStreamingState() {
     adaptiveServerBudgetPeerCount = 0;
     activePCs.forEach(function (pc) {
-      pc._gcAdaptiveState = null;
-      if (typeof GameCastWebRTCAdaptive !== 'undefined') {
-        pc._gcAdaptiveState = GameCastWebRTCAdaptive.createAdaptiveState(Date.now());
-      }
+      pc._gcAdaptiveState = createCurrentAdaptiveState(Date.now());
       pc._gcAdaptivePrev = null;
       pc._gcAdaptiveProfile = null;
       pc._gcAdaptivePendingDecision = '';
@@ -867,6 +885,7 @@
   function getAdaptiveStatusLabel(pc) {
     var state = pc && pc._gcAdaptiveState;
     var profile = pc && pc._gcAdaptiveProfile;
+    if (state && state.policyVersion === 'browser-bwe-baseline-v1') return 'BWE 基线';
     if (!state || !profile || state.level <= 0) return '默认';
     return 'L' + state.level + ' / ' + profile.maxWidth + 'x' + profile.maxHeight +
       ' / ' + profile.maxFramerate + ' FPS / ' + formatKbps(profile.maxBitrate / 1000);
@@ -875,6 +894,7 @@
   function shouldUseAdaptiveStreaming(pc) {
     return !!activeDisplayStream &&
       typeof GameCastWebRTCAdaptive !== 'undefined' &&
+      !browserBWEBaselineEnabled() &&
       peerConnectionIsMediaConnected(pc) &&
       peerConnectionHasVideoSender(pc);
   }
@@ -940,8 +960,8 @@
     return null;
   }
 
-  function computePeerAdaptiveProfile(pc) {
-    if (typeof GameCastWebRTCAdaptive === 'undefined') return null;
+  function computePeerAdaptiveProfile(pc, levelOverride) {
+    if (typeof GameCastWebRTCAdaptive === 'undefined' || browserBWEBaselineEnabled()) return null;
     var sender = getPeerVideoSender(pc);
     var settings = sender && sender.track && typeof sender.track.getSettings === 'function'
       ? sender.track.getSettings() || {}
@@ -950,12 +970,12 @@
     var configuredResolution = RESOLUTIONS[cfg.res] || {};
     var sourceWidth = settings.width || configuredResolution.w || 1280;
     var sourceHeight = settings.height || configuredResolution.h || 720;
-    var state = pc._gcAdaptiveState || GameCastWebRTCAdaptive.createAdaptiveState(Date.now());
+    var state = pc._gcAdaptiveState || createCurrentAdaptiveState(Date.now());
     pc._gcAdaptiveState = state;
     var descriptor = getAdaptivePeerDescriptor(pc);
     var applyServerBudget = isServerBudgetedAdaptivePeer(descriptor);
     var profile = GameCastWebRTCAdaptive.computeEncodingProfile({
-      level: state.level,
+      level: typeof levelOverride === 'number' ? levelOverride : state.level,
       sourceWidth: sourceWidth,
       sourceHeight: sourceHeight,
       configuredFps: cfg.fps || 35,
@@ -967,15 +987,18 @@
       protectionMaxHeight: pc._gcProtectionMaxHeight || 0,
       protectionMaxBitrate: pc._gcProtectionMaxBitrate || 0
     });
-    pc._gcAdaptiveProfile = profile;
+    if (typeof levelOverride !== 'number') pc._gcAdaptiveProfile = profile;
     return profile;
   }
 
   function sampleAdaptiveStreamingPeer(descriptor) {
     var pc = descriptor && descriptor.pc;
     if (!shouldUseAdaptiveStreaming(pc) || pc._gcAdaptiveFetchPromise) return;
-    var adaptiveState = pc._gcAdaptiveState || GameCastWebRTCAdaptive.createAdaptiveState(Date.now());
+    var adaptiveState = pc._gcAdaptiveState || createCurrentAdaptiveState(Date.now());
     var adaptiveProfile = computePeerAdaptiveProfile(pc);
+    var nextAdaptiveProfile = adaptiveState && adaptiveState.level > 0
+      ? computePeerAdaptiveProfile(pc, adaptiveState.level - 1)
+      : adaptiveProfile;
     var prev = pc._gcAdaptivePrev;
     var statsPromise = getStatsWithTimeout(pc, STATS_FETCH_TIMEOUT_MS);
     pc._gcAdaptiveFetchPromise = statsPromise;
@@ -1019,6 +1042,9 @@
         jitterMs: remoteJitterMs,
         outboundKbps: 0,
         profileKbps: adaptiveProfile ? adaptiveProfile.maxBitrate / 1000 : computeTargetBitrate() / 1000,
+        nextProfileKbps: nextAdaptiveProfile
+          ? nextAdaptiveProfile.maxBitrate / 1000
+          : computeTargetBitrate() / 1000,
         availableOutgoingBitrate: pair.availableOutgoingBitrate || 0,
         qualityLimitationReason: qualityReason
       };
@@ -1352,8 +1378,14 @@
 
     socket.addEventListener('close', function () {
       if (activeRoomSocket === socket) {
+        var closedRoomId = activeRoomSocketRoomId || socket._gcRoomId || '';
         activeRoomSocket = null;
         activeRoomSocketRoomId = '';
+        if (!roomIdFromLocation() && webPresenceRoom && sameRoomId(webPresenceRoom, closedRoomId)) {
+          stopRoomStateHeartbeat();
+          leaveWebPresence(false);
+          clearRoomMediaMode();
+        }
       }
     });
 
@@ -2186,9 +2218,7 @@
       pc._gcQualityState = typeof GameCastWebRTCQuality !== 'undefined'
         ? GameCastWebRTCQuality.createQualityState(Date.now())
         : null;
-      pc._gcAdaptiveState = typeof GameCastWebRTCAdaptive !== 'undefined'
-        ? GameCastWebRTCAdaptive.createAdaptiveState(Date.now())
-        : null;
+      pc._gcAdaptiveState = createCurrentAdaptiveState(Date.now());
       pc._gcAdaptiveProfile = null;
       pc._gcAdaptivePendingDecision = '';
       pc._gcAdaptiveConnected = false;
@@ -2233,9 +2263,7 @@
       pc.addEventListener('connectionstatechange', function () {
         if (pc.connectionState === 'connected' && !pc._gcAdaptiveConnected) {
           pc._gcAdaptiveConnected = true;
-          pc._gcAdaptiveState = typeof GameCastWebRTCAdaptive !== 'undefined'
-            ? GameCastWebRTCAdaptive.createAdaptiveState(Date.now())
-            : null;
+          pc._gcAdaptiveState = createCurrentAdaptiveState(Date.now());
           pc._gcAdaptivePrev = null;
         }
         if (['closed', 'failed'].indexOf(pc.connectionState) >= 0) {
@@ -2257,6 +2285,7 @@
   }
 
   function applyBitrate(pc) {
+    if (browserBWEBaselineEnabled()) return Promise.resolve(false);
     var c = extCfg();
     var targetBitrate = computeTargetBitrate();
     var profile = computePeerAdaptiveProfile(pc) || {
@@ -3273,7 +3302,7 @@
       pc._gcStatsReportCounter = (pc._gcStatsReportCounter || 0) + 1;
       if (pc._gcStatsReportCounter >= 5) {
         pc._gcStatsReportCounter = 0;
-        var room = (location.search.match(/[?&]room=([^&]+)/) || [])[1] || '';
+        var room = currentRoomId();
         var reportPayload = {
           event: diagnosticSample ? 'webrtc_sample' : 'legacy_webrtc_sample',
           policyVersion: qualityState ? qualityState.policyVersion : '',

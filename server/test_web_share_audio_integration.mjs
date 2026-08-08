@@ -73,5 +73,5 @@ test('audio mode labels describe window, tab and full-screen scope', () => {
 
 test('changed audio assets use new cache versions', () => {
   assert.match(nginx, /web-share-audio\.js\?v=2/);
-  assert.match(nginx, /inject\.js\?v=6\.23/);
+  assert.match(nginx, /inject\.js\?v=6\.25/);
 });

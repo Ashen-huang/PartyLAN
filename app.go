@@ -1038,6 +1038,7 @@ func (a *App) runGameCastVideoLoop(
 	captureCtx, cancelCapture := context.WithCancel(ctx)
 	latestFrames := make(chan *video.Frame, 1)
 	captureErrors := make(chan error, 1)
+	captureUnavailable := make(chan struct{}, 1)
 	captureDone := make(chan struct{})
 	go func() {
 		defer close(captureDone)
@@ -1049,6 +1050,10 @@ func (a *App) runGameCastVideoLoop(
 			frame, err := getFrame()
 			if err != nil {
 				if shouldRetry != nil && shouldRetry(err) {
+					select {
+					case captureUnavailable <- struct{}{}:
+					default:
+					}
 					if time.Since(lastTransientLog) >= 5*time.Second {
 						log.Printf("[gamecast/%s] frame temporarily unavailable; keeping send clock active: %v", mode, err)
 						lastTransientLog = time.Now()
@@ -1137,6 +1142,15 @@ func (a *App) runGameCastVideoLoop(
 			}
 		}
 	qualityDrained:
+		for {
+			select {
+			case <-captureUnavailable:
+				localMetrics.RecordCaptureUnavailable()
+			default:
+				goto captureUnavailableDrained
+			}
+		}
+	captureUnavailableDrained:
 
 		var latestFrame *video.Frame
 	drainLatest:

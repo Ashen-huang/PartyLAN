@@ -67,6 +67,19 @@ class VoiceDeploymentAssetsTests(unittest.TestCase):
         self.assertIn('VOICE_SFU_ROOM_LIMIT: "20"', compose)
         self.assertIn('SCREEGO_SERVER_ADDRESS: ":5060"', compose)
 
+    def test_screego_patch_set_preserves_udp_only_turn(self):
+        compose = (DEPLOY_DIR / "docker-compose.yml").read_text(encoding="utf-8")
+        self.assertIn('SCREEGO_TURN_ENABLE_TCP: "false"', compose)
+
+        patch = SCREEGO_DIR / "patches" / "0004-partylan-turn-udp-only.patch"
+        self.assertTrue(patch.is_file(), "UDP-only TURN patch is not version controlled")
+        source = patch.read_text(encoding="utf-8")
+        self.assertIn('TurnEnableTCP bool   `default:"true"', source)
+        self.assertIn("if conf.TurnEnableTCP {", source)
+        self.assertIn("if tcp && r.config.TurnEnableTCP {", source)
+        self.assertIn("TestInternalServerDoesNotListenOnTCPWhenDisabled", source)
+        self.assertIn("TestTurnAddressesOmitTCPWhenDisabled", source)
+
     def test_runtime_environment_example_contains_names_without_secret_values(self):
         example = (DEPLOY_DIR / "runtime.env.example").read_text(encoding="utf-8")
         assignments = [

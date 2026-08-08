@@ -25,7 +25,7 @@ try {
   $goCommand = "go"
   $cachedToolchain = Join-Path $env:USERPROFILE "go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.3.windows-amd64/bin/go.exe"
   if (Test-Path $cachedToolchain) { $goCommand = $cachedToolchain }
-  & $goCommand test ./auth ./ws/... ./turn/...
+  & $goCommand test ./auth ./config ./ws/... ./turn/...
   if ($LASTEXITCODE -ne 0) { throw "Screego Go tests failed" }
   & $goCommand test -race ./auth
   if ($LASTEXITCODE -ne 0) { throw "Screego auth race tests failed" }

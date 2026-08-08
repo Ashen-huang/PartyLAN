@@ -1,18 +1,19 @@
 package adaptive
 
 import (
+	"math"
 	"sort"
 	"time"
 )
 
 const (
-	PolicyVersion = "native-global-adaptive-v1"
+	PolicyVersion = "native-global-adaptive-v2"
 
-	localObservation       = 6 * time.Second
+	localObservation       = 4 * time.Second
 	networkObservation     = 15 * time.Second
-	downshiftCooldown      = 15 * time.Second
-	recoveryStableDuration = 30 * time.Second
-	recoveryCooldown       = 30 * time.Second
+	downshiftCooldown      = 8 * time.Second
+	recoveryStableDuration = 10 * time.Second
+	recoveryCooldown       = 12 * time.Second
 	viewerSampleTTL        = 8 * time.Second
 )
 
@@ -37,17 +38,47 @@ var canonicalProfiles = []Profile{
 func BuildLadder(requested Profile) []Profile {
 	requested = normalizeProfile(requested)
 	ladder := []Profile{requested}
+	for _, fps := range []int{45, 30} {
+		if fps >= requested.FPS {
+			continue
+		}
+		candidate := derivedSourceProfile(requested, fps)
+		if !sameProfile(ladder[len(ladder)-1], candidate) {
+			ladder = append(ladder, candidate)
+		}
+	}
 	for _, candidate := range canonicalProfiles {
-		if candidate.Width > requested.Width || candidate.Height > requested.Height || candidate.FPS > requested.FPS {
+		previous := ladder[len(ladder)-1]
+		if candidate.Width > previous.Width || candidate.Height > previous.Height || candidate.FPS > previous.FPS {
 			continue
 		}
 		candidate.BitrateKbps = minPositive(candidate.BitrateKbps, requested.BitrateKbps)
-		if sameProfile(ladder[len(ladder)-1], candidate) {
+		if sameProfile(previous, candidate) {
 			continue
 		}
 		ladder = append(ladder, candidate)
 	}
 	return ladder
+}
+
+func derivedSourceProfile(requested Profile, fps int) Profile {
+	for _, canonical := range canonicalProfiles {
+		if canonical.Width == requested.Width && canonical.Height == requested.Height && canonical.FPS == fps {
+			canonical.BitrateKbps = minPositive(canonical.BitrateKbps, requested.BitrateKbps)
+			return canonical
+		}
+	}
+	ratio := math.Sqrt(float64(fps) / float64(requested.FPS))
+	bitrate := int(math.Round(float64(requested.BitrateKbps)*ratio/100)) * 100
+	if bitrate < 600 {
+		bitrate = 600
+	}
+	return Profile{
+		Width:       requested.Width,
+		Height:      requested.Height,
+		FPS:         fps,
+		BitrateKbps: minPositive(bitrate, requested.BitrateKbps),
+	}
 }
 
 func normalizeProfile(profile Profile) Profile {
@@ -92,15 +123,17 @@ func minPositive(left, right int) int {
 }
 
 type LocalSample struct {
-	At                time.Time
-	Valid             bool
-	FreshFPS          float64
-	FreshFPSValid     bool
-	EncodedFPS        float64
-	EncodeBudgetRatio float64
-	RepeatedRatio     float64
-	BitrateKbps       float64
-	WriteFailures     int
+	At                 time.Time
+	Valid              bool
+	FreshFPS           float64
+	FreshFPSValid      bool
+	EncodedFPS         float64
+	EncodeBudgetRatio  float64
+	RepeatedRatio      float64
+	BitrateKbps        float64
+	EncodeFailures     int
+	WriteFailures      int
+	CaptureUnavailable int
 }
 
 type ViewerSample struct {
@@ -217,12 +250,14 @@ func (c *Controller) Status(now time.Time) Status {
 
 func (c *Controller) Observe(now time.Time, local *LocalSample, viewers []ViewerSample) *Decision {
 	localBad := false
+	localReason := ""
 	if local != nil && local.Valid {
 		copy := *local
 		copy.At = now
 		c.latestLocal = &copy
-		localBad = isLocalBad(copy, c.Current())
-		c.localWindow = appendWindow(c.localWindow, localBad, 5)
+		localReason = localPressureReason(copy, c.Current())
+		localBad = localReason != ""
+		c.localWindow = appendWindow(c.localWindow, localBad, 3)
 	}
 
 	for _, sample := range viewers {
@@ -238,7 +273,7 @@ func (c *Controller) Observe(now time.Time, local *LocalSample, viewers []Viewer
 		}
 	}
 
-	if (localBad || networkBad) && !c.stableSince.IsZero() {
+	if localBad && !c.stableSince.IsZero() {
 		c.stableSince = time.Time{}
 	}
 
@@ -247,16 +282,15 @@ func (c *Controller) Observe(now time.Time, local *LocalSample, viewers []Viewer
 		return nil
 	}
 
-	localConfirmed := now.Sub(c.startedAt) >= localObservation && confirmedWindow(c.localWindow, 5, 4, 3)
-	if c.current < len(c.ladder)-1 && (localConfirmed || networkBad) {
-		reason := "network"
-		if localConfirmed {
-			reason = "local-performance"
+	localConfirmed := now.Sub(c.startedAt) >= localObservation && confirmedWindow(c.localWindow, 3, 2, 2)
+	if c.current < len(c.ladder)-1 && localConfirmed {
+		if localReason == "" {
+			localReason = "encoder-overload"
 		}
-		return c.move(now, c.current+1, DecisionDownshift, reason, downshiftCooldown)
+		return c.move(now, c.current+1, DecisionDownshift, localReason, downshiftCooldown)
 	}
 
-	if c.current > 0 && c.recoveryStable(now) {
+	if c.current > 0 && c.recoveryStable(now, c.ladder[c.current-1]) {
 		if c.stableSince.IsZero() {
 			c.stableSince = now
 		}
@@ -271,8 +305,12 @@ func (c *Controller) Observe(now time.Time, local *LocalSample, viewers []Viewer
 	if c.current > 0 {
 		c.stableSince = time.Time{}
 	}
-	if localBad || networkBad {
+	if localBad {
 		c.state = "degraded-suspected"
+		c.reason = localReason
+	} else if networkBad {
+		c.state = "degraded-suspected"
+		c.reason = "viewer-network"
 	} else if now.Sub(c.startedAt) < localObservation {
 		c.state = "observing"
 	} else {
@@ -288,11 +326,6 @@ func (c *Controller) move(now time.Time, level int, decisionType DecisionType, r
 	c.current = level
 	to := c.Current()
 	c.localWindow = nil
-	for _, viewer := range c.viewers {
-		viewer.window = nil
-		viewer.confirmed = false
-		viewer.connectedAt = now
-	}
 	c.stableSince = time.Time{}
 	c.cooldownUntil = now.Add(cooldown)
 	c.state = "cooldown"
@@ -309,11 +342,6 @@ func (c *Controller) Reject(decision Decision, now time.Time, reason string) {
 		c.current = c.decisionFrom
 	}
 	c.localWindow = nil
-	for _, viewer := range c.viewers {
-		viewer.window = nil
-		viewer.confirmed = false
-		viewer.connectedAt = now
-	}
 	c.stableSince = time.Time{}
 	c.failures++
 	c.reason = reason
@@ -362,32 +390,42 @@ func (c *Controller) pruneViewers(now time.Time) {
 	}
 }
 
-func (c *Controller) recoveryStable(now time.Time) bool {
+func (c *Controller) recoveryStable(now time.Time, target Profile) bool {
 	if c.latestLocal == nil || !c.latestLocal.Valid || now.Sub(c.latestLocal.At) > viewerSampleTTL {
 		return false
 	}
-	profile := c.Current()
-	if (c.latestLocal.FreshFPSValid && c.latestLocal.FreshFPS < float64(profile.FPS)*0.95) ||
-		c.latestLocal.EncodedFPS < float64(profile.FPS)*0.95 ||
-		c.latestLocal.EncodeBudgetRatio >= 0.65 {
+	current := c.Current()
+	if c.latestLocal.FreshFPS < float64(target.FPS)*0.95 ||
+		c.latestLocal.EncodedFPS < float64(current.FPS)*0.95 ||
+		c.latestLocal.RepeatedRatio >= 0.1 ||
+		c.latestLocal.EncodeFailures > 0 ||
+		c.latestLocal.WriteFailures > 0 {
 		return false
 	}
-	for _, viewer := range c.viewers {
-		if !viewerFresh(now, viewer) {
-			continue
-		}
-		sample := viewer.latest
-		if lossPercent(sample) >= 1 || sample.JitterMS >= 40 || sample.DecodedFPS < float64(profile.FPS)*0.9 {
-			return false
-		}
+	currentLoad := float64(current.Width * current.Height * current.FPS)
+	targetLoad := float64(target.Width * target.Height * target.FPS)
+	if currentLoad <= 0 || c.latestLocal.EncodeBudgetRatio*targetLoad/currentLoad > 0.8 {
+		return false
 	}
 	return true
 }
 
+func localPressureReason(sample LocalSample, profile Profile) string {
+	if sample.WriteFailures > 0 {
+		return "transport-write"
+	}
+	if (sample.CaptureUnavailable > 0 && sample.RepeatedRatio >= 0.5 && sample.FreshFPS < float64(profile.FPS)*0.5) ||
+		(sample.FreshFPSValid && sample.FreshFPS < float64(profile.FPS)*0.85) {
+		return "capture-stalled"
+	}
+	if sample.EncodeFailures > 0 || sample.EncodedFPS < float64(profile.FPS)*0.85 || sample.EncodeBudgetRatio >= 0.85 {
+		return "encoder-overload"
+	}
+	return ""
+}
+
 func isLocalBad(sample LocalSample, profile Profile) bool {
-	return (sample.FreshFPSValid && sample.FreshFPS < float64(profile.FPS)*0.85) ||
-		sample.EncodedFPS < float64(profile.FPS)*0.85 ||
-		sample.EncodeBudgetRatio >= 0.85
+	return localPressureReason(sample, profile) != ""
 }
 
 func isViewerBad(sample ViewerSample, profile Profile) bool {
@@ -442,15 +480,17 @@ func confirmedWindow(window []bool, size, required, trailing int) bool {
 }
 
 type LocalMetrics struct {
-	windowStarted  time.Time
-	freshFrames    int
-	lastCaptureID  int64
-	encodedFrames  int
-	encodeAttempts int
-	encodedBytes   int
-	repeated       int
-	writeFailures  int
-	encodeTimes    []time.Duration
+	windowStarted      time.Time
+	freshFrames        int
+	lastCaptureID      int64
+	encodedFrames      int
+	encodeAttempts     int
+	encodedBytes       int
+	repeated           int
+	encodeFailures     int
+	writeFailures      int
+	captureUnavailable int
+	encodeTimes        []time.Duration
 }
 
 func NewLocalMetrics(startedAt time.Time) *LocalMetrics {
@@ -463,6 +503,10 @@ func (m *LocalMetrics) RecordCapture(captureID int64, _ time.Time) {
 	}
 	m.lastCaptureID = captureID
 	m.freshFrames++
+}
+
+func (m *LocalMetrics) RecordCaptureUnavailable() {
+	m.captureUnavailable++
 }
 
 func (m *LocalMetrics) RecordEncode(duration time.Duration, encodedBytes int, repeated bool, writeOK bool) {
@@ -478,7 +522,11 @@ func (m *LocalMetrics) RecordEncode(duration time.Duration, encodedBytes int, re
 		m.repeated++
 	}
 	if !writeOK {
-		m.writeFailures++
+		if encodedBytes > 0 {
+			m.writeFailures++
+		} else {
+			m.encodeFailures++
+		}
 	}
 }
 
@@ -505,15 +553,17 @@ func (m *LocalMetrics) Snapshot(now time.Time, profile Profile) (LocalSample, bo
 		freshThreshold = 5
 	}
 	sample := LocalSample{
-		At:                now,
-		Valid:             true,
-		FreshFPS:          freshFPS,
-		FreshFPSValid:     freshFPS >= freshThreshold,
-		EncodedFPS:        float64(m.encodedFrames) / elapsed,
-		EncodeBudgetRatio: float64(p95) / float64(frameBudget),
-		RepeatedRatio:     float64(m.repeated) / float64(m.encodeAttempts),
-		BitrateKbps:       float64(m.encodedBytes*8) / elapsed / 1000,
-		WriteFailures:     m.writeFailures,
+		At:                 now,
+		Valid:              true,
+		FreshFPS:           freshFPS,
+		FreshFPSValid:      freshFPS >= freshThreshold,
+		EncodedFPS:         float64(m.encodedFrames) / elapsed,
+		EncodeBudgetRatio:  float64(p95) / float64(frameBudget),
+		RepeatedRatio:      float64(m.repeated) / float64(m.encodeAttempts),
+		BitrateKbps:        float64(m.encodedBytes*8) / elapsed / 1000,
+		EncodeFailures:     m.encodeFailures,
+		WriteFailures:      m.writeFailures,
+		CaptureUnavailable: m.captureUnavailable,
 	}
 	m.windowStarted = now
 	m.freshFrames = 0
@@ -521,7 +571,9 @@ func (m *LocalMetrics) Snapshot(now time.Time, profile Profile) (LocalSample, bo
 	m.encodeAttempts = 0
 	m.encodedBytes = 0
 	m.repeated = 0
+	m.encodeFailures = 0
 	m.writeFailures = 0
+	m.captureUnavailable = 0
 	m.encodeTimes = nil
 	return sample, true
 }
