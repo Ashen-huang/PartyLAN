@@ -18,6 +18,10 @@ func (unavailableWindowCaptureBridge) Bounds(windowHandle uintptr) (int, int, Wi
 	return 0, 0, WindowCaptureStatusUnavailable
 }
 
+func (unavailableWindowCaptureBridge) PrepareBounds(windowHandle uintptr, timeoutMs int) (int, int, WindowCaptureStatus) {
+	return 0, 0, WindowCaptureStatusUnavailable
+}
+
 func (unavailableWindowCaptureBridge) GrabFrame(handle uintptr, timeoutMs int) (WindowCaptureFrame, WindowCaptureStatus) {
 	return WindowCaptureFrame{}, WindowCaptureStatusUnavailable
 }

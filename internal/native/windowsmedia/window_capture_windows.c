@@ -254,6 +254,87 @@ static PartyLANWindowCaptureStatus partylan_wgc_window_bounds(
     return PARTYLAN_WINDOW_CAPTURE_STATUS_OK;
 }
 
+static PartyLANWindowCaptureStatus partylan_wgc_prepare_window_bounds(
+    HWND window,
+    uint32_t timeout_ms,
+    uint32_t* width,
+    uint32_t* height) {
+    WINDOWPLACEMENT placement;
+    RECT normal_bounds;
+    ULONGLONG deadline;
+    uint32_t expected_width;
+    uint32_t expected_height;
+    uint32_t minimum_width;
+    uint32_t minimum_height;
+    uint32_t previous_width = 0;
+    uint32_t previous_height = 0;
+    int stable_samples = 0;
+
+    if (width == NULL || height == NULL) {
+        return PARTYLAN_WINDOW_CAPTURE_STATUS_INTERNAL_ERROR;
+    }
+    *width = 0;
+    *height = 0;
+    if (window == NULL || !IsWindow(window)) {
+        return PARTYLAN_WINDOW_CAPTURE_STATUS_WINDOW_CLOSED;
+    }
+    if (!IsIconic(window)) {
+        return partylan_wgc_window_bounds(window, width, height);
+    }
+
+    memset(&placement, 0, sizeof(placement));
+    placement.length = sizeof(placement);
+    if (!GetWindowPlacement(window, &placement)) {
+        return PARTYLAN_WINDOW_CAPTURE_STATUS_UNAVAILABLE;
+    }
+    normal_bounds = placement.rcNormalPosition;
+    if (normal_bounds.right <= normal_bounds.left || normal_bounds.bottom <= normal_bounds.top) {
+        return PARTYLAN_WINDOW_CAPTURE_STATUS_UNAVAILABLE;
+    }
+    expected_width = (uint32_t)(normal_bounds.right - normal_bounds.left);
+    expected_height = (uint32_t)(normal_bounds.bottom - normal_bounds.top);
+    /* A restored window may be resized by DPI or the window manager. Keep a
+       generous lower bound so the minimized title-bar shell cannot be
+       mistaken for a stable capture size. */
+    minimum_width = expected_width >= 128 ? expected_width - expected_width / 4 : expected_width;
+    minimum_height = expected_height >= 128 ? expected_height - expected_height / 4 : expected_height;
+    ShowWindowAsync(window, SW_RESTORE);
+    if (timeout_ms == 0) {
+        timeout_ms = 1500;
+    }
+    deadline = GetTickCount64() + (ULONGLONG)timeout_ms;
+    while (GetTickCount64() <= deadline) {
+        RECT bounds;
+        LONG window_width;
+        LONG window_height;
+        if (!IsWindow(window)) {
+            return PARTYLAN_WINDOW_CAPTURE_STATUS_WINDOW_CLOSED;
+        }
+        if (!IsIconic(window) && GetWindowRect(window, &bounds)) {
+            window_width = bounds.right - bounds.left;
+            window_height = bounds.bottom - bounds.top;
+            if (window_width >= (LONG)minimum_width && window_height >= (LONG)minimum_height) {
+                if ((uint32_t)window_width == previous_width && (uint32_t)window_height == previous_height) {
+                    stable_samples++;
+                } else {
+                    previous_width = (uint32_t)window_width;
+                    previous_height = (uint32_t)window_height;
+                    stable_samples = 1;
+                }
+                if (stable_samples >= 2) {
+                    *width = (uint32_t)window_width;
+                    *height = (uint32_t)window_height;
+                    return PARTYLAN_WINDOW_CAPTURE_STATUS_OK;
+                }
+            }
+        }
+        Sleep(20);
+    }
+    return IsWindow(window)
+        ? PARTYLAN_WINDOW_CAPTURE_STATUS_UNAVAILABLE
+        : PARTYLAN_WINDOW_CAPTURE_STATUS_WINDOW_CLOSED;
+}
+
 static HRESULT partylan_wgc_create_device(PartyLANWindowCapturer* capturer) {
     static const D3D_FEATURE_LEVEL feature_levels[] = {
         D3D_FEATURE_LEVEL_11_0,
@@ -439,6 +520,18 @@ PartyLANWindowCaptureStatus PartyLAN_WindowCapturerBounds(
     uint32_t* width,
     uint32_t* height) {
     return partylan_wgc_window_bounds((HWND)(uintptr_t)window_handle, width, height);
+}
+
+PartyLANWindowCaptureStatus PartyLAN_WindowCapturerPrepareBounds(
+    uint64_t window_handle,
+    uint32_t timeout_ms,
+    uint32_t* width,
+    uint32_t* height) {
+    return partylan_wgc_prepare_window_bounds(
+        (HWND)(uintptr_t)window_handle,
+        timeout_ms,
+        width,
+        height);
 }
 
 PartyLANWindowCaptureStatus PartyLAN_WindowCapturerStart(void* handle, uint64_t window_handle) {

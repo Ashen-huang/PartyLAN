@@ -1,6 +1,6 @@
 # PartyLAN 最小化窗口共享恢复实施计划
 
-**状态：** 待实施
+**状态：** 已实施并验证
 **日期：** 2026-08-08
 **设计依据：**
 `docs/superpowers/specs/2026-08-08-partylan-minimized-window-share-restore-design.md`
@@ -121,4 +121,3 @@ git diff --check
 - 恢复失败在媒体会话创建前终止并显示明确错误。
 - 正常窗口、显示器共享、窗口音频和原生 NVENC 兼容重试保持现有行为。
 - 全仓测试、前端构建和正式客户端构建通过。
-

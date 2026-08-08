@@ -12,6 +12,7 @@ import (
 )
 
 const BackendWindowsGraphicsCapture = "windows-graphics-capture"
+const prepareForShareTimeout = 1500
 
 type Capturer struct {
 	bridge    windowsmedia.WindowCaptureBridge
@@ -22,8 +23,12 @@ type Capturer struct {
 }
 
 func New(handle uintptr, frameRate int) *Capturer {
+	return newWithBridge(windowsmedia.NewWindowCaptureBridge(), handle, frameRate)
+}
+
+func newWithBridge(bridge windowsmedia.WindowCaptureBridge, handle uintptr, frameRate int) *Capturer {
 	return &Capturer{
-		bridge:    windowsmedia.NewWindowCaptureBridge(),
+		bridge:    bridge,
 		hwnd:      handle,
 		frameRate: frameRate,
 	}
@@ -70,6 +75,20 @@ func (c *Capturer) Bounds() (image.Rectangle, error) {
 	}
 	if width <= 0 || height <= 0 {
 		return image.Rectangle{}, fmt.Errorf("%w: selected window has invalid bounds", ErrFrameUnavailable)
+	}
+	return image.Rect(0, 0, width, height), nil
+}
+
+func (c *Capturer) PrepareForShare() (image.Rectangle, error) {
+	if c.hwnd == 0 {
+		return image.Rectangle{}, fmt.Errorf("window handle is required")
+	}
+	width, height, status := c.bridge.PrepareBounds(c.hwnd, prepareForShareTimeout)
+	if status != windowsmedia.WindowCaptureStatusOK {
+		return image.Rectangle{}, c.prepareStatusError(status)
+	}
+	if width <= 0 || height <= 0 {
+		return image.Rectangle{}, fmt.Errorf("所选窗口无法恢复，请手动还原后重试")
 	}
 	return image.Rect(0, 0, width, height), nil
 }
@@ -133,5 +152,16 @@ func (c *Capturer) statusError(status windowsmedia.WindowCaptureStatus, operatio
 		return fmt.Errorf("Windows Graphics Capture internal error: %s", reason)
 	default:
 		return fmt.Errorf("Windows Graphics Capture unavailable: %s", reason)
+	}
+}
+
+func (c *Capturer) prepareStatusError(status windowsmedia.WindowCaptureStatus) error {
+	switch status {
+	case windowsmedia.WindowCaptureStatusWindowClosed:
+		return fmt.Errorf("%w: selected window closed while restoring", ErrWindowClosed)
+	case windowsmedia.WindowCaptureStatusUnavailable, windowsmedia.WindowCaptureStatusFrameUnavailable:
+		return fmt.Errorf("所选窗口无法恢复，请手动还原后重试")
+	default:
+		return fmt.Errorf("所选窗口准备共享失败")
 	}
 }

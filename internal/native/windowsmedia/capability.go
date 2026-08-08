@@ -77,6 +77,7 @@ type WindowCaptureBridge interface {
 	Create() uintptr
 	Start(handle uintptr, windowHandle uintptr) WindowCaptureStatus
 	Bounds(windowHandle uintptr) (width int, height int, status WindowCaptureStatus)
+	PrepareBounds(windowHandle uintptr, timeoutMs int) (width int, height int, status WindowCaptureStatus)
 	GrabFrame(handle uintptr, timeoutMs int) (WindowCaptureFrame, WindowCaptureStatus)
 	Stop(handle uintptr)
 	Destroy(handle uintptr)

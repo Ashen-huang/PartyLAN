@@ -102,6 +102,11 @@ void PartyLAN_DestroyDecoder(void* handle);
 void* PartyLAN_CreateWindowCapturer(void);
 PartyLANWindowCaptureStatus PartyLAN_WindowCapturerStart(void* handle, uint64_t window_handle);
 PartyLANWindowCaptureStatus PartyLAN_WindowCapturerBounds(uint64_t window_handle, uint32_t* width, uint32_t* height);
+PartyLANWindowCaptureStatus PartyLAN_WindowCapturerPrepareBounds(
+    uint64_t window_handle,
+    uint32_t timeout_ms,
+    uint32_t* width,
+    uint32_t* height);
 PartyLANWindowCaptureStatus PartyLAN_WindowCapturerGrabFrame(void* handle, int timeout_ms, PartyLANWindowCaptureFrame* frame);
 void PartyLAN_WindowCapturerReleaseFrame(void* handle, PartyLANWindowCaptureFrame* frame);
 void PartyLAN_WindowCapturerStop(void* handle);

@@ -39,6 +39,18 @@ func (nativeWindowCaptureBridge) Bounds(windowHandle uintptr) (int, int, WindowC
 	return int(width), int(height), status
 }
 
+func (nativeWindowCaptureBridge) PrepareBounds(windowHandle uintptr, timeoutMs int) (int, int, WindowCaptureStatus) {
+	var width C.uint32_t
+	var height C.uint32_t
+	status := mapWindowCaptureStatus(C.PartyLAN_WindowCapturerPrepareBounds(
+		C.uint64_t(windowHandle),
+		C.uint32_t(timeoutMs),
+		&width,
+		&height,
+	))
+	return int(width), int(height), status
+}
+
 func (nativeWindowCaptureBridge) GrabFrame(handle uintptr, timeoutMs int) (WindowCaptureFrame, WindowCaptureStatus) {
 	var frame C.PartyLANWindowCaptureFrame
 	status := mapWindowCaptureStatus(C.PartyLAN_WindowCapturerGrabFrame(

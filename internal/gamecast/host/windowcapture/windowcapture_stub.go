@@ -31,6 +31,10 @@ func (c *Capturer) Bounds() (image.Rectangle, error) {
 	return image.Rectangle{}, fmt.Errorf("window capture is only supported on Windows")
 }
 
+func (c *Capturer) PrepareForShare() (image.Rectangle, error) {
+	return image.Rectangle{}, fmt.Errorf("window capture is only supported on Windows")
+}
+
 func (c *Capturer) Stop() error {
 	return nil
 }

@@ -3842,7 +3842,7 @@ func resolveWindowShareSelection(sourceID string) (uintptr, int, int, uint32, st
 		return 0, 0, 0, 0, "", fmt.Errorf("invalid window source selection")
 	}
 	capturer := hostwindowcapture.New(uintptr(handle), defaultShareFPS)
-	bounds, err := capturer.Bounds()
+	bounds, err := capturer.PrepareForShare()
 	if err != nil {
 		return 0, 0, 0, 0, "", err
 	}
