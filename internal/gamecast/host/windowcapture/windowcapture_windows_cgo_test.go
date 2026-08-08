@@ -11,6 +11,8 @@ import (
 	"time"
 	"unsafe"
 
+	"PartyLAN/internal/video"
+
 	"golang.org/x/sys/windows"
 )
 
@@ -113,6 +115,33 @@ func TestWindowsGraphicsCaptureWindowLifecycle(t *testing.T) {
 		}
 	}
 	t.Fatal("closed window was not reported as ErrWindowClosed")
+}
+
+func TestWindowsGraphicsCaptureAllowsImmediateNVENCConfigure(t *testing.T) {
+	if os.Getenv("PARTYLAN_TEST_NATIVE_ENCODER") != "1" {
+		t.Skip("set PARTYLAN_TEST_NATIVE_ENCODER=1 to exercise the installed NVENC driver")
+	}
+	fixture := createWGCFixtureWindow(t)
+	t.Cleanup(fixture.close)
+
+	capturer := New(fixture.handle, 60)
+	if err := capturer.Start(); err != nil {
+		t.Fatalf("start WGC capturer: %v", err)
+	}
+	defer capturer.Stop()
+
+	encoder := video.NewNativeEncoder()
+	defer encoder.Close()
+	encoder.SetInputPixelFormat(video.NativePixelFormatBGRA)
+	if err := encoder.Configure(video.EncoderConfig{
+		Codec:     video.CodecH264,
+		Bitrate:   8000,
+		Width:     800,
+		Height:    500,
+		FrameRate: 60,
+	}); err != nil {
+		t.Fatalf("configure NVENC immediately after WGC start: %v", err)
+	}
 }
 
 type wgcFixtureWindow struct {

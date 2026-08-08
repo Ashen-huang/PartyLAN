@@ -8,6 +8,7 @@ const (
 	StatusUnsupportedGPU
 	StatusNotImplemented
 	StatusInternalError
+	StatusRetryable
 )
 
 type Capability struct {
@@ -35,12 +36,13 @@ const (
 )
 
 type EncoderConfig struct {
-	Width          int
-	Height         int
-	FPS            int
-	BitrateKbps    int
-	PixelFormat    PixelFormat
-	CapturerHandle uintptr
+	Width             int
+	Height            int
+	FPS               int
+	BitrateKbps       int
+	PixelFormat       PixelFormat
+	CapturerHandle    uintptr
+	CompatibilityMode bool
 }
 
 type DecoderConfig struct {

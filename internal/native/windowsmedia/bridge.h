@@ -12,7 +12,8 @@ typedef enum PartyLANMediaStatus {
     PARTYLAN_MEDIA_STATUS_UNAVAILABLE = 1,
     PARTYLAN_MEDIA_STATUS_UNSUPPORTED_GPU = 2,
     PARTYLAN_MEDIA_STATUS_NOT_IMPLEMENTED = 3,
-    PARTYLAN_MEDIA_STATUS_INTERNAL_ERROR = 4
+    PARTYLAN_MEDIA_STATUS_INTERNAL_ERROR = 4,
+    PARTYLAN_MEDIA_STATUS_RETRYABLE = 5
 } PartyLANMediaStatus;
 
 typedef struct PartyLANMediaCapability {
@@ -39,6 +40,7 @@ typedef struct PartyLANMediaEncoderConfig {
     uint32_t bitrate_kbps;
     uint32_t pixel_format; /* 0 = RGBA, 1 = BGRA */
     uint64_t capturer_handle; /* optional PartyLANCapturer* for native direct path */
+    uint32_t compatibility_mode; /* retry with conservative NVENC parameters */
 } PartyLANMediaEncoderConfig;
 
 typedef struct PartyLANMediaDecoderConfig {

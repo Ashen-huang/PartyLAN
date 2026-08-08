@@ -79,12 +79,13 @@ func (nativeBridge) CapturerStop(handle uintptr) {
 
 func (nativeBridge) EncoderConfigure(handle uintptr, config EncoderConfig) Status {
 	c := C.PartyLANMediaEncoderConfig{
-		width:           C.uint32_t(config.Width),
-		height:          C.uint32_t(config.Height),
-		fps:             C.uint32_t(config.FPS),
-		bitrate_kbps:    C.uint32_t(config.BitrateKbps),
-		pixel_format:    C.uint32_t(config.PixelFormat),
-		capturer_handle: C.uint64_t(config.CapturerHandle),
+		width:              C.uint32_t(config.Width),
+		height:             C.uint32_t(config.Height),
+		fps:                C.uint32_t(config.FPS),
+		bitrate_kbps:       C.uint32_t(config.BitrateKbps),
+		pixel_format:       C.uint32_t(config.PixelFormat),
+		capturer_handle:    C.uint64_t(config.CapturerHandle),
+		compatibility_mode: C.uint32_t(boolToUint32(config.CompatibilityMode)),
 	}
 	status := C.PartyLAN_EncoderConfigure(unsafe.Pointer(handle), &c)
 	return mapStatus(status)
@@ -217,9 +218,18 @@ func mapStatus(status C.PartyLANMediaStatus) Status {
 		return StatusNotImplemented
 	case C.PARTYLAN_MEDIA_STATUS_INTERNAL_ERROR:
 		return StatusInternalError
+	case C.PARTYLAN_MEDIA_STATUS_RETRYABLE:
+		return StatusRetryable
 	default:
 		return StatusUnavailable
 	}
+}
+
+func boolToUint32(value bool) uint32 {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func cString(ptr *C.char) string {

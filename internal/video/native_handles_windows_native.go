@@ -101,8 +101,15 @@ type NativeEncoder struct {
 }
 
 func NewNativeEncoder() *NativeEncoder {
+	return newNativeEncoderWithBridge(windowsmedia.NewBridge())
+}
+
+func newNativeEncoderWithBridge(bridge windowsmedia.Bridge) *NativeEncoder {
+	if bridge == nil {
+		bridge = windowsmedia.NewBridge()
+	}
 	return &NativeEncoder{
-		bridge:      windowsmedia.NewBridge(),
+		bridge:      bridge,
 		inputFormat: NativePixelFormatRGBA,
 	}
 }
@@ -127,27 +134,46 @@ func (e *NativeEncoder) EncodeFromCapturer(capturer *NativeCapturer, timeoutMs i
 }
 
 func (e *NativeEncoder) Configure(config EncoderConfig) error {
-	if e.handle == 0 {
-		e.handle = e.bridge.CreateEncoder()
-	}
-	if e.handle == 0 {
-		return ErrNativeBackendUnavailable
-	}
-
-	status := e.bridge.EncoderConfigure(e.handle, windowsmedia.EncoderConfig{
+	bridgeConfig := windowsmedia.EncoderConfig{
 		Width:          config.Width,
 		Height:         config.Height,
 		FPS:            config.FrameRate,
 		BitrateKbps:    config.Bitrate,
 		PixelFormat:    windowsmedia.PixelFormat(e.inputFormat),
 		CapturerHandle: e.capturerHandle,
-	})
+	}
+	status := e.configureBridge(bridgeConfig)
+	if status == windowsmedia.StatusRetryable {
+		e.resetEncoderHandle()
+		time.Sleep(50 * time.Millisecond)
+		bridgeConfig.CompatibilityMode = true
+		status = e.configureBridge(bridgeConfig)
+	}
 	if status != windowsmedia.StatusOK {
 		return fmt.Errorf("native encoder configure failed: %w", mapNativeStatusError(status, e.bridge.LastErrorReason()))
 	}
 
 	e.configured = true
 	return nil
+}
+
+func (e *NativeEncoder) configureBridge(config windowsmedia.EncoderConfig) windowsmedia.Status {
+	if e.handle == 0 {
+		e.handle = e.bridge.CreateEncoder()
+	}
+	if e.handle == 0 {
+		return windowsmedia.StatusUnavailable
+	}
+	return e.bridge.EncoderConfigure(e.handle, config)
+}
+
+func (e *NativeEncoder) resetEncoderHandle() {
+	if e.handle != 0 {
+		e.bridge.EncoderClose(e.handle)
+		e.bridge.DestroyEncoder(e.handle)
+		e.handle = 0
+	}
+	e.configured = false
 }
 
 func (e *NativeEncoder) Encode(frame *Frame) ([]byte, error) {
@@ -305,6 +331,11 @@ func mapNativeStatusError(status windowsmedia.Status, reason string) error {
 			return fmt.Errorf("%w: %s", ErrNativeBackendUnavailable, reason)
 		}
 		return fmt.Errorf("%w: internal error", ErrNativeBackendUnavailable)
+	case windowsmedia.StatusRetryable:
+		if reason != "" {
+			return fmt.Errorf("%w: %s", ErrNativeBackendUnavailable, reason)
+		}
+		return fmt.Errorf("%w: native encoder initialization was rejected", ErrNativeBackendUnavailable)
 	default:
 		if reason != "" {
 			return fmt.Errorf("%w: %s", ErrNativeBackendUnavailable, reason)
