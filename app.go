@@ -85,6 +85,8 @@ type App struct {
 	gamecastWS                 *gamecastws.Client
 	gamecastWSGeneration       uint64
 	gamecastP2PRoom            *screegop2p.Client
+	gamecastP2PViewer          *screegop2p.Viewer
+	gamecastP2PPublisher       *screegop2p.Publisher
 	gamecastNativeHost         gameCastNativePublisher
 	gamecastNativeShare        *shareSession
 	gamecastJar                *session.Jar
@@ -93,6 +95,7 @@ type App struct {
 	gamecastPresenceRoom       string
 	gamecastPresenceRole       string
 	gamecastPresenceOrigin     string
+	gamecastPresenceMediaMode  string
 	gamecastParticipantID      string
 	gamecastShareCancel        context.CancelFunc
 	gamecastShareLease         *gamecast.ShareLease
@@ -2189,6 +2192,7 @@ func (a *App) stopGameCastNativeHostLocked() {
 	host := a.gamecastNativeHost
 	a.gamecastNativeHost = nil
 	a.gamecastNativeShare = nil
+	a.gamecastP2PPublisher = nil
 	a.mu.Unlock()
 
 	if host != nil {
@@ -3572,13 +3576,21 @@ func (a *App) StartNativeGameCastSharing(request GameCastHostShareRequest) (Game
 	if err != nil {
 		return GameCastRoomState{}, fmt.Errorf("claim gamecast share: %w", err)
 	}
-	a.startGameCastShareHeartbeat(lease, gamecast.SharePhaseStarting, "off")
 	leaseCommitted := false
 	defer func() {
 		if !leaseCommitted {
 			_ = a.releaseGameCastShareLease()
 		}
 	}()
+	mediaMode := strings.TrimSpace(lease.MediaMode)
+	if mediaMode != gamecast.MediaModeLegacyP2P && mediaMode != gamecast.MediaModeSFU {
+		return GameCastRoomState{}, fmt.Errorf("unsupported GameCast media mode %q", mediaMode)
+	}
+	heartbeatPhase := gamecast.SharePhaseStarting
+	if mediaMode == gamecast.MediaModeLegacyP2P {
+		heartbeatPhase = gamecast.SharePhaseLive
+	}
+	a.startGameCastShareHeartbeat(lease, heartbeatPhase, "off")
 
 	audioTarget, audioEnabled, audioMode := a.resolveGameCastAudioCaptureTarget(request, session)
 
@@ -3589,35 +3601,67 @@ func (a *App) StartNativeGameCastSharing(request GameCastHostShareRequest) (Game
 			hostReady <- err
 		})
 	}
-	host := nativehost.New(nativehost.Config{
-		Profile:      a.gameCastProfileForRequest(""),
-		RoomID:       roomID,
-		Name:         a.gameCastUserLabel(),
-		Width:        width,
-		Height:       height,
-		FPS:          fps,
-		AudioEnabled: audioEnabled,
-		OnAuxMessage: func(message json.RawMessage) {
-			a.emitGameCastSignal(message)
-		},
-		OnStatus: func(status gamecastws.Status) {
-			a.emitGameCastStatus(status)
-			if resolved, readyErr := gameCastNativeHostReadyResult(status); resolved {
-				reportHostReady(readyErr)
-			}
-		},
-		OnKeyFrameRequest: func(reason string) {
-			seq := a.mediaKeyFrameSeq.Add(1)
-			log.Printf("[gamecast/native-host] keyframe requested reason=%s seq=%d", reason, seq)
-		},
-	})
-	if err := host.Start(ctx); err != nil {
-		return GameCastRoomState{}, err
+	onStatus := func(status gamecastws.Status) {
+		a.emitGameCastStatus(status)
+		if resolved, readyErr := gameCastNativeHostReadyResult(status); resolved {
+			reportHostReady(readyErr)
+		}
 	}
-	a.mu.Lock()
-	a.gamecastNativeHost = host
-	a.gamecastNativeShare = session
-	a.mu.Unlock()
+	onKeyFrameRequest := func(reason string) {
+		seq := a.mediaKeyFrameSeq.Add(1)
+		log.Printf("[gamecast/native-host] keyframe requested reason=%s seq=%d", reason, seq)
+	}
+	var host gameCastNativePublisher
+	if mediaMode == gamecast.MediaModeLegacyP2P {
+		a.mu.Lock()
+		signaler := a.gamecastP2PRoom
+		a.mu.Unlock()
+		if signaler == nil {
+			return GameCastRoomState{}, fmt.Errorf("native Screego room is not connected")
+		}
+		publisher := screegop2p.NewPublisher(screegop2p.PublisherConfig{
+			Signaler:          signaler,
+			Width:             width,
+			Height:            height,
+			FPS:               fps,
+			AudioEnabled:      audioEnabled,
+			OnStatus:          onStatus,
+			OnKeyFrameRequest: onKeyFrameRequest,
+		})
+		host = publisher
+		a.mu.Lock()
+		a.gamecastNativeHost = publisher
+		a.gamecastNativeShare = session
+		a.gamecastP2PPublisher = publisher
+		a.mu.Unlock()
+		if err := publisher.Start(ctx); err != nil {
+			a.stopGameCastNativeHost()
+			return GameCastRoomState{}, err
+		}
+	} else {
+		sfuHost := nativehost.New(nativehost.Config{
+			Profile:      a.gameCastProfileForRequest(""),
+			RoomID:       roomID,
+			Name:         a.gameCastUserLabel(),
+			Width:        width,
+			Height:       height,
+			FPS:          fps,
+			AudioEnabled: audioEnabled,
+			OnAuxMessage: func(message json.RawMessage) {
+				a.emitGameCastSignal(message)
+			},
+			OnStatus:          onStatus,
+			OnKeyFrameRequest: onKeyFrameRequest,
+		})
+		if err := sfuHost.Start(ctx); err != nil {
+			return GameCastRoomState{}, err
+		}
+		host = sfuHost
+		a.mu.Lock()
+		a.gamecastNativeHost = sfuHost
+		a.gamecastNativeShare = session
+		a.mu.Unlock()
+	}
 	if err := a.startGameCastVideoLoop(host, session); err != nil {
 		a.stopGameCastNativeHost()
 		return GameCastRoomState{}, err
@@ -3670,7 +3714,8 @@ func (a *App) StartNativeGameCastSharing(request GameCastHostShareRequest) (Game
 
 func gameCastNativeHostReadyResult(status gamecastws.Status) (bool, error) {
 	switch {
-	case status.State == "connected" && status.Detail == "native host sending media":
+	case status.State == "connected" &&
+		(status.Detail == "native host sending media" || status.Detail == "native P2P host sharing"):
 		return true, nil
 	case status.State == "error":
 		return true, fmt.Errorf("native GameCast host failed before media was ready: %s", status.Detail)
@@ -4003,6 +4048,14 @@ func (a *App) ConnectGameCastViewer(roomID, layer string) error {
 		a.closeGameCastWS()
 		return nil
 	}
+	if roomState.MediaMode == gamecast.MediaModeLegacyP2P {
+		a.closeGameCastWS()
+		a.stopGameCastViewerIntent(true)
+		if _, err := a.AddGameCastHistory(roomID); err != nil {
+			log.Printf("add gamecast history failed: %v", err)
+		}
+		return nil
+	}
 	a.closeGameCastWS()
 	generation := a.nextGameCastWSGeneration()
 	a.stopGameCastViewerIntent(true)
@@ -4025,13 +4078,18 @@ func (a *App) ConnectGameCastViewer(roomID, layer string) error {
 }
 
 func gameCastRoomLiveForViewer(state GameCastRoomState, participantID string) bool {
-	return state.Active &&
-		state.Sharing &&
-		state.MediaMode == gamecast.MediaModeSFU &&
-		state.MediaProtocolVersion == gamecast.MediaProtocolVersion &&
-		state.SharePhase == gamecast.SharePhaseLive &&
-		state.SFU &&
-		(strings.TrimSpace(state.ShareOwnerParticipantID) == "" || state.ShareOwnerParticipantID != participantID)
+	if !state.Active || !state.Sharing || state.SharePhase != gamecast.SharePhaseLive ||
+		(strings.TrimSpace(state.ShareOwnerParticipantID) != "" && state.ShareOwnerParticipantID == participantID) {
+		return false
+	}
+	switch state.MediaMode {
+	case gamecast.MediaModeLegacyP2P:
+		return !state.SFU
+	case gamecast.MediaModeSFU:
+		return state.MediaProtocolVersion == gamecast.MediaProtocolVersion && state.SFU
+	default:
+		return false
+	}
 }
 
 func (a *App) PostGameCastPlaybackStats(payload map[string]interface{}) error {
@@ -4234,40 +4292,102 @@ func (a *App) connectGameCastP2PRoom(roomID string, owner bool) error {
 	a.mu.Lock()
 	jar := a.gamecastJar
 	a.mu.Unlock()
-	client := screegop2p.NewClient(screegop2p.Options{
-		Profile:  profile,
-		Jar:      jar,
-		RoomID:   roomID,
-		Name:     a.gameCastUserLabel(),
-		Owner:    owner,
+	var client *screegop2p.Client
+	client = screegop2p.NewClient(screegop2p.Options{
+		Profile: profile,
+		Jar:     jar,
+		RoomID:  roomID,
+		Name:    a.gameCastUserLabel(),
+		Owner:   owner,
+		OnMessage: func(message screegop2p.IncomingMessage) {
+			a.handleGameCastP2PMessage(client, message)
+		},
+		OnStatus: func(status gamecastws.Status) {
+			a.handleGameCastP2PStatus(client, status)
+		},
+	})
+	viewer := screegop2p.NewViewer(screegop2p.ViewerConfig{
+		Signaler: client,
+		OnSignal: a.emitGameCastSignal,
 		OnStatus: a.emitGameCastStatus,
 	})
+	a.mu.Lock()
+	if a.gamecastP2PRoom != nil || a.gamecastP2PViewer != nil {
+		a.mu.Unlock()
+		return fmt.Errorf("gamecast P2P room connection was superseded")
+	}
+	a.gamecastP2PRoom = client
+	a.gamecastP2PViewer = viewer
+	a.mu.Unlock()
 	ctx := a.ctx
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if err := client.Connect(ctx); err != nil {
+		a.mu.Lock()
+		if a.gamecastP2PRoom == client {
+			a.gamecastP2PRoom = nil
+			a.gamecastP2PViewer = nil
+		}
+		a.mu.Unlock()
+		viewer.Close()
+		_ = client.Close()
 		return err
 	}
-	a.mu.Lock()
-	if a.gamecastP2PRoom != nil {
-		a.mu.Unlock()
-		_ = client.Close()
-		return fmt.Errorf("gamecast P2P room connection was superseded")
-	}
-	a.gamecastP2PRoom = client
-	a.mu.Unlock()
 	return nil
 }
 
 func (a *App) closeGameCastP2PRoom() {
 	a.mu.Lock()
 	client := a.gamecastP2PRoom
+	viewer := a.gamecastP2PViewer
 	a.gamecastP2PRoom = nil
+	a.gamecastP2PViewer = nil
 	a.mu.Unlock()
+	if viewer != nil {
+		viewer.Close()
+	}
 	if client != nil {
 		if err := client.Close(); err != nil {
 			log.Printf("[gamecast/screego] close room failed: %v", err)
+		}
+	}
+}
+
+func (a *App) handleGameCastP2PMessage(source *screegop2p.Client, message screegop2p.IncomingMessage) {
+	a.mu.Lock()
+	if source == nil || a.gamecastP2PRoom != source {
+		a.mu.Unlock()
+		return
+	}
+	viewer := a.gamecastP2PViewer
+	publisher := a.gamecastP2PPublisher
+	a.mu.Unlock()
+	if publisher != nil {
+		if err := publisher.HandleMessage(message); err != nil {
+			a.emitGameCastStatus(gamecastws.Status{State: "error", Detail: screegop2p.ErrorProtocol})
+		}
+	}
+	if viewer != nil {
+		if err := viewer.HandleMessage(message); err == nil {
+			return
+		}
+		a.emitGameCastStatus(gamecastws.Status{State: "error", Detail: screegop2p.ErrorProtocol})
+	}
+}
+
+func (a *App) handleGameCastP2PStatus(source *screegop2p.Client, status gamecastws.Status) {
+	a.mu.Lock()
+	current := source != nil && a.gamecastP2PRoom == source
+	publisher := a.gamecastP2PPublisher
+	a.mu.Unlock()
+	if !current {
+		return
+	}
+	a.emitGameCastStatus(status)
+	if status.State == "connected" && publisher != nil {
+		if err := publisher.Resume(); err != nil {
+			a.emitGameCastStatus(gamecastws.Status{State: "error", Detail: screegop2p.ErrorUnavailable})
 		}
 	}
 }
@@ -4286,7 +4406,14 @@ func (a *App) SendGameCastSignal(signal map[string]interface{}) error {
 
 	a.mu.Lock()
 	client := a.gamecastWS
+	viewer := a.gamecastP2PViewer
 	a.mu.Unlock()
+	if sessionID, _ := signal["sessionId"].(string); strings.TrimSpace(sessionID) != "" {
+		if viewer == nil {
+			return fmt.Errorf("gamecast native P2P viewer is not connected")
+		}
+		return viewer.SendFrontendSignal(sendCtx, payload)
+	}
 	if client == nil {
 		return fmt.Errorf("gamecast sfu is not connected")
 	}
@@ -4552,6 +4679,7 @@ func (a *App) startGameCastPresence(roomID, role, origin string) (gamecast.Prese
 	a.gamecastPresenceRoom = roomID
 	a.gamecastPresenceRole = role
 	a.gamecastPresenceOrigin = origin
+	a.gamecastPresenceMediaMode = roomState.MediaMode
 	a.mu.Unlock()
 	a.startGameCastVoice(heartbeatCtx, client, request)
 	go a.runGameCastPresenceHeartbeat(heartbeatCtx, request)
@@ -4699,6 +4827,7 @@ func (a *App) stopGameCastPresence(markInactive bool) {
 	a.gamecastPresenceRoom = ""
 	a.gamecastPresenceRole = ""
 	a.gamecastPresenceOrigin = ""
+	a.gamecastPresenceMediaMode = ""
 	a.mu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -4729,20 +4858,35 @@ func (a *App) gameCastShareLeaseRequest(roomID, phase, audioMode string) gamecas
 	a.mu.Lock()
 	participantID := a.gamecastParticipantID
 	lease := a.gamecastShareLease
+	presenceRoom := a.gamecastPresenceRoom
+	mediaMode := a.gamecastPresenceMediaMode
 	a.mu.Unlock()
+	roomID = strings.TrimSpace(roomID)
+	if !strings.EqualFold(strings.TrimSpace(presenceRoom), roomID) {
+		mediaMode = ""
+	}
+	if lease != nil && strings.EqualFold(lease.Room, roomID) && strings.TrimSpace(lease.MediaMode) != "" {
+		mediaMode = strings.TrimSpace(lease.MediaMode)
+	}
+	if mediaMode != gamecast.MediaModeLegacyP2P && mediaMode != gamecast.MediaModeSFU {
+		mediaMode = gamecast.MediaModeSFU
+	}
 	phase = strings.TrimSpace(phase)
 	if phase == "" && lease != nil {
 		phase = strings.TrimSpace(lease.Phase)
 	}
-	if phase == "" {
+	if phase == "" && mediaMode == gamecast.MediaModeSFU {
 		phase = gamecast.SharePhaseStarting
 	}
+	if mediaMode == gamecast.MediaModeLegacyP2P && phase == gamecast.SharePhaseStarting {
+		phase = ""
+	}
 	request := gamecast.ShareLeaseRequest{
-		Room:          strings.TrimSpace(roomID),
+		Room:          roomID,
 		ParticipantID: participantID,
-		MediaMode:     gamecast.MediaModeSFU,
+		MediaMode:     mediaMode,
 		Phase:         phase,
-		SFU:           true,
+		SFU:           mediaMode == gamecast.MediaModeSFU,
 		AudioMode:     strings.TrimSpace(audioMode),
 		TTL:           15,
 	}
@@ -4763,10 +4907,18 @@ func (a *App) claimGameCastShare(roomID, audioMode string) (gamecast.ShareLease,
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	lease, roomState, err := client.ClaimShare(requestCtx, a.gameCastShareLeaseRequest(roomID, gamecast.SharePhaseStarting, audioMode))
+	request := a.gameCastShareLeaseRequest(roomID, gamecast.SharePhaseStarting, audioMode)
+	lease, roomState, err := client.ClaimShare(requestCtx, request)
 	if err != nil {
 		return gamecast.ShareLease{}, GameCastRoomState{}, err
 	}
+	if strings.TrimSpace(lease.MediaMode) == "" {
+		lease.MediaMode = request.MediaMode
+	}
+	if lease.MediaMode == gamecast.MediaModeLegacyP2P && strings.TrimSpace(lease.Phase) == "" {
+		lease.Phase = gamecast.SharePhaseLive
+	}
+	lease.SFU = lease.MediaMode == gamecast.MediaModeSFU && lease.SFU
 	a.mu.Lock()
 	a.gamecastShareLease = &lease
 	a.mu.Unlock()
@@ -4784,9 +4936,16 @@ func (a *App) heartbeatGameCastShare(roomID, phase, audioMode string) (gamecast.
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	lease, roomState, err := client.HeartbeatShare(requestCtx, a.gameCastShareLeaseRequest(roomID, phase, audioMode))
+	request := a.gameCastShareLeaseRequest(roomID, phase, audioMode)
+	lease, roomState, err := client.HeartbeatShare(requestCtx, request)
 	if err != nil {
 		return gamecast.ShareLease{}, GameCastRoomState{}, err
+	}
+	if strings.TrimSpace(lease.MediaMode) == "" {
+		lease.MediaMode = request.MediaMode
+	}
+	if lease.MediaMode == gamecast.MediaModeLegacyP2P && strings.TrimSpace(lease.Phase) == "" {
+		lease.Phase = gamecast.SharePhaseLive
 	}
 	a.mu.Lock()
 	a.gamecastShareLease = &lease
@@ -4821,13 +4980,20 @@ func (a *App) startGameCastShareHeartbeat(lease gamecast.ShareLease, phase, audi
 					continue
 				}
 				requestCtx, cancelRequest := context.WithTimeout(heartbeatCtx, 5*time.Second)
-				updated, _, err := client.HeartbeatShare(requestCtx, a.gameCastShareLeaseRequest(lease.Room, phase, audioMode))
+				request := a.gameCastShareLeaseRequest(lease.Room, phase, audioMode)
+				updated, _, err := client.HeartbeatShare(requestCtx, request)
 				cancelRequest()
 				if err != nil {
 					if heartbeatCtx.Err() == nil {
 						log.Printf("[gamecast/share-lease] heartbeat failed room=%s: %v", lease.Room, err)
 					}
 					continue
+				}
+				if strings.TrimSpace(updated.MediaMode) == "" {
+					updated.MediaMode = request.MediaMode
+				}
+				if updated.MediaMode == gamecast.MediaModeLegacyP2P && strings.TrimSpace(updated.Phase) == "" {
+					updated.Phase = gamecast.SharePhaseLive
 				}
 				a.mu.Lock()
 				a.gamecastShareLease = &updated
@@ -4856,7 +5022,7 @@ func (a *App) stopGameCastScreenShare() error {
 	var transitionErr error
 	if lease != nil {
 		phase := strings.TrimSpace(lease.Phase)
-		if phase == gamecast.SharePhaseLive || (phase == "" && lease.SFU) {
+		if lease.MediaMode == gamecast.MediaModeSFU && (phase == gamecast.SharePhaseLive || (phase == "" && lease.SFU)) {
 			_, _, transitionErr = a.heartbeatGameCastShare(lease.Room, gamecast.SharePhaseStopping, lease.AudioMode)
 			if isGameCastLeaseGone(transitionErr) {
 				transitionErr = nil
@@ -4896,9 +5062,9 @@ func (a *App) releaseGameCastShareLease() error {
 		Room:          lease.Room,
 		ParticipantID: lease.ParticipantID,
 		LeaseID:       lease.LeaseID,
-		MediaMode:     gamecast.MediaModeSFU,
+		MediaMode:     lease.MediaMode,
 		Phase:         lease.Phase,
-		SFU:           true,
+		SFU:           lease.MediaMode == gamecast.MediaModeSFU,
 		AudioMode:     lease.AudioMode,
 		TTL:           15,
 	})

@@ -27,7 +27,10 @@ class FakePeerConnection {
   ontrack = null;
   onconnectionstatechange = null;
 
-  constructor() {
+  configuration = null;
+
+  constructor(configuration) {
+    this.configuration = configuration;
     FakePeerConnection.instances.push(this);
   }
 
@@ -79,6 +82,70 @@ test('viewer preserves ICE candidates received before the offer', async () => {
   assert.deepEqual(FakePeerConnection.instances[0].addedICE, [candidate]);
   assert.equal(outbound.length, 1);
   assert.equal(outbound[0].type, 'answer');
+});
+
+test('viewer uses Screego session ICE servers and echoes the session id', async () => {
+  installWebRTCFakes();
+  const outbound = [];
+  const receiver = new GameCastReceiver({
+    serverBaseUrl: 'https://gamecast.test',
+    onSignal: (signal) => outbound.push(signal),
+  });
+  const iceServers = [{
+    urls: ['turn:8.134.126.54:3478?transport=udp'],
+    username: 'temporary-user',
+    credential: 'temporary-secret',
+  }];
+
+  await receiver.handleSignal({
+    type: 'offer',
+    sessionId: 'session-1',
+    sdp: { type: 'offer', sdp: 'v=0\r\n' },
+    iceServers,
+  });
+
+  const pc = FakePeerConnection.instances[0];
+  assert.deepEqual(pc.configuration, { iceServers });
+  assert.deepEqual(outbound[0], {
+    type: 'answer',
+    sessionId: 'session-1',
+    sdp: 'v=0\r\n',
+  });
+
+  pc.onicecandidate({
+    candidate: { toJSON: () => ({ candidate: 'candidate:viewer-1' }) },
+  });
+  assert.deepEqual(outbound[1], {
+    type: 'ice-candidate',
+    sessionId: 'session-1',
+    ice: { candidate: 'candidate:viewer-1' },
+  });
+});
+
+test('viewer replaces Screego sessions and ignores stale ICE and endshare', async () => {
+  installWebRTCFakes();
+  const receiver = new GameCastReceiver({
+    serverBaseUrl: 'https://gamecast.test',
+    onSignal: () => undefined,
+  });
+
+  await receiver.handleSignal({ type: 'offer', sessionId: 'session-1', sdp: 'v=0\r\n', iceServers: [] });
+  const first = FakePeerConnection.instances[0];
+  await receiver.handleSignal({ type: 'offer', sessionId: 'session-2', sdp: 'v=0\r\n', iceServers: [] });
+  const second = FakePeerConnection.instances[1];
+
+  assert.equal(first.closed, true);
+  await receiver.handleSignal({
+    type: 'ice-candidate',
+    sessionId: 'session-1',
+    ice: { candidate: 'candidate:stale' },
+  });
+  assert.deepEqual(second.addedICE, []);
+
+  await receiver.handleSignal({ type: 'endshare', sessionId: 'session-1' });
+  assert.equal(second.closed, false);
+  await receiver.handleSignal({ type: 'endshare', sessionId: 'session-2' });
+  assert.equal(second.closed, true);
 });
 
 test('viewer keeps video and shared audio tracks in one remote stream', async () => {

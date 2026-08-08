@@ -21,6 +21,7 @@ import (
 	"PartyLAN/internal/gamecast/adaptive"
 	hostwindowcapture "PartyLAN/internal/gamecast/host/windowcapture"
 	"PartyLAN/internal/gamecast/nativehost"
+	"PartyLAN/internal/gamecast/screegop2p"
 	"PartyLAN/internal/gamecast/session"
 	"PartyLAN/internal/gamecast/shareaudio"
 	"PartyLAN/internal/gamecast/sharecatalog"
@@ -121,6 +122,11 @@ func TestGameCastNativeHostReadyResult(t *testing.T) {
 		{
 			name:     "media sending is ready",
 			status:   gamecastws.Status{State: "connected", Detail: "native host sending media"},
+			resolved: true,
+		},
+		{
+			name:     "P2P share announcement is ready without a viewer",
+			status:   gamecastws.Status{State: "connected", Detail: "native P2P host sharing"},
 			resolved: true,
 		},
 		{
@@ -270,6 +276,21 @@ func TestGameCastControlRequestsUseCurrentParticipantAndLease(t *testing.T) {
 	}
 }
 
+func TestLegacyP2PShareLeaseDoesNotForceSFUStartingPhase(t *testing.T) {
+	application := NewApp(network.NewLoopbackNetwork("self"))
+	application.gamecastPresenceRoom = "legacy-room"
+	application.gamecastPresenceMediaMode = gamecast.MediaModeLegacyP2P
+
+	request := application.gameCastShareLeaseRequest("legacy-room", gamecast.SharePhaseStarting, "system")
+	if request.MediaMode != gamecast.MediaModeLegacyP2P || request.SFU || request.Phase != "" {
+		t.Fatalf("legacy lease request=%#v", request)
+	}
+	requestJSON := appJSONMap(t, request)
+	if _, exists := requestJSON["phase"]; exists {
+		t.Fatalf("legacy claim unexpectedly serialized phase: %#v", requestJSON)
+	}
+}
+
 func TestConnectGameCastViewerLeavesIdleUnifiedRoomPresenceOnly(t *testing.T) {
 	var screenWSRequests atomic.Int32
 	voiceSession := &fakeRoomVoiceSession{
@@ -354,6 +375,13 @@ func TestGameCastRoomLiveForViewerRequiresLiveUnifiedRemoteShare(t *testing.T) {
 	if !gameCastRoomLiveForViewer(live, "client-self") {
 		t.Fatal("expected a remote live unified share to open the viewer")
 	}
+	legacy := live
+	legacy.MediaMode = gamecast.MediaModeLegacyP2P
+	legacy.MediaProtocolVersion = 0
+	legacy.SFU = false
+	if !gameCastRoomLiveForViewer(legacy, "client-self") {
+		t.Fatal("expected a remote live native P2P share to open the viewer")
+	}
 	for name, state := range map[string]GameCastRoomState{
 		"starting": func() GameCastRoomState {
 			state := live
@@ -374,7 +402,7 @@ func TestGameCastRoomLiveForViewerRequiresLiveUnifiedRemoteShare(t *testing.T) {
 			state.SFU = false
 			return state
 		}(),
-		"legacy":     func() GameCastRoomState { state := live; state.MediaMode = gamecast.MediaModeLegacyP2P; return state }(),
+		"unknown":    func() GameCastRoomState { state := live; state.MediaMode = "unknown"; return state }(),
 		"old":        func() GameCastRoomState { state := live; state.MediaProtocolVersion = 0; return state }(),
 		"self-share": func() GameCastRoomState { state := live; state.ShareOwnerParticipantID = "client-self"; return state }(),
 	} {
@@ -719,9 +747,13 @@ func TestEnterLegacyGameCastHostRoomKeepsNativeScreegoRoomUntilLeave(t *testing.
 	}
 	application.mu.Lock()
 	p2pRoom := application.gamecastP2PRoom
+	p2pViewer := application.gamecastP2PViewer
 	application.mu.Unlock()
 	if p2pRoom == nil {
 		t.Fatal("legacy room did not retain a Screego stream connection")
+	}
+	if p2pViewer == nil {
+		t.Fatal("legacy room did not retain a native Screego viewer bridge")
 	}
 
 	select {
@@ -742,14 +774,63 @@ func TestEnterLegacyGameCastHostRoomKeepsNativeScreegoRoomUntilLeave(t *testing.
 	}
 	application.mu.Lock()
 	p2pRoom = application.gamecastP2PRoom
+	p2pViewer = application.gamecastP2PViewer
 	application.mu.Unlock()
 	if p2pRoom != nil {
 		t.Fatal("Screego room connection remained installed after leave")
+	}
+	if p2pViewer != nil {
+		t.Fatal("Screego viewer bridge remained installed after leave")
 	}
 	select {
 	case <-streamClosed:
 	case <-time.After(time.Second):
 		t.Fatal("Screego stream remained open after leave")
+	}
+}
+
+type appRecordingScreegoSignaler struct {
+	messages chan screegop2p.OutgoingMessage
+}
+
+func (s *appRecordingScreegoSignaler) Send(_ context.Context, message screegop2p.OutgoingMessage) error {
+	s.messages <- message
+	return nil
+}
+
+func TestSendGameCastSignalRoutesSessionSignalToNativeScreegoViewer(t *testing.T) {
+	signaler := &appRecordingScreegoSignaler{messages: make(chan screegop2p.OutgoingMessage, 1)}
+	viewer := screegop2p.NewViewer(screegop2p.ViewerConfig{Signaler: signaler})
+	sessionPayload, err := json.Marshal(screegop2p.SessionPayload{ID: "session-1", Peer: "browser-host"})
+	if err != nil {
+		t.Fatalf("marshal session: %v", err)
+	}
+	if err := viewer.HandleMessage(screegop2p.IncomingMessage{
+		Type: screegop2p.MessageClientSession, Payload: sessionPayload,
+	}); err != nil {
+		t.Fatalf("install viewer session: %v", err)
+	}
+	application := NewApp(network.NewLoopbackNetwork("self"))
+	application.ctx = context.Background()
+	application.gamecastP2PViewer = viewer
+
+	err = application.SendGameCastSignal(map[string]interface{}{
+		"type": "answer", "sessionId": "session-1", "sdp": "v=0\r\n",
+	})
+	if err != nil {
+		t.Fatalf("SendGameCastSignal: %v", err)
+	}
+	select {
+	case message := <-signaler.messages:
+		if message.Type != screegop2p.MessageClientAnswer {
+			t.Fatalf("message type=%q", message.Type)
+		}
+		payload, ok := message.Payload.(screegop2p.P2PPayload)
+		if !ok || payload.SID != "session-1" {
+			t.Fatalf("message payload=%#v", message.Payload)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for native Screego answer")
 	}
 }
 

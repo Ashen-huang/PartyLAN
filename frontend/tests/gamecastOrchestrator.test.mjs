@@ -10,6 +10,7 @@ import {
   gameCastControlErrorMessageKey,
   gameCastFailureMessageKey,
   gameCastRoomOriginLabelKey,
+  isGameCastRoomLiveForViewer,
   mergeGameCastPresenceMembers,
   promoteGameCastViewerToHost,
   reduceGameCastViewerReconnectAttempt,
@@ -95,7 +96,7 @@ test('local host rooms choose native sharing', () => {
       hostVideoCapable: true,
       sourceKind: 'display',
     }),
-    'native',
+    'native-sfu',
   );
 });
 
@@ -112,7 +113,7 @@ test('web rooms expose the same native sharing path under the unified media cont
       hostVideoCapable: true,
       sourceKind: 'window',
     }),
-    'native',
+    'native-sfu',
   );
 });
 
@@ -129,7 +130,7 @@ test('client rooms choose native sharing even after the owner switched to viewer
       hostVideoCapable: true,
       sourceKind: 'display',
     }),
-    'native',
+    'native-sfu',
   );
 });
 
@@ -138,7 +139,33 @@ test('native capability and the unified media contract gate client sharing', () 
   assert.equal(canStartGameCastSharing(GAMECAST_VIEWER_SELF_PEER_ID, false, unified), false);
   assert.equal(canStartGameCastSharing(GAMECAST_VIEWER_SELF_PEER_ID, true, unified), true);
   assert.equal(canStartGameCastSharing(GAMECAST_HOST_SELF_PEER_ID, true, unified), true);
-  assert.equal(canStartGameCastSharing(GAMECAST_HOST_SELF_PEER_ID, true, { mediaMode: 'legacy-p2p', mediaProtocolVersion: 0 }), false);
+  assert.equal(canStartGameCastSharing(GAMECAST_HOST_SELF_PEER_ID, true, { mediaMode: 'legacy-p2p', mediaProtocolVersion: 0 }), true);
+});
+
+test('legacy P2P rooms select native P2P sharing and viewing without SFU flags', () => {
+  const room = {
+    active: true,
+    sharing: true,
+    mediaMode: 'legacy-p2p',
+    mediaProtocolVersion: 0,
+    sharePhase: 'live',
+    sfu: false,
+  };
+  assert.equal(
+    selectGameCastSharePath({
+      roomId: 'legacy-room',
+      selfPeerId: GAMECAST_VIEWER_SELF_PEER_ID,
+      roomEntry: 'web-joined-viewer',
+      mediaMode: room.mediaMode,
+      mediaProtocolVersion: room.mediaProtocolVersion,
+      role: 'viewer',
+      hostVideoCapable: true,
+      sourceKind: 'display',
+    }),
+    'native-p2p',
+  );
+  assert.equal(isGameCastRoomLiveForViewer(room), true);
+  assert.equal(isGameCastRoomLiveForViewer({ ...room, mediaMode: 'unknown' }), false);
 });
 
 test('room origin never routes normal joins to the browser', () => {
@@ -334,7 +361,7 @@ test('failure kinds have distinct user-facing message keys', () => {
 test('native runtime events only apply to the current native room', () => {
   assert.equal(
     shouldApplyGameCastShareRuntimeEvent({
-      activeSharePath: 'native',
+      activeSharePath: 'native-sfu',
       currentRoomId: 'room-a',
       eventRoomId: 'room-a',
     }),
@@ -350,7 +377,7 @@ test('native runtime events only apply to the current native room', () => {
   );
   assert.equal(
     shouldApplyGameCastShareRuntimeEvent({
-      activeSharePath: 'native',
+      activeSharePath: 'native-p2p',
       currentRoomId: 'room-b',
       eventRoomId: 'room-a',
     }),

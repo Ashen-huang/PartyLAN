@@ -187,3 +187,33 @@ func TestPublisherQueuesClientICEUntilAnswerAndIgnoresUnknownSession(t *testing.
 		t.Fatalf("unknown session ICE should be ignored: %v", err)
 	}
 }
+
+func TestPublisherResumeReannouncesOnlyAnActiveShare(t *testing.T) {
+	signaler := newRecordingSignaler()
+	publisher := NewPublisher(PublisherConfig{Signaler: signaler, Width: 1280, Height: 720, FPS: 60})
+	if err := publisher.Resume(); err != nil {
+		t.Fatalf("resume idle publisher: %v", err)
+	}
+	if got := len(signaler.messageTypes()); got != 0 {
+		t.Fatalf("idle resume messages=%v", signaler.messageTypes())
+	}
+	if err := publisher.Start(context.Background()); err != nil {
+		t.Fatalf("start publisher: %v", err)
+	}
+	if err := publisher.Resume(); err != nil {
+		t.Fatalf("resume active publisher: %v", err)
+	}
+	if got := signaler.messageTypes(); len(got) != 2 || got[0] != MessageShare || got[1] != MessageShare {
+		t.Fatalf("active resume messages=%v", got)
+	}
+	if err := publisher.Close(); err != nil {
+		t.Fatalf("close publisher: %v", err)
+	}
+	before := len(signaler.messageTypes())
+	if err := publisher.Resume(); err != nil {
+		t.Fatalf("resume closed publisher: %v", err)
+	}
+	if got := len(signaler.messageTypes()); got != before {
+		t.Fatalf("closed resume message count=%d want %d", got, before)
+	}
+}

@@ -4,7 +4,7 @@ export const GAMECAST_VIEWER_SELF_PEER_ID = 'gamecast-viewer';
 export const GAMECAST_HOST_SELF_PEER_ID = 'gamecast-host';
 
 export type GameCastRoomEntry = 'local-created' | 'client-joined-viewer' | 'web-joined-viewer' | 'unknown';
-export type GameCastSharePath = 'native' | 'web-compat';
+export type GameCastSharePath = 'native-p2p' | 'native-sfu' | 'web-compat';
 export type GameCastRoomRole = 'viewer' | 'host' | null;
 export type GameCastRoomOrigin = 'web' | 'client' | string | null | undefined;
 export type GameCastJoinAction = 'open-browser' | 'native-viewer';
@@ -127,19 +127,25 @@ export function hasUnifiedGameCastMediaContract(
   return room?.mediaMode === 'sfu' && room.mediaProtocolVersion === 1;
 }
 
+export function hasNativeGameCastMediaContract(
+  room: Pick<GameCastRoomState, 'mediaMode' | 'mediaProtocolVersion'> | null | undefined,
+): boolean {
+  return room?.mediaMode === 'legacy-p2p' || hasUnifiedGameCastMediaContract(room);
+}
+
 export function isGameCastRoomLiveForViewer(
   room: Pick<
     GameCastRoomState,
     'active' | 'sharing' | 'mediaMode' | 'mediaProtocolVersion' | 'sharePhase' | 'sfu'
   > | null | undefined,
 ): boolean {
-  return Boolean(
-    room?.active &&
-      room.sharing &&
-      room.sharePhase === 'live' &&
-      room.sfu &&
-      hasUnifiedGameCastMediaContract(room),
-  );
+  if (!room?.active || !room.sharing || room.sharePhase !== 'live') {
+    return false;
+  }
+  if (room.mediaMode === 'legacy-p2p') {
+    return room.sfu === false;
+  }
+  return room.sfu === true && hasUnifiedGameCastMediaContract(room);
 }
 
 export function selectGameCastSharePath(input: GameCastShareDecisionInput): GameCastSharePath | null {
@@ -147,11 +153,11 @@ export function selectGameCastSharePath(input: GameCastShareDecisionInput): Game
     !input.roomId ||
     !isGameCastSelfPeerId(input.selfPeerId) ||
     !input.hostVideoCapable ||
-    !hasUnifiedGameCastMediaContract(input)
+    !hasNativeGameCastMediaContract(input)
   ) {
     return null;
   }
-  return 'native';
+  return input.mediaMode === 'legacy-p2p' ? 'native-p2p' : 'native-sfu';
 }
 
 export function canStartGameCastSharing(
@@ -159,7 +165,7 @@ export function canStartGameCastSharing(
   nativeHostVideoCapable: boolean,
   room: Pick<GameCastRoomState, 'mediaMode' | 'mediaProtocolVersion'> | null | undefined,
 ): boolean {
-  return isGameCastSelfPeerId(selfPeerId) && nativeHostVideoCapable && hasUnifiedGameCastMediaContract(room);
+  return isGameCastSelfPeerId(selfPeerId) && nativeHostVideoCapable && hasNativeGameCastMediaContract(room);
 }
 
 export function selectGameCastJoinAction(origin: GameCastRoomOrigin): GameCastJoinAction {
@@ -280,7 +286,11 @@ export function shouldReconnectGameCastViewer(input: GameCastViewerReconnectInpu
 export function shouldApplyGameCastShareRuntimeEvent(input: GameCastShareRuntimeEventInput): boolean {
   const currentRoomId = input.currentRoomId?.trim();
   const eventRoomId = input.eventRoomId?.trim();
-  return input.activeSharePath === 'native' && Boolean(currentRoomId) && currentRoomId === eventRoomId;
+  return (
+    (input.activeSharePath === 'native-p2p' || input.activeSharePath === 'native-sfu') &&
+    Boolean(currentRoomId) &&
+    currentRoomId === eventRoomId
+  );
 }
 
 export function gameCastFailureMessageKey(kind: GameCastFailureKind): string {

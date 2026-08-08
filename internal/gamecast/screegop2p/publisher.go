@@ -85,6 +85,16 @@ func (p *Publisher) Start(ctx context.Context) error {
 	return nil
 }
 
+func (p *Publisher) Resume() error {
+	p.mu.Lock()
+	started := p.started
+	p.mu.Unlock()
+	if !started {
+		return nil
+	}
+	return p.send(OutgoingMessage{Type: MessageShare, Payload: struct{}{}})
+}
+
 func (p *Publisher) HandleMessage(message IncomingMessage) error {
 	switch message.Type {
 	case MessageHostSession:

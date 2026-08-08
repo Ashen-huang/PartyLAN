@@ -1705,7 +1705,9 @@ export default function App() {
       return;
     }
     invalidateGameCastViewer('sharing stopped');
-    void DisconnectGameCast().catch(() => undefined);
+    if (gameCast.roomState.mediaMode !== 'legacy-p2p') {
+      void DisconnectGameCast().catch(() => undefined);
+    }
     setGameCast((current) => ({
       ...current,
       receiverState: 'idle',
@@ -2034,7 +2036,7 @@ export default function App() {
         invalidateGameCastViewer('switching viewer to native share');
         gameCastHostRef.current?.stop('restarting');
         gameCastHostRef.current = null;
-        gameCastActiveSharePathRef.current = 'native';
+        gameCastActiveSharePathRef.current = sharePath;
         try {
           const roomState = toGameCastRoomState(
             await StartNativeGameCastSharing({
@@ -2056,7 +2058,7 @@ export default function App() {
             roomState,
             role: 'host',
             receiverState: 'sharing',
-            activeSharePath: 'native',
+            activeSharePath: sharePath,
             operationError: null,
             viewerReconnectAttempt: 0,
             status: { state: 'sharing', detail: roomId },
@@ -2085,7 +2087,6 @@ export default function App() {
         } catch (nativeErr) {
           gameCastActiveSharePathRef.current = null;
           const detail = nativeErr instanceof Error ? nativeErr.message : String(nativeErr);
-          await DisconnectGameCast().catch(() => undefined);
           let roomState: GameCastRoomState | null = null;
           try {
             roomState = toGameCastRoomState(
@@ -2569,7 +2570,7 @@ export default function App() {
     ? `${gameCast.status.state}: ${gameCast.status.detail}`
     : gameCast.status?.state || t('gamecast.idle');
   const gameCastSharePathText =
-    gameCast.activeSharePath === 'native'
+    gameCast.activeSharePath === 'native-p2p' || gameCast.activeSharePath === 'native-sfu'
       ? t('gamecast.pathNative')
       : gameCast.activeSharePath === 'web-compat'
         ? t('gamecast.pathCompat')
@@ -2578,7 +2579,7 @@ export default function App() {
     ? t('gamecast.mediaStateWithPath', { value: gameCast.receiverState, path: gameCastSharePathText })
     : gameCast.receiverState;
   const gameCastRoomStateText = gameCast.roomState
-    ? gameCast.roomState.sharing && gameCast.roomState.sfu
+    ? gameCast.roomState.sharing && gameCast.roomState.sharePhase === 'live'
       ? t('gamecast.roomLive')
       : gameCast.roomState.active
         ? t('gamecast.roomActive')

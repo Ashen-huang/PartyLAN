@@ -4,8 +4,10 @@ type ReceiverState = 'idle' | 'connecting' | 'connected' | 'closed' | 'error';
 
 export interface GameCastSignal {
   type?: string;
+  sessionId?: string;
   sdp?: unknown;
   ice?: unknown;
+  iceServers?: RTCIceServer[];
   error?: string;
 }
 
@@ -129,7 +131,8 @@ export function computeGameCastVideoStats(
 export class GameCastReceiver {
   private pc: RTCPeerConnection | null = null;
   private remoteStream: MediaStream | null = null;
-  private pendingIce: RTCIceCandidateInit[] = [];
+  private pendingIce: Array<{ candidate: RTCIceCandidateInit; sessionId: string | null }> = [];
+  private sessionId: string | null = null;
   private statsTimer: number | null = null;
   private lastVideoStats: GameCastVideoCounters | null = null;
   private generation = '';
@@ -152,6 +155,9 @@ export class GameCastReceiver {
       case 'ice-candidate':
         await this.addIceCandidate(signal);
         return;
+      case 'endshare':
+        this.endShare(signal);
+        return;
       default:
         return;
     }
@@ -162,16 +168,17 @@ export class GameCastReceiver {
     this.pendingIce = [];
     this.lastVideoStats = null;
     this.generation = '';
+    this.sessionId = null;
     this.remoteStream = null;
     this.closePeer();
     this.options.onStateChange?.('closed', detail);
   }
 
-  private createPeerConnection(): RTCPeerConnection {
+  private createPeerConnection(iceServers?: RTCIceServer[]): RTCPeerConnection {
     this.closePeer();
     this.remoteStream = new MediaStream();
     const pc = new RTCPeerConnection({
-      iceServers: buildIceServers(this.options.serverBaseUrl),
+      iceServers: Array.isArray(iceServers) ? iceServers : buildIceServers(this.options.serverBaseUrl),
     });
     this.pc = pc;
     this.generation = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -180,10 +187,14 @@ export class GameCastReceiver {
       if (this.pc !== pc || !event.candidate) {
         return;
       }
-      void this.options.onSignal({
+      const signal: Record<string, unknown> = {
         type: 'ice-candidate',
         ice: event.candidate.toJSON(),
-      });
+      };
+      if (this.sessionId) {
+        signal.sessionId = this.sessionId;
+      }
+      void this.options.onSignal(signal);
     };
 
     pc.ontrack = (event) => {
@@ -226,12 +237,15 @@ export class GameCastReceiver {
       return;
     }
 
+    const nextSessionId = normalizeSessionId(signal.sessionId);
+    this.pendingIce = this.pendingIce.filter((pending) => pending.sessionId === nextSessionId);
     this.stopStats();
     this.lastVideoStats = null;
     this.remoteStream = null;
     this.closePeer();
+    this.sessionId = nextSessionId;
     this.options.onStateChange?.('connecting');
-    const pc = this.createPeerConnection();
+    const pc = this.createPeerConnection(signal.iceServers);
     await pc.setRemoteDescription(offer);
     if (this.pc !== pc) {
       return;
@@ -248,10 +262,14 @@ export class GameCastReceiver {
     if (this.pc !== pc) {
       return;
     }
-    await this.options.onSignal({
+    const answerSignal: Record<string, unknown> = {
       type: 'answer',
       sdp: answer.sdp,
-    });
+    };
+    if (this.sessionId) {
+      answerSignal.sessionId = this.sessionId;
+    }
+    await this.options.onSignal(answerSignal);
   }
 
   private closePeer(): void {
@@ -267,8 +285,12 @@ export class GameCastReceiver {
     if (!candidate) {
       return;
     }
+    const candidateSessionId = normalizeSessionId(signal.sessionId);
+    if (this.sessionId !== null && candidateSessionId !== this.sessionId) {
+      return;
+    }
     if (!this.pc || !this.pc.remoteDescription) {
-      this.pendingIce.push(candidate);
+      this.pendingIce.push({ candidate, sessionId: candidateSessionId });
       return;
     }
     await this.pc.addIceCandidate(candidate);
@@ -278,14 +300,22 @@ export class GameCastReceiver {
     if (this.pc !== pc || !pc.remoteDescription || this.pendingIce.length === 0) {
       return;
     }
-    const queue = this.pendingIce.slice();
+    const queue = this.pendingIce.filter((pending) => pending.sessionId === this.sessionId);
     this.pendingIce = [];
-    for (const candidate of queue) {
+    for (const pending of queue) {
       if (this.pc !== pc) {
         return;
       }
-      await pc.addIceCandidate(candidate);
+      await pc.addIceCandidate(pending.candidate);
     }
+  }
+
+  private endShare(signal: GameCastSignal): void {
+    const endedSessionId = normalizeSessionId(signal.sessionId);
+    if (endedSessionId !== this.sessionId) {
+      return;
+    }
+    this.close('share ended');
   }
 
   private startStats(): void {
@@ -351,6 +381,14 @@ function parseIceCandidate(value: unknown): RTCIceCandidateInit | null {
   }
   const candidate = value as RTCIceCandidateInit;
   return candidate.candidate ? candidate : null;
+}
+
+function normalizeSessionId(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const normalized = value.trim();
+  return normalized || null;
 }
 
 function buildIceServers(serverBaseUrl: string): RTCIceServer[] {
