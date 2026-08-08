@@ -7,6 +7,7 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -129,5 +130,84 @@ func TestClientConnectMapsRoomNotFoundWithoutLeakingServerDetail(t *testing.T) {
 	}
 	if protocolError.Code != ErrorRoomNotFound || err.Error() != ErrorRoomNotFound {
 		t.Fatalf("error=%v code=%q", err, protocolError.Code)
+	}
+}
+
+func TestClientReconnectsAfterUnexpectedCloseAndStopsAfterExplicitClose(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	connections := make(chan int, 4)
+	var count atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer conn.Close()
+		_, payload, err := conn.ReadMessage()
+		if err != nil {
+			t.Errorf("read room request: %v", err)
+			return
+		}
+		var message OutgoingMessage
+		if err := json.Unmarshal(payload, &message); err != nil {
+			t.Errorf("decode room request: %v", err)
+			return
+		}
+		if message.Type != MessageCreate {
+			t.Errorf("message type=%q", message.Type)
+		}
+		current := int(count.Add(1))
+		connections <- current
+		if err := conn.WriteJSON(map[string]interface{}{
+			"type": "room",
+			"payload": map[string]interface{}{
+				"id": "reconnect-room", "mode": "turn", "users": []interface{}{},
+			},
+		}); err != nil {
+			t.Errorf("write room ack: %v", err)
+			return
+		}
+		if current == 1 {
+			return
+		}
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient(Options{
+		Profile:              gamecast.Profile{BaseURL: server.URL},
+		RoomID:               "reconnect-room",
+		Name:                 "Desktop",
+		Owner:                true,
+		MaxReconnectAttempts: 2,
+		ReconnectBaseDelay:   5 * time.Millisecond,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := client.Connect(ctx); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+
+	for want := 1; want <= 2; want++ {
+		select {
+		case got := <-connections:
+			if got != want {
+				t.Fatalf("connection=%d want %d", got, want)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for connection %d", want)
+		}
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	time.Sleep(40 * time.Millisecond)
+	if got := count.Load(); got != 2 {
+		t.Fatalf("explicit close allowed reconnect count=%d", got)
 	}
 }

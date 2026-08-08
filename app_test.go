@@ -31,6 +31,7 @@ import (
 	"PartyLAN/internal/video"
 	"PartyLAN/pkg/config"
 
+	"github.com/gorilla/websocket"
 	ps "github.com/mitchellh/go-ps"
 )
 
@@ -644,6 +645,160 @@ func TestEnterGameCastHostRoomDoesNotWriteLegacyRoomState(t *testing.T) {
 	}
 	if strings.Join(leaseTransitions, ",") != strings.Join(wantTransitions, ",") {
 		t.Fatalf("share lifecycle = %v, want %v", leaseTransitions, wantTransitions)
+	}
+}
+
+func TestEnterLegacyGameCastHostRoomKeepsNativeScreegoRoomUntilLeave(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	streamMessage := make(chan map[string]interface{}, 1)
+	streamClosed := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/presence/join":
+			_, _ = w.Write([]byte(`{"ok":true,"participant":{"participantId":"client-test","room":"legacy-room","clientType":"client","role":"owner","active":true},"room":{"room":"legacy-room","active":true,"origin":"client","sharing":false,"mediaMode":"legacy-p2p","mediaProtocolVersion":0,"sharePhase":"idle","sfu":false,"audioMode":"off","ttl":15}}`))
+		case "/api/presence/leave":
+			_, _ = w.Write([]byte(`{"ok":true,"participant":{"participantId":"client-test","room":"legacy-room","clientType":"client","role":"owner","active":false}}`))
+		case "/api/history":
+			_, _ = w.Write([]byte(`{"ok":true,"history":[]}`))
+		case "/stream":
+			conn, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				t.Errorf("upgrade Screego stream: %v", err)
+				return
+			}
+			defer conn.Close()
+			_, raw, err := conn.ReadMessage()
+			if err != nil {
+				t.Errorf("read Screego room message: %v", err)
+				return
+			}
+			var message map[string]interface{}
+			if err := json.Unmarshal(raw, &message); err != nil {
+				t.Errorf("decode Screego room message: %v", err)
+				return
+			}
+			streamMessage <- message
+			_ = conn.WriteJSON(map[string]interface{}{
+				"type": "room",
+				"payload": map[string]interface{}{
+					"id": "legacy-room", "mode": "turn", "users": []interface{}{},
+				},
+			})
+			for {
+				if _, _, err := conn.ReadMessage(); err != nil {
+					streamClosed <- struct{}{}
+					return
+				}
+			}
+		default:
+			http.Error(w, `{"error":"unexpected endpoint"}`, http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	jar, err := session.New(filepath.Join(t.TempDir(), "cookies.json"))
+	if err != nil {
+		t.Fatalf("create test cookie jar: %v", err)
+	}
+	application := NewApp(network.NewLoopbackNetwork("self"))
+	application.cfg = config.DefaultConfig()
+	application.cfg.GameCast.BaseURL = server.URL
+	application.gamecastJar = jar
+	application.gamecastParticipantID = "client-test"
+	application.gamecastVoiceFactory = func(gamecastvoice.Config) roomVoiceSession {
+		return &fakeRoomVoiceSession{started: make(chan struct{})}
+	}
+
+	room, err := application.enterGameCastHostRoom("legacy-room")
+	if err != nil {
+		t.Fatalf("enterGameCastHostRoom: %v", err)
+	}
+	if room.State.MediaMode != gamecast.MediaModeLegacyP2P {
+		t.Fatalf("media mode=%q", room.State.MediaMode)
+	}
+	application.mu.Lock()
+	p2pRoom := application.gamecastP2PRoom
+	application.mu.Unlock()
+	if p2pRoom == nil {
+		t.Fatal("legacy room did not retain a Screego stream connection")
+	}
+
+	select {
+	case message := <-streamMessage:
+		if message["type"] != "create" {
+			t.Fatalf("Screego room message=%v", message)
+		}
+		payload, _ := message["payload"].(map[string]interface{})
+		if payload["id"] != "legacy-room" || payload["joinIfExist"] != true || payload["mode"] != "turn" {
+			t.Fatalf("Screego create payload=%v", payload)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for Screego create")
+	}
+
+	if err := application.LeaveGameCastRoom(); err != nil {
+		t.Fatalf("LeaveGameCastRoom: %v", err)
+	}
+	application.mu.Lock()
+	p2pRoom = application.gamecastP2PRoom
+	application.mu.Unlock()
+	if p2pRoom != nil {
+		t.Fatal("Screego room connection remained installed after leave")
+	}
+	select {
+	case <-streamClosed:
+	case <-time.After(time.Second):
+		t.Fatal("Screego stream remained open after leave")
+	}
+}
+
+func TestEnterUnifiedSFURoomDoesNotConnectNativeScreegoStream(t *testing.T) {
+	streamRequests := atomic.Int32{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/presence/join":
+			_, _ = w.Write([]byte(`{"ok":true,"participant":{"participantId":"client-test","room":"sfu-room","clientType":"client","role":"owner","active":true,"mediaProtocolVersion":1,"capabilities":{"sfuViewer":true,"sfuHost":true,"h264":true,"opus":true}},"room":{"room":"sfu-room","active":true,"origin":"client","sharing":false,"mediaMode":"sfu","mediaProtocolVersion":1,"sharePhase":"idle","sfu":false,"audioMode":"off","ttl":15}}`))
+		case "/api/presence/leave":
+			_, _ = w.Write([]byte(`{"ok":true,"participant":{"participantId":"client-test","room":"sfu-room","clientType":"client","role":"owner","active":false}}`))
+		case "/api/history":
+			_, _ = w.Write([]byte(`{"ok":true,"history":[]}`))
+		case "/stream":
+			streamRequests.Add(1)
+			http.Error(w, "unexpected stream", http.StatusInternalServerError)
+		default:
+			http.Error(w, `{"error":"unexpected endpoint"}`, http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	jar, err := session.New(filepath.Join(t.TempDir(), "cookies.json"))
+	if err != nil {
+		t.Fatalf("create test cookie jar: %v", err)
+	}
+	application := NewApp(network.NewLoopbackNetwork("self"))
+	application.cfg = config.DefaultConfig()
+	application.cfg.GameCast.BaseURL = server.URL
+	application.gamecastJar = jar
+	application.gamecastParticipantID = "client-test"
+	application.gamecastVoiceFactory = func(gamecastvoice.Config) roomVoiceSession {
+		return &fakeRoomVoiceSession{started: make(chan struct{})}
+	}
+	defer application.stopGameCastPresence(true)
+
+	if _, err := application.enterGameCastHostRoom("sfu-room"); err != nil {
+		t.Fatalf("enterGameCastHostRoom: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if got := streamRequests.Load(); got != 0 {
+		t.Fatalf("SFU room opened %d Screego stream connections", got)
+	}
+	application.mu.Lock()
+	p2pRoom := application.gamecastP2PRoom
+	application.mu.Unlock()
+	if p2pRoom != nil {
+		t.Fatal("SFU room retained a Screego stream connection")
 	}
 }
 

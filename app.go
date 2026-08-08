@@ -27,6 +27,7 @@ import (
 	hostwindowcapture "PartyLAN/internal/gamecast/host/windowcapture"
 	"PartyLAN/internal/gamecast/nativehost"
 	"PartyLAN/internal/gamecast/rooms"
+	"PartyLAN/internal/gamecast/screegop2p"
 	"PartyLAN/internal/gamecast/session"
 	"PartyLAN/internal/gamecast/shareaudio"
 	"PartyLAN/internal/gamecast/sharecatalog"
@@ -83,6 +84,7 @@ type App struct {
 	mediaManager               *media.Manager
 	gamecastWS                 *gamecastws.Client
 	gamecastWSGeneration       uint64
+	gamecastP2PRoom            *screegop2p.Client
 	gamecastNativeHost         *nativehost.Host
 	gamecastNativeShare        *shareSession
 	gamecastJar                *session.Jar
@@ -476,6 +478,7 @@ func (a *App) shutdown(ctx context.Context) {
 	if err := a.stopGameCastScreenShare(); err != nil {
 		log.Printf("[gamecast/shutdown] screen share cleanup failed: %v", err)
 	}
+	a.closeGameCastP2PRoom()
 	a.stopGameCastPresence(true)
 	a.stopGameCastRoomHeartbeat(true)
 	if err := a.network.Stop(); err != nil {
@@ -2971,6 +2974,22 @@ func (a *App) SaveGameCastProfile(profile GameCastProfile) (GameCastProfile, err
 		a.cfg = config.DefaultConfig()
 	}
 	oldBaseURL, _ := gamecast.NormalizeBaseURL(a.cfg.GameCast.BaseURL)
+	a.mu.Unlock()
+	if oldBaseURL != normalized {
+		if err := a.stopGameCastScreenShare(); err != nil {
+			log.Printf("[gamecast/profile] stop share before server change failed: %v", err)
+		}
+		a.closeGameCastWS()
+		a.closeGameCastP2PRoom()
+		a.stopGameCastViewerIntent(true)
+		a.stopGameCastPresence(true)
+		a.stopGameCastRoomHeartbeat(true)
+	}
+
+	a.mu.Lock()
+	if a.cfg == nil {
+		a.cfg = config.DefaultConfig()
+	}
 	a.cfg.GameCast.BaseURL = normalized
 	a.cfg.GameCast.DisplayName = normalizeDisplayName(profile.DisplayName)
 	if strings.TrimSpace(profile.TrustedCertificateSHA256) != "" {
@@ -3129,6 +3148,14 @@ func (a *App) RegisterGameCast(credentials GameCastCredentials) (GameCastSession
 
 func (a *App) LogoutGameCast() error {
 	profile := a.gameCastProfileForRequest("")
+	if err := a.stopGameCastScreenShare(); err != nil {
+		log.Printf("[gamecast/logout] stop share failed: %v", err)
+	}
+	a.closeGameCastWS()
+	a.closeGameCastP2PRoom()
+	a.stopGameCastViewerIntent(true)
+	a.stopGameCastPresence(true)
+	a.stopGameCastRoomHeartbeat(true)
 	client, err := a.gameCastClient(profile)
 	if err != nil {
 		return err
@@ -3289,6 +3316,7 @@ func (a *App) JoinGameCastRoom(roomID string) (GameCastRoomSession, error) {
 
 func (a *App) LeaveGameCastRoom() error {
 	shareErr := a.stopGameCastScreenShare()
+	a.closeGameCastP2PRoom()
 	a.stopGameCastPresence(true)
 	a.stopGameCastRoomHeartbeat(true)
 	a.stopGameCastViewerIntent(true)
@@ -4179,8 +4207,60 @@ func (a *App) gameCastWSIsCurrent(generation uint64, client *gamecastws.Client) 
 func (a *App) DisconnectGameCast() error {
 	a.stopGameCastNativeHost()
 	a.closeGameCastWS()
+	a.closeGameCastP2PRoom()
 	a.stopGameCastViewerIntent(true)
 	return nil
+}
+
+func (a *App) connectGameCastP2PRoom(roomID string, owner bool) error {
+	roomID = strings.TrimSpace(roomID)
+	if roomID == "" {
+		return fmt.Errorf("room id is required")
+	}
+	a.closeGameCastP2PRoom()
+	profile := a.gameCastProfileForRequest("")
+	if err := a.ensureGameCastJar(profile); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	jar := a.gamecastJar
+	a.mu.Unlock()
+	client := screegop2p.NewClient(screegop2p.Options{
+		Profile:  profile,
+		Jar:      jar,
+		RoomID:   roomID,
+		Name:     a.gameCastUserLabel(),
+		Owner:    owner,
+		OnStatus: a.emitGameCastStatus,
+	})
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := client.Connect(ctx); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	if a.gamecastP2PRoom != nil {
+		a.mu.Unlock()
+		_ = client.Close()
+		return fmt.Errorf("gamecast P2P room connection was superseded")
+	}
+	a.gamecastP2PRoom = client
+	a.mu.Unlock()
+	return nil
+}
+
+func (a *App) closeGameCastP2PRoom() {
+	a.mu.Lock()
+	client := a.gamecastP2PRoom
+	a.gamecastP2PRoom = nil
+	a.mu.Unlock()
+	if client != nil {
+		if err := client.Close(); err != nil {
+			log.Printf("[gamecast/screego] close room failed: %v", err)
+		}
+	}
 }
 
 func (a *App) SendGameCastSignal(signal map[string]interface{}) error {
@@ -4226,10 +4306,17 @@ func (a *App) enterGameCastRoom(roomID, requestedRole, origin string) (GameCastR
 	if roomID == "" {
 		return GameCastRoomSession{}, fmt.Errorf("room id is required")
 	}
+	a.closeGameCastP2PRoom()
 	a.stopGameCastRoomHeartbeat(false)
 	participant, presenceState, err := a.startGameCastPresence(roomID, requestedRole, origin)
 	if err != nil {
 		return GameCastRoomSession{}, fmt.Errorf("join gamecast presence: %w", err)
+	}
+	if presenceState.MediaMode == gamecast.MediaModeLegacyP2P {
+		if err := a.connectGameCastP2PRoom(roomID, participant.Role == "owner"); err != nil {
+			a.stopGameCastPresence(true)
+			return GameCastRoomSession{}, fmt.Errorf("join native Screego room: %w", err)
+		}
 	}
 
 	posted := presenceState

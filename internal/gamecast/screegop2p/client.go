@@ -18,24 +18,27 @@ import (
 )
 
 type Options struct {
-	Profile   gamecast.Profile
-	Jar       http.CookieJar
-	RoomID    string
-	Name      string
-	Owner     bool
-	OnMessage func(IncomingMessage)
-	OnStatus  func(gamecastws.Status)
+	Profile              gamecast.Profile
+	Jar                  http.CookieJar
+	RoomID               string
+	Name                 string
+	Owner                bool
+	MaxReconnectAttempts int
+	ReconnectBaseDelay   time.Duration
+	OnMessage            func(IncomingMessage)
+	OnStatus             func(gamecastws.Status)
 }
 
 type Client struct {
 	options Options
 
-	mu      sync.Mutex
-	writeMu sync.Mutex
-	conn    *websocket.Conn
-	cancel  context.CancelFunc
-	closed  bool
-	room    RoomPayload
+	mu           sync.Mutex
+	writeMu      sync.Mutex
+	conn         *websocket.Conn
+	cancel       context.CancelFunc
+	closed       bool
+	reconnecting bool
+	room         RoomPayload
 }
 
 func NewClient(options Options) *Client {
@@ -128,6 +131,15 @@ func (c *Client) Connect(parent context.Context) error {
 
 	runCtx, runCancel := context.WithCancel(parent)
 	c.mu.Lock()
+	if parent.Err() != nil || c.closed {
+		c.mu.Unlock()
+		runCancel()
+		_ = conn.Close()
+		if parent.Err() != nil {
+			return parent.Err()
+		}
+		return &ProtocolError{Code: ErrorUnavailable, detail: "client was closed while connecting"}
+	}
 	if c.conn != nil {
 		c.mu.Unlock()
 		runCancel()
@@ -205,6 +217,7 @@ func (c *Client) Close() error {
 		return nil
 	}
 	c.closed = true
+	c.reconnecting = false
 	cancel := c.cancel
 	conn := c.conn
 	c.cancel = nil
@@ -255,14 +268,22 @@ func (c *Client) cookieHeader() (http.Header, error) {
 
 func (c *Client) readLoop(ctx context.Context, conn *websocket.Conn) {
 	defer func() {
+		shouldReconnect := false
 		c.mu.Lock()
 		if c.conn == conn {
 			c.conn = nil
+			if !c.closed && ctx.Err() == nil && !c.reconnecting {
+				c.reconnecting = true
+				shouldReconnect = true
+			}
 		}
 		closed := c.closed
 		c.mu.Unlock()
 		if !closed {
 			c.emit(gamecastws.Status{State: "closed", Detail: ErrorUnavailable})
+		}
+		if shouldReconnect {
+			go c.reconnect(ctx)
 		}
 	}()
 	for {
@@ -304,6 +325,50 @@ func (c *Client) readLoop(ctx context.Context, conn *websocket.Conn) {
 			c.options.OnMessage(message)
 		}
 	}
+}
+
+func (c *Client) reconnect(ctx context.Context) {
+	attempts := c.options.MaxReconnectAttempts
+	if attempts <= 0 {
+		attempts = 5
+	}
+	baseDelay := c.options.ReconnectBaseDelay
+	if baseDelay <= 0 {
+		baseDelay = 300 * time.Millisecond
+	}
+	for attempt := 1; attempt <= attempts; attempt++ {
+		delay := baseDelay * time.Duration(1<<min(attempt-1, 4))
+		if delay > 6*time.Second {
+			delay = 6 * time.Second
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			c.finishReconnect()
+			return
+		case <-timer.C:
+		}
+		c.mu.Lock()
+		closed := c.closed
+		c.mu.Unlock()
+		if closed {
+			c.finishReconnect()
+			return
+		}
+		if err := c.Connect(ctx); err == nil {
+			c.finishReconnect()
+			return
+		}
+	}
+	c.finishReconnect()
+	c.emit(gamecastws.Status{State: "error", Detail: ErrorUnavailable})
+}
+
+func (c *Client) finishReconnect() {
+	c.mu.Lock()
+	c.reconnecting = false
+	c.mu.Unlock()
 }
 
 func (c *Client) emit(status gamecastws.Status) {
