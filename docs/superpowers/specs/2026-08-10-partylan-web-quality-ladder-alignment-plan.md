@@ -1,6 +1,6 @@
 # PartyLAN 网页端质量阶梯对齐实施计划
 
-**状态：** 实现完成，等待浏览器灰度
+**状态：** 已发布，网页静态灰度通过；认证共享实测待手动确认
 **设计依据：** `docs/superpowers/specs/2026-08-10-partylan-web-quality-ladder-alignment-design.md`
 **实施范围：** 网页端 `computeEncodingProfile` 档位；不修改自适应决策、媒体协议或线上服务
 
@@ -92,4 +92,15 @@ Node 测试期望；不得递增 `inject.js` 或修改其他资源内容。
   首轮因当前终端设置 `HTTP_PROXY` 且未绕过 localhost 被代理返回空体 404，测试命令设置
   `NO_PROXY=127.0.0.1,localhost` 后全部通过，生产代码无需修改。
 - `frontend/npm run build` 通过；`git diff --check` 和敏感信息扫描通过。
-- 未连接广州节点、未替换线上 Nginx 或静态资源。浏览器实机灰度与线上发布仍需单独确认。
+- 广州节点于 2026-08-10 完成增量发布，回滚备份为
+  `/root/screego/backups/web-quality-ladder-20260810T135717+0800`。仅原子替换
+  `/var/www/screego/webrtc-adaptive.js`、`/root/screego/frontend/webrtc-adaptive.js`，并将线上
+  Nginx 注入缓存键从 `webrtc-adaptive.js?v=4` 升级到 `v=5`；未重启或重建屏幕/语音容器。
+- 发布后两份线上策略 SHA-256 均为
+  `6CEA7EDB92A791430D9984307EAAA9AAB2419A99DC7DAD7D0E6DDB4A2A4C8840`；`nginx -t` 和平滑 reload
+  通过。屏幕容器 ID/启动时间、语音容器 ID/启动时间、注册控制面 PID 与 Nginx master PID 均保持不变。
+- Playwright 使用全新页面访问 `?room=test&gray=20260810-2`，确认实际脚本为 `v=5`，策略版本为
+  `adaptive-per-peer-v3`，七档输出为 1080p60/45/30、720p30/21、540p21、360p18；
+  `api/room-state?room=test` 返回 200 且房间当时为空闲 `legacy-p2p`，控制台无 Error。
+- 自动化浏览器未持有既有登录会话，未使用或提取账号凭据，因此没有执行真实捕获源选择、发送端和观看端的
+  认证媒体通话；需由已登录 Edge 在 `test` 房间手动确认共享画面和动态降档。
