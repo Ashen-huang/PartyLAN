@@ -271,3 +271,75 @@ func TestNativePublisherNegotiatesVideoAndAudioWithTwoBrowserStyleViewers(t *tes
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+func TestNativePublisherRoutesOneH264LayerPerViewerWithoutRenegotiation(t *testing.T) {
+	router := &integrationRouter{viewers: make(map[string]*Viewer)}
+	publisher := NewPublisher(PublisherConfig{Signaler: router, Width: 1280, Height: 720, FPS: 60})
+	router.publisher = publisher
+	if err := publisher.Start(context.Background()); err != nil {
+		t.Fatalf("start publisher: %v", err)
+	}
+	defer publisher.Close()
+
+	harnesses := make([]*browserHarness, 0, 2)
+	for index := 1; index <= 2; index++ {
+		sessionID := fmt.Sprintf("layer-session-%d", index)
+		harness := newBrowserHarness(t, router)
+		harnesses = append(harnesses, harness)
+		router.viewers[sessionID] = harness.viewer
+		defer harness.close()
+		defer harness.viewer.Close()
+		session := SessionPayload{ID: sessionID, Peer: fmt.Sprintf("layer-viewer-%d", index)}
+		if err := harness.viewer.HandleMessage(incomingMessageForIntegration(MessageClientSession, session)); err != nil {
+			t.Fatalf("client session %d: %v", index, err)
+		}
+		if err := publisher.HandleMessage(incomingMessageForIntegration(MessageHostSession, session)); err != nil {
+			t.Fatalf("host session %d: %v", index, err)
+		}
+	}
+	for index, harness := range harnesses {
+		select {
+		case <-harness.connected:
+		case <-time.After(8 * time.Second):
+			t.Fatalf("viewer %d did not connect", index+1)
+		}
+	}
+	if err := publisher.SetViewerLayer("layer-session-1", "0"); err != nil {
+		t.Fatalf("bind first viewer: %v", err)
+	}
+	if err := publisher.SetViewerLayer("layer-session-2", "1"); err != nil {
+		t.Fatalf("bind second viewer: %v", err)
+	}
+
+	idr := []byte{0, 0, 0, 1, 0x67, 0x42, 0, 0, 0, 1, 0x68, 0xce, 0, 0, 0, 1, 0x65, 0x88}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if err := publisher.WriteH264LayerSample("0", idr, time.Second/60); err != nil {
+			t.Fatalf("write high layer: %v", err)
+		}
+		select {
+		case <-harnesses[0].videoRTP:
+			goto highReceived
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("high viewer did not receive its assigned layer")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+highReceived:
+	select {
+	case <-harnesses[1].videoRTP:
+		t.Fatal("low viewer received high layer before switching")
+	case <-time.After(200 * time.Millisecond):
+	}
+	if err := publisher.SwitchViewerLayer("layer-session-2", "1", idr, time.Second/30); err != nil {
+		t.Fatalf("switch low viewer: %v", err)
+	}
+	select {
+	case <-harnesses[1].videoRTP:
+	case <-time.After(5 * time.Second):
+		t.Fatal("low viewer did not receive switch IDR on its existing track")
+	}
+}

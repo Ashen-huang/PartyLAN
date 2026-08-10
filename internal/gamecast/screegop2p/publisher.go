@@ -9,9 +9,13 @@ import (
 	"sync"
 	"time"
 
+	"PartyLAN/internal/gamecast/adaptive"
 	"PartyLAN/internal/gamecast/nativehost"
 	gamecastws "PartyLAN/internal/gamecast/ws"
 
+	"github.com/pion/interceptor"
+	"github.com/pion/interceptor/pkg/cc"
+	"github.com/pion/interceptor/pkg/gcc"
 	"github.com/pion/rtcp"
 	"github.com/pion/rtp"
 	"github.com/pion/rtp/codecs"
@@ -34,6 +38,15 @@ type PublisherConfig struct {
 	OnStatus              func(gamecastws.Status)
 }
 
+type ViewerTransportSnapshot struct {
+	SessionID            string
+	PeerID               string
+	LayerID              string
+	EstimatedBitrateKbps int
+	EstimateValid        bool
+	ConnectionState      string
+}
+
 type Publisher struct {
 	config PublisherConfig
 
@@ -50,6 +63,8 @@ type publisherSession struct {
 	pc         *webrtc.PeerConnection
 	video      *webrtc.TrackLocalStaticSample
 	audio      *webrtc.TrackLocalStaticSample
+	layerID    string
+	bwe        cc.BandwidthEstimator
 	pendingICE []webrtc.ICECandidateInit
 }
 
@@ -201,7 +216,7 @@ func (p *Publisher) ActiveVideoLayers() []nativehost.VideoLayer {
 }
 
 func (p *Publisher) WriteH264Sample(data []byte, duration time.Duration) error {
-	return p.WriteH264LayerSample("f", data, duration)
+	return p.WriteH264LayerSample("0", data, duration)
 }
 
 func (p *Publisher) WriteH264LayerSample(rid string, data []byte, duration time.Duration) error {
@@ -221,6 +236,62 @@ func (p *Publisher) WriteH264LayerSample(rid string, data []byte, duration time.
 		}
 	}
 	return firstErr
+}
+
+func (p *Publisher) SetViewerLayer(sessionID, layerID string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	layerID = normalizeLayerID(layerID)
+	p.mu.Lock()
+	session := p.sessions[sessionID]
+	p.mu.Unlock()
+	if session == nil {
+		return fmt.Errorf("unknown P2P session %q", sessionID)
+	}
+	session.mu.Lock()
+	session.layerID = layerID
+	session.mu.Unlock()
+	return nil
+}
+
+func (p *Publisher) SwitchViewerLayer(sessionID, layerID string, idr []byte, duration time.Duration) error {
+	sessionID = strings.TrimSpace(sessionID)
+	layerID = normalizeLayerID(layerID)
+	if len(idr) == 0 {
+		return fmt.Errorf("layer %q switch requires an IDR sample", layerID)
+	}
+	p.mu.Lock()
+	session := p.sessions[sessionID]
+	p.mu.Unlock()
+	if session == nil {
+		return fmt.Errorf("unknown P2P session %q", sessionID)
+	}
+	return session.switchLayer(layerID, idr, duration)
+}
+
+func (p *Publisher) ViewerTransportSnapshots() []ViewerTransportSnapshot {
+	p.mu.Lock()
+	sessions := make([]*publisherSession, 0, len(p.sessions))
+	for _, session := range p.sessions {
+		sessions = append(sessions, session)
+	}
+	p.mu.Unlock()
+	snapshots := make([]ViewerTransportSnapshot, 0, len(sessions))
+	for _, session := range sessions {
+		session.mu.Lock()
+		snapshot := ViewerTransportSnapshot{
+			SessionID: session.id, PeerID: session.peer, LayerID: session.layerID,
+		}
+		if session.pc != nil {
+			snapshot.ConnectionState = session.pc.ConnectionState().String()
+		}
+		if session.bwe != nil {
+			snapshot.EstimatedBitrateKbps = session.bwe.GetTargetBitrate() / 1000
+			snapshot.EstimateValid = snapshot.EstimatedBitrateKbps > 0
+		}
+		session.mu.Unlock()
+		snapshots = append(snapshots, snapshot)
+	}
+	return snapshots
 }
 
 func (p *Publisher) WriteOpusSample(data []byte, duration time.Duration) error {
@@ -253,11 +324,11 @@ func (p *Publisher) startSession(payload SessionPayload) error {
 	if old != nil {
 		p.closeSession(payload.ID)
 	}
-	pc, videoTrack, audioTrack, err := p.createPeerConnection(payload)
+	pc, videoTrack, audioTrack, bwe, err := p.createPeerConnection(payload)
 	if err != nil {
 		return err
 	}
-	session := &publisherSession{id: payload.ID, peer: payload.Peer, pc: pc, video: videoTrack, audio: audioTrack}
+	session := &publisherSession{id: payload.ID, peer: payload.Peer, pc: pc, video: videoTrack, audio: audioTrack, layerID: "0", bwe: bwe}
 	p.mu.Lock()
 	p.sessions[payload.ID] = session
 	p.mu.Unlock()
@@ -274,29 +345,41 @@ func (p *Publisher) startSession(payload SessionPayload) error {
 	return p.send(OutgoingMessage{Type: MessageHostOffer, Payload: P2PPayload{SID: payload.ID, Value: mustJSON(offer)}})
 }
 
-func (p *Publisher) createPeerConnection(payload SessionPayload) (*webrtc.PeerConnection, *webrtc.TrackLocalStaticSample, *webrtc.TrackLocalStaticSample, error) {
+func (p *Publisher) createPeerConnection(payload SessionPayload) (*webrtc.PeerConnection, *webrtc.TrackLocalStaticSample, *webrtc.TrackLocalStaticSample, cc.BandwidthEstimator, error) {
 	mediaEngine := &webrtc.MediaEngine{}
 	if err := mediaEngine.RegisterDefaultCodecs(); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
-	api := webrtc.NewAPI(webrtc.WithMediaEngine(mediaEngine))
 	configuration := webrtc.Configuration{ICEServers: make([]webrtc.ICEServer, 0, len(payload.ICEServers))}
 	for _, server := range payload.ICEServers {
 		configuration.ICEServers = append(configuration.ICEServers, webrtc.ICEServer{URLs: server.URLs, Username: server.Username, Credential: server.Credential})
 	}
 	factory := p.config.PeerConnectionFactory
+	var bwe cc.BandwidthEstimator
+	var pc *webrtc.PeerConnection
+	var err error
 	if factory == nil {
-		factory = api.NewPeerConnection
+		pc, bwe, err = newPeerConnectionWithBWE(configuration, mediaEngine, p.config.Width, p.config.Height, p.config.FPS)
+		if err != nil {
+			log.Printf("[gamecast/screego] P2P GCC unavailable, using default interceptors: %v", err)
+			fallbackMediaEngine := &webrtc.MediaEngine{}
+			if codecErr := fallbackMediaEngine.RegisterDefaultCodecs(); codecErr != nil {
+				return nil, nil, nil, nil, codecErr
+			}
+			pc, err = webrtc.NewAPI(webrtc.WithMediaEngine(fallbackMediaEngine)).NewPeerConnection(configuration)
+			bwe = nil
+		}
+	} else {
+		pc, err = factory(configuration)
 	}
-	pc, err := factory(configuration)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	layers := nativehost.SingleVideoLayer(p.config.Width, p.config.Height, p.config.FPS)
 	videoTrack, err := newH264Track(layers[0])
 	if err != nil {
 		_ = pc.Close()
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	var audioTrack *webrtc.TrackLocalStaticSample
 	if p.config.AudioEnabled {
@@ -305,12 +388,12 @@ func (p *Publisher) createPeerConnection(payload SessionPayload) (*webrtc.PeerCo
 		}, "share-app-audio", "screego-p2p-audio")
 		if err != nil {
 			_ = pc.Close()
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
 		audioSender, err := pc.AddTrack(audioTrack)
 		if err != nil {
 			_ = pc.Close()
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
 		go drainSenderRTCP(audioSender)
 	}
@@ -335,9 +418,50 @@ func (p *Publisher) createPeerConnection(payload SessionPayload) (*webrtc.PeerCo
 		go p.readSenderRTCP(sessionID, sender)
 	} else {
 		_ = pc.Close()
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
-	return pc, videoTrack, audioTrack, nil
+	return pc, videoTrack, audioTrack, bwe, nil
+}
+
+func newPeerConnectionWithBWE(configuration webrtc.Configuration, mediaEngine *webrtc.MediaEngine, width, height, fps int) (*webrtc.PeerConnection, cc.BandwidthEstimator, error) {
+	registry := &interceptor.Registry{}
+	estimatorCh := make(chan cc.BandwidthEstimator, 1)
+	ladder := adaptive.BuildLadder(adaptive.Profile{Width: width, Height: height, FPS: fps, BitrateKbps: 20000})
+	initialBitrateKbps := ladder[0].BitrateKbps
+	ccFactory, err := cc.NewInterceptor(func() (cc.BandwidthEstimator, error) {
+		return gcc.NewSendSideBWE(
+			gcc.SendSideBWEInitialBitrate(initialBitrateKbps*1000),
+			gcc.SendSideBWEMaxBitrate(20_000_000),
+		)
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	ccFactory.OnNewPeerConnection(func(_ string, estimator cc.BandwidthEstimator) {
+		select {
+		case estimatorCh <- estimator:
+		default:
+		}
+	})
+	registry.Add(ccFactory)
+	if err := webrtc.ConfigureTWCCHeaderExtensionSender(mediaEngine, registry); err != nil {
+		return nil, nil, err
+	}
+	if err := webrtc.RegisterDefaultInterceptors(mediaEngine, registry); err != nil {
+		return nil, nil, err
+	}
+	api := webrtc.NewAPI(webrtc.WithMediaEngine(mediaEngine), webrtc.WithInterceptorRegistry(registry))
+	pc, err := api.NewPeerConnection(configuration)
+	if err != nil {
+		return nil, nil, err
+	}
+	select {
+	case estimator := <-estimatorCh:
+		return pc, estimator, nil
+	default:
+		_ = pc.Close()
+		return nil, nil, fmt.Errorf("P2P GCC estimator was not created")
+	}
 }
 
 func (p *Publisher) readSenderRTCP(sessionID string, sender *webrtc.RTPSender) {
@@ -456,25 +580,52 @@ func (p *Publisher) emit(status gamecastws.Status) {
 func (s *publisherSession) close() error {
 	s.mu.Lock()
 	pc := s.pc
+	bwe := s.bwe
 	s.pc = nil
 	s.video = nil
 	s.audio = nil
+	s.bwe = nil
 	s.pendingICE = nil
 	s.mu.Unlock()
 	if pc != nil {
 		return pc.Close()
 	}
+	if bwe != nil {
+		return bwe.Close()
+	}
 	return nil
 }
 
-func (s *publisherSession) writeVideo(_ string, data []byte, duration time.Duration) error {
+func (s *publisherSession) writeVideo(layerID string, data []byte, duration time.Duration) error {
 	s.mu.Lock()
 	track := s.video
+	assignedLayer := s.layerID
 	s.mu.Unlock()
-	if track == nil {
+	if track == nil || assignedLayer != normalizeLayerID(layerID) {
 		return nil
 	}
 	return track.WriteSample(pionmedia.Sample{Data: data, Duration: duration})
+}
+
+func (s *publisherSession) switchLayer(layerID string, idr []byte, duration time.Duration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.video == nil {
+		return nil
+	}
+	if err := s.video.WriteSample(pionmedia.Sample{Data: idr, Duration: duration}); err != nil {
+		return err
+	}
+	s.layerID = layerID
+	return nil
+}
+
+func normalizeLayerID(layerID string) string {
+	layerID = strings.TrimSpace(strings.ToLower(layerID))
+	if layerID == "" || layerID == "f" {
+		return "0"
+	}
+	return layerID
 }
 
 func (s *publisherSession) writeAudio(data []byte, duration time.Duration) error {

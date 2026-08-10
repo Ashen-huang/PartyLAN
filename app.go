@@ -138,6 +138,13 @@ type gameCastNativePublisher interface {
 	ActiveVideoLayers() []nativehost.VideoLayer
 }
 
+type gameCastP2PLayerPublisher interface {
+	gameCastNativePublisher
+	SetViewerLayer(sessionID, layerID string) error
+	SwitchViewerLayer(sessionID, layerID string, idr []byte, duration time.Duration) error
+	ViewerTransportSnapshots() []screegop2p.ViewerTransportSnapshot
+}
+
 func NewApp(net network.Network) *App {
 	return &App{
 		network:               net,
@@ -826,9 +833,15 @@ func (a *App) startWebRTCVideoLoop(manager *media.Manager, session *shareSession
 	return nil
 }
 
+type gameCastLayerEncoder interface {
+	Encode(frame *video.Frame) ([]byte, error)
+	ForceKeyFrame() error
+	Close() error
+}
+
 type gameCastVideoEncoder struct {
 	layer   nativehost.VideoLayer
-	encoder *video.NativeEncoder
+	encoder gameCastLayerEncoder
 }
 
 type gameCastKeyFrameGate struct {
@@ -938,7 +951,7 @@ func (a *App) startGameCastNativeVideoLoop(host gameCastNativePublisher, session
 		return err
 	}
 
-	encoders, err := newGameCastVideoEncoders(nativehost.SingleVideoLayer(session.width, session.height, session.fps))
+	encoders, err := newGameCastVideoEncoders(initialGameCastVideoLayers(host, session))
 	if err != nil {
 		_ = capturer.Stop()
 		return err
@@ -986,7 +999,7 @@ func (a *App) startGameCastWindowVideoLoop(host gameCastNativePublisher, session
 		return fmt.Errorf("start window capturer: %w", err)
 	}
 
-	encoders, err := newGameCastVideoEncoders(nativehost.SingleVideoLayer(session.width, session.height, session.fps))
+	encoders, err := newGameCastVideoEncoders(initialGameCastVideoLayers(host, session))
 	if err != nil {
 		_ = capturer.Stop()
 		return err
@@ -1030,6 +1043,10 @@ func (a *App) runGameCastVideoLoop(
 	onFatalCaptureError func(error),
 	done chan<- struct{},
 ) {
+	if _, ok := host.(gameCastP2PLayerPublisher); ok {
+		a.runGameCastP2PLayerVideoLoop(ctx, host, getFrame, stopCapture, encoders, session, mode, shouldRetry, onFatalCaptureError, done)
+		return
+	}
 	defer close(done)
 	if len(encoders) == 0 || encoders[0].encoder == nil {
 		log.Printf("[gamecast/%s] video loop has no encoder", mode)

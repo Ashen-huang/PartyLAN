@@ -1,6 +1,6 @@
 # PartyLAN 原生 P2P 逐观看者质量层池实施计划
 
-**状态：** 执行中
+**状态：** 实现完成，等待实机灰度验收
 **设计依据：** `docs/superpowers/specs/2026-08-10-partylan-native-p2p-per-viewer-layer-pool-design.md`
 **实施范围：** Windows 原生客户端 Screego P2P/UDP Host；不修改网页、SFU、语音和服务端协议
 
@@ -98,4 +98,22 @@ P2P/TURN、一个弱网与多个稳定观看者、1080p60/1440p60/可用时4K60�
 
 ## 执行记录
 
-待实现后填写变更文件、测试结果、构建摘要、实机灰度证据和回滚信息。
+2026-08-10 已完成实现和自动化门禁：
+
+- 变更文件：`internal/gamecast/adaptive/{controller.go,per_viewer.go}` 及测试；
+  `internal/gamecast/screegop2p/{publisher.go,publisher_test.go,integration_test.go}`；
+  `gamecast_layer_pool.go`、`gamecast_p2p_media.go` 及测试；`app.go`、`gamecast_adaptive.go`、
+  `internal/app/events.go`、`frontend/src/types.ts`、`go.mod`。
+- 兼容边界：SFU/旧原生 Host 继续使用 `native-global-adaptive-v2` 单层控制器；只有实现
+  P2P 层 Publisher 接口的原生 Screego Host 使用 `native-per-viewer-layer-v1`。网页端仍是
+  标准单轨 H.264，不增加 RID/Simulcast SDP 要求。
+- 自动化结果：`go test ./... -count=1`、`go test -tags partylan_native_media ./... -count=1`、
+  `go vet . ./internal/gamecast/adaptive ./internal/gamecast/screegop2p`、目标包 `-race` 测试和
+  `frontend/npm run build` 均通过。全仓 `go vet ./...` 仍受既有 Windows `unsafe.Pointer`
+  桥接警告阻断，未涉及本轮文件。
+- 构建产物：`build/bin/PartyLAN.exe`（`CGO_ENABLED=1`、`partylan_native_media`），SHA-256
+  `1FB79F9B85CBCB35065ECAC763FF757304C156CC33532DE566530FD505C69FCB`；`opus.dll` SHA-256
+  `2134411EA3DAF238B9FA163917292E8C9CF80593822A338A7938B3685269AF1F`。
+- 实机灰度：尚未由自动化工具完成 Windows 捕获源选择和局域网/外网矩阵；需在 `test` 房间
+  手动验证 1080p60/1440p60/可用时 4K、1～3 层 NVENC、网页/客户端观看者及 P2P/TURN。
+  在灰度验收前不覆盖线上服务、不替换上一版客户端。

@@ -21,6 +21,44 @@ func TestBuildLadderDerivesSameResolutionStepsForNonStandardSource(t *testing.T)
 	}
 }
 
+func TestBuildLadderUsesConfirmedP2PProfilesAndBitrates(t *testing.T) {
+	ladder := BuildLadder(Profile{Width: 1920, Height: 1080, FPS: 60, BitrateKbps: 20000})
+	want := []Profile{
+		{Width: 1920, Height: 1080, FPS: 60, BitrateKbps: 10000},
+		{Width: 1920, Height: 1080, FPS: 45, BitrateKbps: 8500},
+		{Width: 1920, Height: 1080, FPS: 30, BitrateKbps: 6500},
+		{Width: 1280, Height: 720, FPS: 30, BitrateKbps: 4000},
+		{Width: 1280, Height: 720, FPS: 21, BitrateKbps: 3000},
+		{Width: 960, Height: 540, FPS: 21, BitrateKbps: 2000},
+		{Width: 640, Height: 360, FPS: 18, BitrateKbps: 800},
+	}
+	if len(ladder) != len(want) {
+		t.Fatalf("ladder length = %d, want %d: %#v", len(ladder), len(want), ladder)
+	}
+	for index := range want {
+		if ladder[index] != want[index] {
+			t.Fatalf("ladder[%d] = %#v, want %#v", index, ladder[index], want[index])
+		}
+	}
+}
+
+func TestBuildLadderCaps4KSourceAtTwentyMbps(t *testing.T) {
+	ladder := BuildLadder(Profile{Width: 3840, Height: 2160, FPS: 60, BitrateKbps: 30000})
+	want := []Profile{
+		{Width: 3840, Height: 2160, FPS: 60, BitrateKbps: 20000},
+		{Width: 3840, Height: 2160, FPS: 45, BitrateKbps: 17000},
+		{Width: 3840, Height: 2160, FPS: 30, BitrateKbps: 13000},
+	}
+	if len(ladder) < len(want) {
+		t.Fatalf("4K ladder = %#v, want at least %#v", ladder, want)
+	}
+	for index := range want {
+		if ladder[index] != want[index] {
+			t.Fatalf("4K ladder[%d] = %#v, want %#v", index, ladder[index], want[index])
+		}
+	}
+}
+
 func TestLocalPressureReasonsAreDistinct(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -93,7 +131,7 @@ func TestWeakViewerDoesNotChangeGlobalEncoderProfile(t *testing.T) {
 }
 
 func TestBuildLadderPreservesRequestedMaximumAndPrefers24FPS(t *testing.T) {
-	ladder := BuildLadder(Profile{Width: 1920, Height: 1080, FPS: 60, BitrateKbps: 8000})
+	ladder := buildLegacyLadder(Profile{Width: 1920, Height: 1080, FPS: 60, BitrateKbps: 8000})
 	want := []Profile{
 		{Width: 1920, Height: 1080, FPS: 60, BitrateKbps: 8000},
 		{Width: 1920, Height: 1080, FPS: 45, BitrateKbps: 7000},

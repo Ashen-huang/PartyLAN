@@ -229,6 +229,9 @@ export interface StreamStats {
   adaptiveState?: string;
   adaptiveReason?: string;
   adaptivePolicy?: string;
+  activeLayers?: number;
+  constrainedViewers?: number;
+  layerSummary?: string;
   adaptiveLevel?: number;
   adaptiveLevels?: number;
   weakViewers?: number;

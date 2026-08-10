@@ -4,12 +4,15 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strconv"
+	"strings"
 	"time"
 
 	appevents "PartyLAN/internal/app"
 	"PartyLAN/internal/gamecast"
 	"PartyLAN/internal/gamecast/adaptive"
 	"PartyLAN/internal/gamecast/nativehost"
+	"PartyLAN/internal/gamecast/screegop2p"
 	"PartyLAN/internal/video"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -271,5 +274,68 @@ func (a *App) emitGameCastAdaptiveStats(
 		AdaptiveLevel:      status.Level,
 		AdaptiveLevels:     status.Levels,
 		WeakViewers:        status.WeakViewers,
+	})
+}
+
+func (a *App) emitGameCastP2PLayerStats(
+	pool *gameCastP2PLayerPool,
+	controller *adaptive.PerViewerController,
+	snapshots []screegop2p.ViewerTransportSnapshot,
+	overloaded bool,
+) {
+	if a.ctx == nil || pool == nil || controller == nil {
+		return
+	}
+	levels := pool.ReadyLevels()
+	if len(levels) == 0 {
+		return
+	}
+	status := controller.Status(time.Now())
+	weak := 0
+	constrained := 0
+	for _, entry := range status {
+		if entry.Weak {
+			weak++
+		}
+	}
+	for _, snapshot := range snapshots {
+		entry, ok := status[snapshot.PeerID]
+		if !ok {
+			continue
+		}
+		assigned, err := strconv.Atoi(snapshot.LayerID)
+		if err == nil && assigned < entry.Level {
+			constrained++
+		}
+	}
+	summaries := make([]string, 0, len(levels))
+	totalBitrate := 0
+	for _, level := range levels {
+		if level < 0 || level >= len(pool.ladder) {
+			continue
+		}
+		profile := pool.ladder[level]
+		totalBitrate += profile.BitrateKbps
+		summaries = append(summaries, fmt.Sprintf("%d:%dx%d@%d/%d", level, profile.Width, profile.Height, profile.FPS, profile.BitrateKbps))
+	}
+	primary := pool.ladder[levels[0]]
+	poolMode := "single-layer-compatible"
+	if len(levels) >= gameCastP2PMaxLayers {
+		poolMode = "full-pool"
+	} else if len(levels) > 1 {
+		poolMode = "reduced-pool"
+	}
+	reason := ""
+	if overloaded {
+		reason = "encoder-overload"
+	}
+	runtime.EventsEmit(a.ctx, string(appevents.EventStreamStats), appevents.StreamStatsEvent{
+		PeerID: "gamecast-host", Width: primary.Width, Height: primary.Height,
+		Mode: "p2p-layer-pool", BitrateKbps: float64(totalBitrate), Sessions: len(snapshots),
+		RequestedWidth: primary.Width, RequestedHeight: primary.Height, RequestedFPS: primary.FPS,
+		ActualFPS: primary.FPS, AdaptiveState: poolMode, AdaptiveReason: reason,
+		AdaptivePolicy: adaptive.PerViewerPolicyVersion, AdaptiveLevels: len(pool.ladder),
+		WeakViewers: weak, ActiveLayers: len(levels), ConstrainedViewers: constrained,
+		LayerSummary: strings.Join(summaries, ","),
 	})
 }

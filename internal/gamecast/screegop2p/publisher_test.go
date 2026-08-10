@@ -3,6 +3,7 @@ package screegop2p
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -160,6 +161,78 @@ func TestPublisherCreatesIndependentPeerForEveryHostSession(t *testing.T) {
 	}
 	if got := signaler.waitForType(t, MessageStopShare).Type; got != MessageStopShare {
 		t.Fatalf("stop message=%q", got)
+	}
+}
+
+func TestPublisherKeepsIndependentLayerBindingPerSession(t *testing.T) {
+	signaler := newRecordingSignaler()
+	publisher := NewPublisher(PublisherConfig{
+		Signaler: signaler, Width: 1920, Height: 1080, FPS: 60,
+		PeerConnectionFactory: func(configuration webrtc.Configuration) (*webrtc.PeerConnection, error) {
+			return webrtc.NewPeerConnection(configuration)
+		},
+	})
+	if err := publisher.Start(context.Background()); err != nil {
+		t.Fatalf("start publisher: %v", err)
+	}
+	defer publisher.Close()
+	for _, session := range []SessionPayload{
+		{ID: "session-high", Peer: "viewer-high"},
+		{ID: "session-low", Peer: "viewer-low"},
+	} {
+		if err := publisher.HandleMessage(incomingMessage(t, MessageHostSession, session)); err != nil {
+			t.Fatalf("start session %s: %v", session.ID, err)
+		}
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for publisher.SessionCount() != 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if err := publisher.SetViewerLayer("session-high", "0"); err != nil {
+		t.Fatalf("set high layer: %v", err)
+	}
+	if err := publisher.SetViewerLayer("session-low", "6"); err != nil {
+		t.Fatalf("set low layer: %v", err)
+	}
+	publisher.mu.Lock()
+	highLayer := publisher.sessions["session-high"].layerID
+	lowLayer := publisher.sessions["session-low"].layerID
+	publisher.mu.Unlock()
+	if highLayer != "0" || lowLayer != "6" {
+		t.Fatalf("layer bindings = high:%q low:%q, want independent 0/6", highLayer, lowLayer)
+	}
+	if err := publisher.SetViewerLayer("unknown", "0"); err == nil {
+		t.Fatal("unknown session layer update unexpectedly succeeded")
+	}
+}
+
+func TestPublisherOfferKeepsSingleTrackAndAdvertisesTWCC(t *testing.T) {
+	signaler := newRecordingSignaler()
+	publisher := NewPublisher(PublisherConfig{Signaler: signaler, Width: 1920, Height: 1080, FPS: 60})
+	if err := publisher.Start(context.Background()); err != nil {
+		t.Fatalf("start publisher: %v", err)
+	}
+	defer publisher.Close()
+	if err := publisher.HandleMessage(incomingMessage(t, MessageHostSession, SessionPayload{ID: "session-1", Peer: "viewer-1"})); err != nil {
+		t.Fatalf("start host session: %v", err)
+	}
+	message := signaler.waitForType(t, MessageHostOffer)
+	payload, ok := message.Payload.(P2PPayload)
+	if !ok {
+		t.Fatalf("offer payload type = %T", message.Payload)
+	}
+	var offer webrtc.SessionDescription
+	if err := json.Unmarshal(payload.Value, &offer); err != nil {
+		t.Fatalf("decode offer: %v", err)
+	}
+	if !strings.Contains(offer.SDP, "transport-wide-cc") {
+		t.Fatalf("offer does not advertise TWCC")
+	}
+	if strings.Contains(offer.SDP, "a=rid:") || strings.Contains(offer.SDP, "a=simulcast:") {
+		t.Fatalf("offer unexpectedly advertises RID simulcast")
+	}
+	if got := strings.Count(offer.SDP, "m=video"); got != 1 {
+		t.Fatalf("video m-lines = %d, want one", got)
 	}
 }
 

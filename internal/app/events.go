@@ -64,6 +64,9 @@ type StreamStatsEvent struct {
 	AdaptiveLevel      int     `json:"adaptiveLevel,omitempty"`
 	AdaptiveLevels     int     `json:"adaptiveLevels,omitempty"`
 	WeakViewers        int     `json:"weakViewers,omitempty"`
+	ActiveLayers       int     `json:"activeLayers,omitempty"`
+	ConstrainedViewers int     `json:"constrainedViewers,omitempty"`
+	LayerSummary       string  `json:"layerSummary,omitempty"`
 }
 
 type NetworkStatusEvent struct {

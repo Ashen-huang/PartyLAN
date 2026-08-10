@@ -24,7 +24,7 @@ type Profile struct {
 	BitrateKbps int
 }
 
-var canonicalProfiles = []Profile{
+var legacyCanonicalProfiles = []Profile{
 	{Width: 1920, Height: 1080, FPS: 60, BitrateKbps: 8000},
 	{Width: 1920, Height: 1080, FPS: 45, BitrateKbps: 7000},
 	{Width: 1920, Height: 1080, FPS: 30, BitrateKbps: 6000},
@@ -35,19 +35,30 @@ var canonicalProfiles = []Profile{
 	{Width: 640, Height: 360, FPS: 18, BitrateKbps: 600},
 }
 
+var p2pCanonicalProfiles = []Profile{
+	{Width: 1280, Height: 720, FPS: 30, BitrateKbps: 4000},
+	{Width: 1280, Height: 720, FPS: 21, BitrateKbps: 3000},
+	{Width: 960, Height: 540, FPS: 21, BitrateKbps: 2000},
+	{Width: 640, Height: 360, FPS: 18, BitrateKbps: 800},
+}
+
 func BuildLadder(requested Profile) []Profile {
 	requested = normalizeProfile(requested)
+	baseBitrate := p2pSourceBitrateKbps(requested.Width, requested.Height)
+	requested.BitrateKbps = minPositive(requested.BitrateKbps, sourceBitrateForFPS(baseBitrate, requested.FPS))
+	effectiveBaseBitrate := int(math.Round(float64(requested.BitrateKbps) / sourceFPSRatio(requested.FPS)))
 	ladder := []Profile{requested}
 	for _, fps := range []int{45, 30} {
 		if fps >= requested.FPS {
 			continue
 		}
-		candidate := derivedSourceProfile(requested, fps)
+		candidate := Profile{Width: requested.Width, Height: requested.Height, FPS: fps,
+			BitrateKbps: sourceBitrateForFPS(effectiveBaseBitrate, fps)}
 		if !sameProfile(ladder[len(ladder)-1], candidate) {
 			ladder = append(ladder, candidate)
 		}
 	}
-	for _, candidate := range canonicalProfiles {
+	for _, candidate := range p2pCanonicalProfiles {
 		previous := ladder[len(ladder)-1]
 		if candidate.Width > previous.Width || candidate.Height > previous.Height || candidate.FPS > previous.FPS {
 			continue
@@ -61,8 +72,34 @@ func BuildLadder(requested Profile) []Profile {
 	return ladder
 }
 
-func derivedSourceProfile(requested Profile, fps int) Profile {
-	for _, canonical := range canonicalProfiles {
+func buildLegacyLadder(requested Profile) []Profile {
+	requested = normalizeProfile(requested)
+	ladder := []Profile{requested}
+	for _, fps := range []int{45, 30} {
+		if fps >= requested.FPS {
+			continue
+		}
+		candidate := derivedLegacySourceProfile(requested, fps)
+		if !sameProfile(ladder[len(ladder)-1], candidate) {
+			ladder = append(ladder, candidate)
+		}
+	}
+	for _, candidate := range legacyCanonicalProfiles {
+		previous := ladder[len(ladder)-1]
+		if candidate.Width > previous.Width || candidate.Height > previous.Height || candidate.FPS > previous.FPS {
+			continue
+		}
+		candidate.BitrateKbps = minPositive(candidate.BitrateKbps, requested.BitrateKbps)
+		if sameProfile(previous, candidate) {
+			continue
+		}
+		ladder = append(ladder, candidate)
+	}
+	return ladder
+}
+
+func derivedLegacySourceProfile(requested Profile, fps int) Profile {
+	for _, canonical := range legacyCanonicalProfiles {
 		if canonical.Width == requested.Width && canonical.Height == requested.Height && canonical.FPS == fps {
 			canonical.BitrateKbps = minPositive(canonical.BitrateKbps, requested.BitrateKbps)
 			return canonical
@@ -100,12 +137,47 @@ func normalizeProfile(profile Profile) Profile {
 }
 
 func bitrateFor(width, height, fps int) int {
-	for _, profile := range canonicalProfiles {
+	for _, profile := range legacyCanonicalProfiles {
 		if profile.Width <= width && profile.Height <= height && profile.FPS <= fps {
 			return profile.BitrateKbps
 		}
 	}
-	return canonicalProfiles[len(canonicalProfiles)-1].BitrateKbps
+	return legacyCanonicalProfiles[len(legacyCanonicalProfiles)-1].BitrateKbps
+}
+
+func p2pSourceBitrateKbps(width, height int) int {
+	switch {
+	case width <= 1920 && height <= 1080:
+		return 10000
+	case width <= 2560 && height <= 1440:
+		return 14000
+	default:
+		return 20000
+	}
+}
+
+func sourceBitrateForFPS(baseBitrate, fps int) int {
+	ratio := sourceFPSRatio(fps)
+	bitrate := int(math.Round(float64(baseBitrate)*ratio/100)) * 100
+	if bitrate < 600 {
+		return 600
+	}
+	return bitrate
+}
+
+func sourceFPSRatio(fps int) float64 {
+	switch {
+	case fps >= 60:
+		return 1
+	case fps >= 45:
+		return 0.85
+	case fps >= 30:
+		return 0.65
+	case fps > 0:
+		return 0.65 * float64(fps) / 30
+	default:
+		return 0.65
+	}
 }
 
 func sameProfile(left, right Profile) bool {
@@ -210,7 +282,7 @@ func NewController(requested Profile, startedAt time.Time) *Controller {
 	requested = normalizeProfile(requested)
 	return &Controller{
 		requested: requested,
-		ladder:    BuildLadder(requested),
+		ladder:    buildLegacyLadder(requested),
 		startedAt: startedAt,
 		viewers:   make(map[string]*viewerState),
 		state:     "observing",
