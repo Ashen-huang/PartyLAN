@@ -1,6 +1,6 @@
 # PartyLAN 网页端质量阶梯对齐实施计划
 
-**状态：** 待实施
+**状态：** 实现完成，等待浏览器灰度
 **设计依据：** `docs/superpowers/specs/2026-08-10-partylan-web-quality-ladder-alignment-design.md`
 **实施范围：** 网页端 `computeEncodingProfile` 档位；不修改自适应决策、媒体协议或线上服务
 
@@ -80,4 +80,16 @@ Node 测试期望；不得递增 `inject.js` 或修改其他资源内容。
 
 ## 执行记录
 
-待实现后填写变更文件、测试结果、缓存版本和实机灰度要求。
+2026-08-10 已完成：
+
+- `server/webrtc_adaptive_policy.js` 与部署副本改为七档网页质量阶梯，原生三档按源尺寸和实际
+  档位 FPS 动态计算 10/14/20 Mbps 上限；两份文件 SHA-256 均为
+  `6CEA7EDB92A791430D9984307EAAA9AAB2419A99DC7DAD7D0E6DDB4A2A4C8840`。
+- 网页策略缓存键从 `webrtc-adaptive.js?v=4` 升级到 `v=5`；`inject.js`、`sfu-client.js` 和其他
+  媒体资源版本未改变。
+- 红灯测试先确认旧六档、固定 10 Mbps 源上限和低 FPS 码率不匹配，再由实现转绿。
+- `server` 全部 13 个 Node 测试文件共 114 项通过；3 个 Python 测试模块共 37 项通过。Python
+  首轮因当前终端设置 `HTTP_PROXY` 且未绕过 localhost 被代理返回空体 404，测试命令设置
+  `NO_PROXY=127.0.0.1,localhost` 后全部通过，生产代码无需修改。
+- `frontend/npm run build` 通过；`git diff --check` 和敏感信息扫描通过。
+- 未连接广州节点、未替换线上 Nginx 或静态资源。浏览器实机灰度与线上发布仍需单独确认。

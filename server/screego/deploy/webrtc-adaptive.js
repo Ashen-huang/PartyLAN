@@ -15,14 +15,15 @@
   var RECOVERY_STABLE_MS = 10000;
   var RECOVERY_COOLDOWN_MS = 12000;
   var RECOVERY_HEADROOM = 1.2;
-  var MAX_LEVEL = 5;
+  var MAX_LEVEL = 6;
   var PROFILES = {
-    0: {preserveSource: true, maxFramerate: 60, maxBitrate: 10000000},
-    1: {preserveSource: true, maxFramerate: 45, maxBitrate: 8000000},
-    2: {preserveSource: true, maxFramerate: 30, maxBitrate: 5000000},
-    3: {maxWidth: 1280, maxHeight: 720, maxFramerate: 30, maxBitrate: 3000000},
-    4: {maxWidth: 960, maxHeight: 540, maxFramerate: 24, maxBitrate: 1700000},
-    5: {maxWidth: 640, maxHeight: 360, maxFramerate: 18, maxBitrate: 600000}
+    0: {preserveSource: true, maxFramerate: 60},
+    1: {preserveSource: true, maxFramerate: 45},
+    2: {preserveSource: true, maxFramerate: 30},
+    3: {maxWidth: 1280, maxHeight: 720, maxFramerate: 30, maxBitrate: 4000000},
+    4: {maxWidth: 1280, maxHeight: 720, maxFramerate: 21, maxBitrate: 3000000},
+    5: {maxWidth: 960, maxHeight: 540, maxFramerate: 21, maxBitrate: 2000000},
+    6: {maxWidth: 640, maxHeight: 360, maxFramerate: 18, maxBitrate: 800000}
   };
 
   function resolveAdaptiveMode(roomId, search) {
@@ -187,6 +188,24 @@
     return Math.round(value * 1000) / 1000;
   }
 
+  function sourceBitrateForResolution(width, height) {
+    if (width <= 1920 && height <= 1080) return 10000000;
+    if (width <= 2560 && height <= 1440) return 14000000;
+    return 20000000;
+  }
+
+  function sourceFPSRatio(fps) {
+    if (fps >= 60) return 1;
+    if (fps >= 45) return 0.85;
+    if (fps >= 30) return 0.65;
+    if (fps > 0) return 0.65 * fps / 30;
+    return 0.65;
+  }
+
+  function sourceBitrateForFPS(baseBitrate, fps) {
+    return Math.max(600000, Math.round(baseBitrate * sourceFPSRatio(fps) / 100000) * 100000);
+  }
+
   function computeSenderDeltas(current, previous) {
     if (!current || !previous) return {valid: false, invalidReason: 'baseline'};
     var elapsedSeconds = (Number(current.now) - Number(previous.now)) / 1000;
@@ -223,7 +242,9 @@
     var maxWidth = profile.preserveSource ? sourceWidth : Math.min(sourceWidth, profile.maxWidth);
     var maxHeight = profile.preserveSource ? sourceHeight : Math.min(sourceHeight, profile.maxHeight);
     var maxFramerate = Math.min(configuredFps, profile.maxFramerate);
-    var profileBitrate = profile.maxBitrate;
+    var profileBitrate = profile.preserveSource
+      ? sourceBitrateForFPS(sourceBitrateForResolution(sourceWidth, sourceHeight), maxFramerate)
+      : profile.maxBitrate;
     var applyServerBudget = options.applyServerBudget === true;
     var protectionMaxWidth = Math.max(0, Number(options.protectionMaxWidth) || 0);
     var protectionMaxHeight = Math.max(0, Number(options.protectionMaxHeight) || 0);

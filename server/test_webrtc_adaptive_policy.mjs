@@ -41,7 +41,7 @@ function evaluateMany(state, samples) {
   return result;
 }
 
-test('fine-grained sender ladder reduces frame rate before resolution', () => {
+test('web sender ladder matches the native seven-level quality ladder', () => {
   const options = {
     sourceWidth: 1920,
     sourceHeight: 1080,
@@ -56,15 +56,69 @@ test('fine-grained sender ladder reduces frame rate before resolution', () => {
   });
   assert.deepEqual(computeEncodingProfile({...options, level: 1}), {
     level: 1, maxWidth: 1920, maxHeight: 1080, maxFramerate: 45,
-    maxBitrate: 8000000, scaleResolutionDownBy: 1,
+    maxBitrate: 8500000, scaleResolutionDownBy: 1,
   });
   assert.deepEqual(computeEncodingProfile({...options, level: 2}), {
     level: 2, maxWidth: 1920, maxHeight: 1080, maxFramerate: 30,
-    maxBitrate: 5000000, scaleResolutionDownBy: 1,
+    maxBitrate: 6500000, scaleResolutionDownBy: 1,
   });
   assert.deepEqual(computeEncodingProfile({...options, level: 3}), {
     level: 3, maxWidth: 1280, maxHeight: 720, maxFramerate: 30,
+    maxBitrate: 4000000, scaleResolutionDownBy: 1.5,
+  });
+  assert.deepEqual(computeEncodingProfile({...options, level: 4}), {
+    level: 4, maxWidth: 1280, maxHeight: 720, maxFramerate: 21,
     maxBitrate: 3000000, scaleResolutionDownBy: 1.5,
+  });
+  assert.deepEqual(computeEncodingProfile({...options, level: 5}), {
+    level: 5, maxWidth: 960, maxHeight: 540, maxFramerate: 21,
+    maxBitrate: 2000000, scaleResolutionDownBy: 2,
+  });
+  assert.deepEqual(computeEncodingProfile({...options, level: 6}), {
+    level: 6, maxWidth: 640, maxHeight: 360, maxFramerate: 18,
+    maxBitrate: 800000, scaleResolutionDownBy: 3,
+  });
+});
+
+test('native source levels use the same 1440p and 4K bitrate caps as the client', () => {
+  for (const source of [
+    {width: 2560, height: 1440, bitrates: [14000000, 11900000, 9100000]},
+    {width: 3840, height: 2160, bitrates: [20000000, 17000000, 13000000]},
+  ]) {
+    const options = {
+      sourceWidth: source.width,
+      sourceHeight: source.height,
+      configuredFps: 60,
+      targetBitrate: 30000000,
+      viewerCount: 1,
+      serverSafeBitrate: 30000000,
+    };
+    for (let level = 0; level < 3; level += 1) {
+      const profile = computeEncodingProfile({...options, level});
+      assert.equal(profile.maxWidth, source.width);
+      assert.equal(profile.maxHeight, source.height);
+      assert.equal(profile.maxBitrate, source.bitrates[level]);
+    }
+  }
+});
+
+test('native source levels never increase a low configured frame rate', () => {
+  const profile = computeEncodingProfile({
+    level: 0,
+    sourceWidth: 1280,
+    sourceHeight: 720,
+    configuredFps: 24,
+    targetBitrate: 20000000,
+    viewerCount: 1,
+    serverSafeBitrate: 20000000,
+  });
+  assert.deepEqual(profile, {
+    level: 0,
+    maxWidth: 1280,
+    maxHeight: 720,
+    maxFramerate: 24,
+    maxBitrate: 5200000,
+    scaleResolutionDownBy: 1,
   });
 });
 
@@ -121,28 +175,32 @@ test('observation and a short spike do not downshift', () => {
   assert.equal(result.decision, null);
 });
 
-test('sustained degradation descends one level at a time through 360p', () => {
+test('sustained degradation descends one level at a time through all seven levels', () => {
   let state = createAdaptiveState(0);
   let result = evaluateMany(state, [2000, 4000, 6000].map(bad));
   assert.deepEqual(result.decision, {type: 'downshift', fromLevel: 0, toLevel: 1});
   assert.equal(result.state.level, 1);
   assert.equal(result.state.policyVersion, POLICY_VERSION);
 
-  result = evaluateMany(result.state, [16000, 18000, 20000].map((now) => bad(now, {profileKbps: 8000})));
+  result = evaluateMany(result.state, [16000, 18000, 20000].map((now) => bad(now, {profileKbps: 8500})));
   assert.deepEqual(result.decision, {type: 'downshift', fromLevel: 1, toLevel: 2});
   assert.equal(result.state.level, 2);
 
-  result = evaluateMany(result.state, [30000, 32000, 34000].map((now) => bad(now, {profileKbps: 5000})));
+  result = evaluateMany(result.state, [30000, 32000, 34000].map((now) => bad(now, {profileKbps: 6500})));
   assert.deepEqual(result.decision, {type: 'downshift', fromLevel: 2, toLevel: 3});
   assert.equal(result.state.level, 3);
 
-  result = evaluateMany(result.state, [44000, 46000, 48000].map((now) => bad(now, {profileKbps: 3000})));
+  result = evaluateMany(result.state, [44000, 46000, 48000].map((now) => bad(now, {profileKbps: 4000})));
   assert.deepEqual(result.decision, {type: 'downshift', fromLevel: 3, toLevel: 4});
   assert.equal(result.state.level, 4);
 
-  result = evaluateMany(result.state, [58000, 60000, 62000].map((now) => bad(now, {profileKbps: 1700})));
+  result = evaluateMany(result.state, [58000, 60000, 62000].map((now) => bad(now, {profileKbps: 3000})));
   assert.deepEqual(result.decision, {type: 'downshift', fromLevel: 4, toLevel: 5});
   assert.equal(result.state.level, 5);
+
+  result = evaluateMany(result.state, [72000, 74000, 76000].map((now) => bad(now, {profileKbps: 2000})));
+  assert.deepEqual(result.decision, {type: 'downshift', fromLevel: 5, toLevel: 6});
+  assert.equal(result.state.level, 6);
 });
 
 test('low available bitrate triggers without high loss', () => {
@@ -246,7 +304,7 @@ test('encoding profiles cap resolution, frame rate, bitrate and server budget', 
       viewerCount: 1,
       serverSafeBitrate: 16000000,
     }),
-    {level: 1, maxWidth: 1920, maxHeight: 1080, maxFramerate: 45, maxBitrate: 8000000, scaleResolutionDownBy: 1},
+    {level: 1, maxWidth: 1920, maxHeight: 1080, maxFramerate: 45, maxBitrate: 8500000, scaleResolutionDownBy: 1},
   );
   assert.deepEqual(
     computeEncodingProfile({
@@ -258,7 +316,7 @@ test('encoding profiles cap resolution, frame rate, bitrate and server budget', 
       viewerCount: 1,
       serverSafeBitrate: 16000000,
     }),
-    {level: 2, maxWidth: 1920, maxHeight: 1080, maxFramerate: 30, maxBitrate: 5000000, scaleResolutionDownBy: 1},
+    {level: 2, maxWidth: 1920, maxHeight: 1080, maxFramerate: 30, maxBitrate: 6500000, scaleResolutionDownBy: 1},
   );
   assert.deepEqual(
     computeEncodingProfile({
@@ -270,7 +328,7 @@ test('encoding profiles cap resolution, frame rate, bitrate and server budget', 
       viewerCount: 1,
       serverSafeBitrate: 160000000,
     }),
-    {level: 3, maxWidth: 1280, maxHeight: 720, maxFramerate: 30, maxBitrate: 3000000, scaleResolutionDownBy: 1.5},
+    {level: 3, maxWidth: 1280, maxHeight: 720, maxFramerate: 30, maxBitrate: 4000000, scaleResolutionDownBy: 1.5},
   );
   assert.deepEqual(
     computeEncodingProfile({
@@ -282,7 +340,33 @@ test('encoding profiles cap resolution, frame rate, bitrate and server budget', 
       viewerCount: 1,
       serverSafeBitrate: 160000000,
     }),
-    {level: 4, maxWidth: 960, maxHeight: 540, maxFramerate: 24, maxBitrate: 1700000, scaleResolutionDownBy: 2},
+    {level: 4, maxWidth: 1280, maxHeight: 720, maxFramerate: 21, maxBitrate: 3000000, scaleResolutionDownBy: 1.5},
+  );
+
+  assert.deepEqual(
+    computeEncodingProfile({
+      level: 5,
+      sourceWidth: 1920,
+      sourceHeight: 1080,
+      configuredFps: 60,
+      targetBitrate: 10800000,
+      viewerCount: 1,
+      serverSafeBitrate: 160000000,
+    }),
+    {level: 5, maxWidth: 960, maxHeight: 540, maxFramerate: 21, maxBitrate: 2000000, scaleResolutionDownBy: 2},
+  );
+
+  assert.deepEqual(
+    computeEncodingProfile({
+      level: 6,
+      sourceWidth: 1920,
+      sourceHeight: 1080,
+      configuredFps: 60,
+      targetBitrate: 10800000,
+      viewerCount: 1,
+      serverSafeBitrate: 160000000,
+    }),
+    {level: 6, maxWidth: 640, maxHeight: 360, maxFramerate: 18, maxBitrate: 800000, scaleResolutionDownBy: 3},
   );
 
   const lowSource = computeEncodingProfile({
@@ -301,7 +385,7 @@ test('encoding profiles cap resolution, frame rate, bitrate and server budget', 
     level: 0,
     sourceWidth: 1920,
     sourceHeight: 1080,
-    configuredFps: 35,
+    configuredFps: 60,
     targetBitrate: 10800000,
     viewerCount: 1,
     serverSafeBitrate: 160000000,
@@ -311,7 +395,7 @@ test('encoding profiles cap resolution, frame rate, bitrate and server budget', 
     level: 0,
     sourceWidth: 1920,
     sourceHeight: 1080,
-    configuredFps: 35,
+    configuredFps: 60,
     targetBitrate: 10800000,
     viewerCount: 20,
     serverSafeBitrate: 160000000,
@@ -321,7 +405,7 @@ test('encoding profiles cap resolution, frame rate, bitrate and server budget', 
     level: 0,
     sourceWidth: 1920,
     sourceHeight: 1080,
-    configuredFps: 35,
+    configuredFps: 60,
     targetBitrate: 10800000,
     viewerCount: 20,
     serverSafeBitrate: 160000000,
