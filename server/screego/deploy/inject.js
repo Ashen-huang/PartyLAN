@@ -78,7 +78,7 @@
     '640x360':   { label: '360p (640×360)', w: 640, h: 360 }
   };
 
-  var FPS_OPTIONS = [35, 45, 60];
+  var FPS_OPTIONS = [30, 45, 60];
 
   var MAX_SHARE_FPS = 60;
   var STATS_FETCH_TIMEOUT_MS = 3500;
@@ -119,7 +119,7 @@
       changed = true;
     }
     if (!s.framerate) {
-      s.framerate = 35;
+      s.framerate = 30;
       changed = true;
     }
     if (!s.qualityMode) {
@@ -134,7 +134,7 @@
   }
   function normalizeFramerateValue(value) {
     var fps = parseInt(value, 10);
-    if (isNaN(fps)) return 35;
+    if (isNaN(fps)) return 30;
     var best = FPS_OPTIONS[0];
     var bestDiff = Math.abs(fps - best);
     for (var i = 1; i < FPS_OPTIONS.length; i++) {
@@ -150,7 +150,7 @@
     var s = loadCfg();
     return {
       res: normalizeResolutionKey(s.resolution || '1280x720'),
-      fps: normalizeFramerateValue(s.framerate || 35),
+      fps: normalizeFramerateValue(s.framerate || 30),
       qm: s.qualityMode || 'balanced',
       audio: AUDIO_MODES[s.audioMode] ? s.audioMode : 'app'
     };
@@ -978,7 +978,7 @@
       level: typeof levelOverride === 'number' ? levelOverride : state.level,
       sourceWidth: sourceWidth,
       sourceHeight: sourceHeight,
-      configuredFps: cfg.fps || 35,
+      configuredFps: cfg.fps || 30,
       targetBitrate: computeTargetBitrate(),
       viewerCount: getServerBudgetedAdaptivePeerCount(),
       serverSafeBitrate: SERVER_PROFILE.safeNetMbps * 1000000,
@@ -1042,9 +1042,18 @@
         jitterMs: remoteJitterMs,
         outboundKbps: 0,
         profileKbps: adaptiveProfile ? adaptiveProfile.maxBitrate / 1000 : computeTargetBitrate() / 1000,
+        nominalKbps: adaptiveProfile ? adaptiveProfile.nominalBitrate / 1000 : computeTargetBitrate() / 1000,
+        degradeFloorKbps: adaptiveProfile
+          ? adaptiveProfile.degradeFloorBitrate / 1000
+          : computeTargetBitrate() / 1000,
         nextProfileKbps: nextAdaptiveProfile
           ? nextAdaptiveProfile.maxBitrate / 1000
           : computeTargetBitrate() / 1000,
+        nextNominalKbps: nextAdaptiveProfile
+          ? nextAdaptiveProfile.nominalBitrate / 1000
+          : computeTargetBitrate() / 1000,
+        maxLevel: adaptiveProfile ? adaptiveProfile.maxLevel : 6,
+        receiverImpaired: false,
         availableOutgoingBitrate: pair.availableOutgoingBitrate || 0,
         qualityLimitationReason: qualityReason
       };
@@ -1984,33 +1993,8 @@
     return 'detail';
   }
 
-  function bitrateBaseForResolution(res) {
-    switch (res) {
-      case '640x360': return 1500000;
-      case '854x480': return 2500000;
-      case '1280x720': return 6000000;
-      case '1920x1080': return 10000000;
-      case '2560x1440': return 14000000;
-      case '3840x2160': return 24000000;
-      default: return 6000000;
-    }
-  }
-
-  function qualityMultiplier(mode) {
-    if (mode === 'quality') return 1.25;
-    if (mode === 'smooth') return 0.95;
-    return 1.0;
-  }
-
-  function fpsMultiplier(fps) {
-    if (!fps || fps <= 30) return 1;
-    return Math.min(1.7, 1 + ((fps - 30) / 30) * 0.5);
-  }
-
   function computeTargetBitrate() {
-    var c = extCfg();
-    var bitrate = bitrateBaseForResolution(c.res) * qualityMultiplier(c.qm) * fpsMultiplier(c.fps || 35);
-    return Math.max(1200000, Math.round(bitrate));
+    return maxBitrate();
   }
 
   function stopDisplayStreamTracks(stream) {
@@ -2042,7 +2026,7 @@
       vc.width = rc.width;
       vc.height = rc.height;
     }
-    vc.frameRate = buildDisplayCaptureFrameRateHints(c.fps || 35);
+    vc.frameRate = buildDisplayCaptureFrameRateHints(c.fps || 30);
 
     var nc = {};
     if (constraints && typeof constraints === 'object') {
@@ -2292,7 +2276,7 @@
       level: 0,
       maxWidth: (RESOLUTIONS[c.res] || {}).w || 1280,
       maxHeight: (RESOLUTIONS[c.res] || {}).h || 720,
-      maxFramerate: c.fps || 35,
+      maxFramerate: c.fps || 30,
       maxBitrate: targetBitrate,
       scaleResolutionDownBy: 1
     };
@@ -3364,7 +3348,10 @@
             adaptiveDecision: adaptiveDecision,
             adaptiveLevel: adaptiveState.level,
             adaptiveScale: adaptiveProfile.scaleResolutionDownBy,
-            adaptiveMaxBitrate: adaptiveProfile.maxBitrate
+            adaptiveMaxBitrate: adaptiveProfile.maxBitrate,
+            adaptiveNominalBitrate: adaptiveProfile.nominalBitrate,
+            adaptiveDegradeFloorBitrate: adaptiveProfile.degradeFloorBitrate,
+            adaptiveStatus: adaptiveState.status
           });
         }
         if (

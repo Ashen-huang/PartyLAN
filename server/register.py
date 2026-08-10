@@ -56,7 +56,8 @@ STATS_STRING_FIELDS = set([
     'qualityStatus', 'shadowAction', 'invalidReason', 'telemetryResetReason',
     'resolution', 'fps',
     'codec', 'kbps', 'loss', 'jitter', 'pcState', 'targetKbps', 'adaptive',
-    'adaptivePolicyVersion', 'adaptiveDecision', 'serverLoadKbps', 'serverNote',
+    'adaptivePolicyVersion', 'adaptiveDecision', 'adaptiveStatus',
+    'serverLoadKbps', 'serverNote',
     'participantId', 'pairId', 'receiverState',
 ])
 STATS_NUMBER_FIELDS = set([
@@ -78,6 +79,7 @@ STATS_NUMBER_FIELDS = set([
     'badCount', 'windowSize', 'pcCount', 'estimatedCapacityKbps',
     'estimatedRelayLoadKbps', 'protectionMaxBitrate',
     'adaptiveLevel', 'adaptiveScale', 'adaptiveMaxBitrate',
+    'adaptiveNominalBitrate', 'adaptiveDegradeFloorBitrate',
     'decodedFps', 'incomingBitrateKbps', 'packetsLost', 'framesDropped',
 ])
 STATS_BOOL_FIELDS = set(['valid', 'visible'])

@@ -71,6 +71,15 @@ func (e *fakeGameCastLayerEncoder) Close() error {
 	return nil
 }
 
+func TestInitialGameCastVideoLayerAllowsApproved4KBurstCap(t *testing.T) {
+	layers := initialGameCastVideoLayers(&fakeP2PLayerPublisher{}, &shareSession{
+		width: 3840, height: 2160, fps: 60,
+	})
+	if len(layers) != 1 || layers[0].BitrateKbps != 40000 {
+		t.Fatalf("initial layers = %#v, want one 4K60 layer capped at 40000 kbps", layers)
+	}
+}
+
 func TestGameCastP2PLayerPoolNeverCreatesMoreThanThreeEncoders(t *testing.T) {
 	ladder := adaptive.BuildLadder(adaptive.Profile{Width: 1920, Height: 1080, FPS: 60, BitrateKbps: 20000})
 	created := 0
@@ -242,7 +251,11 @@ func TestReconcileP2PLayersMovesOnlyWeakViewer(t *testing.T) {
 		}
 		controller.Observe(at, []adaptive.PerViewerSample{
 			p2pControllerSample("strong", at, 15000, index),
-			p2pControllerSample("weak", at, weakEstimate, index),
+			func() adaptive.PerViewerSample {
+				sample := p2pControllerSample("weak", at, weakEstimate, index)
+				sample.IncomingBitrateKbps = float64(weakEstimate)
+				return sample
+			}(),
 		})
 	}
 	host := &fakeP2PLayerPublisher{snapshots: []screegop2p.ViewerTransportSnapshot{

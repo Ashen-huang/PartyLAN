@@ -22,14 +22,14 @@ func TestBuildLadderDerivesSameResolutionStepsForNonStandardSource(t *testing.T)
 }
 
 func TestBuildLadderUsesConfirmedP2PProfilesAndBitrates(t *testing.T) {
-	ladder := BuildLadder(Profile{Width: 1920, Height: 1080, FPS: 60, BitrateKbps: 20000})
+	ladder := BuildLadder(Profile{Width: 1920, Height: 1080, FPS: 60, BitrateKbps: 50000})
 	want := []Profile{
-		{Width: 1920, Height: 1080, FPS: 60, BitrateKbps: 10000},
-		{Width: 1920, Height: 1080, FPS: 45, BitrateKbps: 8500},
-		{Width: 1920, Height: 1080, FPS: 30, BitrateKbps: 6500},
-		{Width: 1280, Height: 720, FPS: 30, BitrateKbps: 4000},
-		{Width: 1280, Height: 720, FPS: 21, BitrateKbps: 3000},
-		{Width: 960, Height: 540, FPS: 21, BitrateKbps: 2000},
+		{Width: 1920, Height: 1080, FPS: 60, BitrateKbps: 16000},
+		{Width: 1920, Height: 1080, FPS: 45, BitrateKbps: 12000},
+		{Width: 1920, Height: 1080, FPS: 30, BitrateKbps: 8000},
+		{Width: 1280, Height: 720, FPS: 30, BitrateKbps: 6000},
+		{Width: 1280, Height: 720, FPS: 21, BitrateKbps: 4000},
+		{Width: 960, Height: 540, FPS: 21, BitrateKbps: 2500},
 		{Width: 640, Height: 360, FPS: 18, BitrateKbps: 800},
 	}
 	if len(ladder) != len(want) {
@@ -42,12 +42,12 @@ func TestBuildLadderUsesConfirmedP2PProfilesAndBitrates(t *testing.T) {
 	}
 }
 
-func TestBuildLadderCaps4KSourceAtTwentyMbps(t *testing.T) {
-	ladder := BuildLadder(Profile{Width: 3840, Height: 2160, FPS: 60, BitrateKbps: 30000})
+func TestBuildLadderCaps4KSourceAtFortyMbps(t *testing.T) {
+	ladder := BuildLadder(Profile{Width: 3840, Height: 2160, FPS: 60, BitrateKbps: 50000})
 	want := []Profile{
-		{Width: 3840, Height: 2160, FPS: 60, BitrateKbps: 20000},
-		{Width: 3840, Height: 2160, FPS: 45, BitrateKbps: 17000},
-		{Width: 3840, Height: 2160, FPS: 30, BitrateKbps: 13000},
+		{Width: 3840, Height: 2160, FPS: 60, BitrateKbps: 40000},
+		{Width: 3840, Height: 2160, FPS: 45, BitrateKbps: 30000},
+		{Width: 3840, Height: 2160, FPS: 30, BitrateKbps: 20000},
 	}
 	if len(ladder) < len(want) {
 		t.Fatalf("4K ladder = %#v, want at least %#v", ladder, want)
@@ -55,6 +55,26 @@ func TestBuildLadderCaps4KSourceAtTwentyMbps(t *testing.T) {
 	for index := range want {
 		if ladder[index] != want[index] {
 			t.Fatalf("4K ladder[%d] = %#v, want %#v", index, ladder[index], want[index])
+		}
+	}
+}
+
+func TestBuildLadderKeepsAll720pFrameRateBandsBeforeScaling(t *testing.T) {
+	ladder := BuildLadder(Profile{Width: 1280, Height: 720, FPS: 60, BitrateKbps: 50000})
+	want := []Profile{
+		{Width: 1280, Height: 720, FPS: 60, BitrateKbps: 12000},
+		{Width: 1280, Height: 720, FPS: 45, BitrateKbps: 9000},
+		{Width: 1280, Height: 720, FPS: 30, BitrateKbps: 6000},
+		{Width: 1280, Height: 720, FPS: 21, BitrateKbps: 4000},
+		{Width: 960, Height: 540, FPS: 21, BitrateKbps: 2500},
+		{Width: 640, Height: 360, FPS: 18, BitrateKbps: 800},
+	}
+	if len(ladder) != len(want) {
+		t.Fatalf("720p ladder length = %d, want %d: %#v", len(ladder), len(want), ladder)
+	}
+	for index := range want {
+		if ladder[index] != want[index] {
+			t.Fatalf("720p ladder[%d] = %#v, want %#v", index, ladder[index], want[index])
 		}
 	}
 }

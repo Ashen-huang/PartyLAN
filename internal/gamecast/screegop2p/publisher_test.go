@@ -11,6 +11,12 @@ import (
 	"github.com/pion/webrtc/v4"
 )
 
+func TestNativePublisherGCCMaximumCoversApprovedBurstCap(t *testing.T) {
+	if got := publisherMaxBitrateBps(40000); got < 40000000 {
+		t.Fatalf("max bitrate = %d, want at least 40000000", got)
+	}
+}
+
 type recordingSignaler struct {
 	mu       sync.Mutex
 	messages []OutgoingMessage

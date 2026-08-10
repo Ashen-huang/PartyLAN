@@ -258,7 +258,7 @@ func p2pAdaptiveLadder(session *shareSession) []adaptive.Profile {
 	if session == nil {
 		return adaptive.BuildLadder(adaptive.Profile{})
 	}
-	return adaptive.BuildLadder(adaptive.Profile{Width: session.width, Height: session.height, FPS: session.fps, BitrateKbps: 20000})
+	return adaptive.BuildLadder(adaptive.Profile{Width: session.width, Height: session.height, FPS: session.fps, BitrateKbps: 50000})
 }
 
 func p2pViewerSamples(snapshots []screegop2p.ViewerTransportSnapshot, update gameCastQualityUpdate, now time.Time) []adaptive.PerViewerSample {

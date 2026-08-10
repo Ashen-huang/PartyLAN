@@ -36,40 +36,55 @@ var legacyCanonicalProfiles = []Profile{
 }
 
 var p2pCanonicalProfiles = []Profile{
-	{Width: 1280, Height: 720, FPS: 30, BitrateKbps: 4000},
-	{Width: 1280, Height: 720, FPS: 21, BitrateKbps: 3000},
-	{Width: 960, Height: 540, FPS: 21, BitrateKbps: 2000},
+	{Width: 1280, Height: 720, FPS: 30, BitrateKbps: 6000},
+	{Width: 1280, Height: 720, FPS: 21, BitrateKbps: 4000},
+	{Width: 960, Height: 540, FPS: 21, BitrateKbps: 2500},
 	{Width: 640, Height: 360, FPS: 18, BitrateKbps: 800},
 }
 
 func BuildLadder(requested Profile) []Profile {
 	requested = normalizeProfile(requested)
 	baseBitrate := p2pSourceBitrateKbps(requested.Width, requested.Height)
-	requested.BitrateKbps = minPositive(requested.BitrateKbps, sourceBitrateForFPS(baseBitrate, requested.FPS))
-	effectiveBaseBitrate := int(math.Round(float64(requested.BitrateKbps) / sourceFPSRatio(requested.FPS)))
-	ladder := []Profile{requested}
-	for _, fps := range []int{45, 30} {
-		if fps >= requested.FPS {
+	requestedCap := requested.BitrateKbps
+	naturalRequestedBitrate := sourceBitrateForFPS(baseBitrate, requested.FPS)
+	effectiveBaseBitrate := baseBitrate
+	if requestedCap < naturalRequestedBitrate {
+		effectiveBaseBitrate = roundBitrateKbps(float64(requestedCap) / sourceFPSRatio(requested.FPS))
+	}
+	ladder := make([]Profile, 0, 7)
+	sourceFPSBands := []int{requested.FPS, 45, 30}
+	if requested.Width <= 1280 && requested.Height <= 720 {
+		sourceFPSBands = append(sourceFPSBands, 21)
+	}
+	for _, fps := range sourceFPSBands {
+		if fps > requested.FPS {
 			continue
 		}
 		candidate := Profile{Width: requested.Width, Height: requested.Height, FPS: fps,
-			BitrateKbps: sourceBitrateForFPS(effectiveBaseBitrate, fps)}
-		if !sameProfile(ladder[len(ladder)-1], candidate) {
-			ladder = append(ladder, candidate)
-		}
+			BitrateKbps: minPositive(requestedCap, sourceBitrateForFPS(effectiveBaseBitrate, fps))}
+		ladder = appendP2PProfile(ladder, candidate, requested)
 	}
 	for _, candidate := range p2pCanonicalProfiles {
-		previous := ladder[len(ladder)-1]
-		if candidate.Width > previous.Width || candidate.Height > previous.Height || candidate.FPS > previous.FPS {
-			continue
-		}
-		candidate.BitrateKbps = minPositive(candidate.BitrateKbps, requested.BitrateKbps)
-		if sameProfile(previous, candidate) {
-			continue
-		}
-		ladder = append(ladder, candidate)
+		ladder = appendP2PProfile(ladder, candidate, requested)
 	}
 	return ladder
+}
+
+func appendP2PProfile(ladder []Profile, candidate, requested Profile) []Profile {
+	if candidate.Width > requested.Width || candidate.Height > requested.Height || candidate.FPS > requested.FPS {
+		return ladder
+	}
+	candidate.BitrateKbps = minPositive(candidate.BitrateKbps, requested.BitrateKbps)
+	if len(ladder) > 0 {
+		previous := ladder[len(ladder)-1]
+		for _, existing := range ladder {
+			if sameProfileShape(existing, candidate) {
+				return ladder
+			}
+		}
+		candidate.BitrateKbps = minPositive(candidate.BitrateKbps, previous.BitrateKbps)
+	}
+	return append(ladder, candidate)
 }
 
 func buildLegacyLadder(requested Profile) []Profile {
@@ -147,20 +162,22 @@ func bitrateFor(width, height, fps int) int {
 
 func p2pSourceBitrateKbps(width, height int) int {
 	switch {
+	case width <= 1280 && height <= 720:
+		return 12000
 	case width <= 1920 && height <= 1080:
-		return 10000
+		return 16000
 	case width <= 2560 && height <= 1440:
-		return 14000
+		return 24000
 	default:
-		return 20000
+		return 40000
 	}
 }
 
 func sourceBitrateForFPS(baseBitrate, fps int) int {
 	ratio := sourceFPSRatio(fps)
-	bitrate := int(math.Round(float64(baseBitrate)*ratio/100)) * 100
-	if bitrate < 600 {
-		return 600
+	bitrate := roundBitrateKbps(float64(baseBitrate) * ratio)
+	if bitrate < 800 {
+		return 800
 	}
 	return bitrate
 }
@@ -170,14 +187,32 @@ func sourceFPSRatio(fps int) float64 {
 	case fps >= 60:
 		return 1
 	case fps >= 45:
-		return 0.85
+		return 0.75
 	case fps >= 30:
-		return 0.65
+		return 0.5
+	case fps >= 21:
+		return 1.0 / 3.0
 	case fps > 0:
-		return 0.65 * float64(fps) / 30
+		return (1.0 / 3.0) * float64(fps) / 21
 	default:
-		return 0.65
+		return 1.0 / 3.0
 	}
+}
+
+func roundBitrateKbps(value float64) int {
+	return int(math.Round(value/100)) * 100
+}
+
+func profileNominalBitrateKbps(profile Profile) int {
+	return minPositive(profile.BitrateKbps, roundBitrateKbps(float64(profile.BitrateKbps)*0.75))
+}
+
+func profileDegradeFloorKbps(profile Profile) int {
+	return minPositive(profile.BitrateKbps, maxInt(100, roundBitrateKbps(float64(profileNominalBitrateKbps(profile))*0.65)))
+}
+
+func sameProfileShape(left, right Profile) bool {
+	return left.Width == right.Width && left.Height == right.Height && left.FPS == right.FPS
 }
 
 func sameProfile(left, right Profile) bool {
@@ -189,6 +224,13 @@ func minPositive(left, right int) int {
 		return right
 	}
 	if right <= 0 || left < right {
+		return left
+	}
+	return right
+}
+
+func maxInt(left, right int) int {
+	if left > right {
 		return left
 	}
 	return right
@@ -226,8 +268,11 @@ type ViewerSample struct {
 type DecisionType string
 
 const (
-	DecisionDownshift DecisionType = "downshift"
-	DecisionRecover   DecisionType = "recover"
+	DecisionDownshift     DecisionType = "downshift"
+	DecisionRecover       DecisionType = "recover"
+	DecisionProbe         DecisionType = "probe"
+	DecisionProbeCommit   DecisionType = "probe-commit"
+	DecisionProbeRollback DecisionType = "probe-rollback"
 )
 
 type Decision struct {

@@ -431,7 +431,7 @@ func initialGameCastVideoLayers(host gameCastNativePublisher, session *shareSess
 	}
 	if _, ok := host.(gameCastP2PLayerPublisher); ok {
 		ladder := adaptive.BuildLadder(adaptive.Profile{
-			Width: session.width, Height: session.height, FPS: session.fps, BitrateKbps: 20000,
+			Width: session.width, Height: session.height, FPS: session.fps, BitrateKbps: 50000,
 		})
 		if len(ladder) > 0 {
 			return []nativehost.VideoLayer{gameCastP2PVideoLayer(ladder[0], 0)}

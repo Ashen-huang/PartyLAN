@@ -6,12 +6,15 @@ import (
 )
 
 const (
-	PerViewerPolicyVersion = "native-per-viewer-layer-v1"
-	perViewerObservation   = 4 * time.Second
-	perViewerDownCooldown  = 8 * time.Second
-	perViewerStableWindow  = 10 * time.Second
-	perViewerUpCooldown    = 12 * time.Second
-	perViewerSampleTTL     = 8 * time.Second
+	PerViewerPolicyVersion    = "native-per-viewer-layer-v2"
+	perViewerObservation      = 4 * time.Second
+	perViewerDownCooldown     = 8 * time.Second
+	perViewerStableWindow     = 8 * time.Second
+	perViewerProbeWindow      = 6 * time.Second
+	perViewerUpCooldown       = 12 * time.Second
+	perViewerSampleTTL        = 8 * time.Second
+	perViewerRecoveryHeadroom = 1.05
+	perViewerCascadeRatio     = 0.75
 )
 
 type ViewerTarget struct {
@@ -162,19 +165,25 @@ type PerViewerStatus struct {
 }
 
 type perViewerState struct {
-	viewerID      string
-	generation    string
-	pairID        string
-	connectedAt   time.Time
-	lastAt        time.Time
-	lastSampleID  string
-	level         int
-	window        []bool
-	stableSince   time.Time
-	cooldownUntil time.Time
-	state         string
-	reason        string
-	weak          bool
+	viewerID              string
+	generation            string
+	pairID                string
+	connectedAt           time.Time
+	lastAt                time.Time
+	lastSampleID          string
+	level                 int
+	window                []bool
+	stableSince           time.Time
+	cooldownUntil         time.Time
+	state                 string
+	reason                string
+	weak                  bool
+	lastDownshiftCapacity int
+	probeActive           bool
+	probeFromLevel        int
+	probeUntil            time.Time
+	probeBadCount         int
+	probeValidCount       int
 }
 
 type PerViewerController struct {
@@ -208,8 +217,49 @@ func (c *PerViewerController) Observe(now time.Time, samples []PerViewerSample) 
 		}
 		state.lastSampleID = sample.SampleID
 		state.lastAt = now
-		bad := perViewerBadSample(sample, c.currentProfile(state.level))
+		current := c.currentProfile(state.level)
+		bad := perViewerBadSample(sample, current)
+		receiverImpaired := perViewerReceiverImpaired(sample, current)
 		state.weak = bad
+		if state.probeActive {
+			state.probeValidCount++
+			if bad {
+				state.probeBadCount++
+			}
+			if state.probeBadCount >= 2 {
+				from := state.level
+				state.level = state.probeFromLevel
+				state.window = nil
+				state.stableSince = time.Time{}
+				state.cooldownUntil = now.Add(perViewerUpCooldown)
+				state.state = "probe-rollback"
+				state.reason = "probe-degraded"
+				clearPerViewerProbe(state)
+				decisions = append(decisions, ViewerDecision{
+					ViewerID: sample.ViewerID, Type: DecisionProbeRollback, Reason: "probe-degraded",
+					FromLevel: from, ToLevel: state.level,
+				})
+				continue
+			}
+			if !now.Before(state.probeUntil) && state.probeValidCount >= 2 {
+				from := state.probeFromLevel
+				state.window = nil
+				state.stableSince = time.Time{}
+				state.cooldownUntil = now.Add(perViewerUpCooldown)
+				state.state = "recovering"
+				state.reason = "probe-healthy"
+				state.lastDownshiftCapacity = 0
+				clearPerViewerProbe(state)
+				decisions = append(decisions, ViewerDecision{
+					ViewerID: sample.ViewerID, Type: DecisionProbeCommit, Reason: "probe-healthy",
+					FromLevel: from, ToLevel: state.level,
+				})
+				continue
+			}
+			state.state = "probing"
+			state.reason = "recovery-probe"
+			continue
+		}
 		if bad {
 			state.stableSince = time.Time{}
 		} else if state.level > 0 && perViewerStableSample(sample, c.currentProfile(state.level), c.nextProfile(state.level)) {
@@ -221,11 +271,15 @@ func (c *PerViewerController) Observe(now time.Time, samples []PerViewerSample) 
 				state.level--
 				state.window = nil
 				state.stableSince = time.Time{}
-				state.cooldownUntil = now.Add(perViewerUpCooldown)
-				state.state = "recovering"
-				state.reason = "stable-headroom"
+				state.probeActive = true
+				state.probeFromLevel = from
+				state.probeUntil = now.Add(perViewerProbeWindow)
+				state.probeBadCount = 0
+				state.probeValidCount = 0
+				state.state = "probing"
+				state.reason = "recovery-probe"
 				decisions = append(decisions, ViewerDecision{
-					ViewerID: sample.ViewerID, Type: DecisionRecover, Reason: "stable-headroom",
+					ViewerID: sample.ViewerID, Type: DecisionProbe, Reason: "recovery-probe",
 					FromLevel: from, ToLevel: state.level,
 				})
 				continue
@@ -237,7 +291,8 @@ func (c *PerViewerController) Observe(now time.Time, samples []PerViewerSample) 
 			state.state = "cooldown"
 			continue
 		}
-		state.window = appendPerViewerWindow(state.window, bad, 3)
+		downshiftBad := perViewerCascadeAllowsDownshift(state, sample, bad, receiverImpaired)
+		state.window = appendPerViewerWindow(state.window, downshiftBad, 3)
 		if now.Sub(state.connectedAt) < perViewerObservation {
 			state.state = "observing"
 			continue
@@ -249,13 +304,17 @@ func (c *PerViewerController) Observe(now time.Time, samples []PerViewerSample) 
 			state.cooldownUntil = now.Add(perViewerDownCooldown)
 			state.state = "degraded-confirmed"
 			state.reason = perViewerReason(sample, c.currentProfile(from))
+			state.lastDownshiftCapacity = perViewerSampleCapacity(sample)
 			decisions = append(decisions, ViewerDecision{
 				ViewerID: sample.ViewerID, Type: DecisionDownshift, Reason: state.reason,
 				FromLevel: from, ToLevel: state.level,
 			})
 			continue
 		}
-		if bad {
+		if confirmedPerViewerWindow(state.window, 3, 2, 2) && state.level >= len(c.ladder)-1 {
+			state.state = "floor-protected"
+			state.reason = "quality-floor"
+		} else if bad {
 			state.state = "degraded-suspected"
 		} else {
 			state.state = "normal"
@@ -264,6 +323,14 @@ func (c *PerViewerController) Observe(now time.Time, samples []PerViewerSample) 
 	}
 	c.prune(now)
 	return decisions
+}
+
+func clearPerViewerProbe(state *perViewerState) {
+	state.probeActive = false
+	state.probeFromLevel = 0
+	state.probeUntil = time.Time{}
+	state.probeBadCount = 0
+	state.probeValidCount = 0
 }
 
 func (c *PerViewerController) Status(now time.Time) map[string]PerViewerStatus {
@@ -333,32 +400,64 @@ func validPerViewerSample(sample PerViewerSample) bool {
 }
 
 func perViewerBadSample(sample PerViewerSample, current Profile) bool {
-	if sample.EstimateValid && float64(sample.EstimatedBitrateKbps) < float64(current.BitrateKbps)*0.8 {
+	if perViewerReceiverImpaired(sample, current) {
 		return true
 	}
-	if !sample.ReceiverValid || lossPercentValues(sample.PacketsReceivedDelta, sample.PacketsLostDelta) <= 5 {
-		return false
-	}
-	return sample.IncomingBitrateKbps < float64(current.BitrateKbps)*0.8 ||
-		sample.DecodedFPS < float64(current.FPS)*0.85 || sample.JitterMS > 100 || sample.FramesDroppedDelta > 0
+	floor := float64(profileDegradeFloorKbps(current))
+	lowEstimate := sample.EstimateValid && sample.EstimatedBitrateKbps > 0 && float64(sample.EstimatedBitrateKbps) < floor
+	lowDelivery := sample.ReceiverValid && sample.IncomingBitrateKbps > 0 && sample.IncomingBitrateKbps < floor
+	return lowEstimate && lowDelivery
 }
 
 func perViewerStableSample(sample PerViewerSample, current, next Profile) bool {
-	if !sample.EstimateValid || float64(sample.EstimatedBitrateKbps) < float64(next.BitrateKbps)*1.2 {
+	if !sample.ReceiverValid || lossPercentValues(sample.PacketsReceivedDelta, sample.PacketsLostDelta) >= 2 ||
+		sample.JitterMS >= 60 || sample.FramesDroppedDelta > 0 ||
+		sample.DecodedFPS < float64(current.FPS)*0.95 {
 		return false
 	}
-	if !sample.ReceiverValid || lossPercentValues(sample.PacketsReceivedDelta, sample.PacketsLostDelta) >= 1 ||
-		sample.JitterMS >= 40 || sample.FramesDroppedDelta > 0 {
-		return false
-	}
-	return sample.DecodedFPS >= float64(current.FPS)*0.95
+	estimateHeadroom := sample.EstimateValid && float64(sample.EstimatedBitrateKbps) >=
+		float64(profileNominalBitrateKbps(next))*perViewerRecoveryHeadroom
+	currentDeliveryHealthy := sample.IncomingBitrateKbps >= float64(profileDegradeFloorKbps(current))
+	return estimateHeadroom || currentDeliveryHealthy
 }
 
 func perViewerReason(sample PerViewerSample, current Profile) string {
-	if sample.EstimateValid && float64(sample.EstimatedBitrateKbps) < float64(current.BitrateKbps)*0.8 {
+	floor := float64(profileDegradeFloorKbps(current))
+	if sample.EstimateValid && float64(sample.EstimatedBitrateKbps) < floor &&
+		sample.ReceiverValid && sample.IncomingBitrateKbps > 0 && sample.IncomingBitrateKbps < floor {
 		return "bandwidth-estimate"
 	}
 	return "viewer-network"
+}
+
+func perViewerReceiverImpaired(sample PerViewerSample, current Profile) bool {
+	if !sample.ReceiverValid || lossPercentValues(sample.PacketsReceivedDelta, sample.PacketsLostDelta) <= 5 {
+		return false
+	}
+	return (sample.IncomingBitrateKbps > 0 && sample.IncomingBitrateKbps < float64(profileDegradeFloorKbps(current))) ||
+		(sample.DecodedFPS > 0 && sample.DecodedFPS < float64(current.FPS)*0.85) ||
+		sample.JitterMS > 100 || sample.FramesDroppedDelta > 0
+}
+
+func perViewerSampleCapacity(sample PerViewerSample) int {
+	if sample.EstimateValid && sample.EstimatedBitrateKbps > 0 {
+		return sample.EstimatedBitrateKbps
+	}
+	if sample.ReceiverValid && sample.IncomingBitrateKbps > 0 {
+		return int(sample.IncomingBitrateKbps)
+	}
+	return 0
+}
+
+func perViewerCascadeAllowsDownshift(state *perViewerState, sample PerViewerSample, bad, receiverImpaired bool) bool {
+	if !bad || state.lastDownshiftCapacity <= 0 {
+		return bad
+	}
+	if receiverImpaired {
+		return true
+	}
+	capacity := perViewerSampleCapacity(sample)
+	return capacity > 0 && float64(capacity) <= float64(state.lastDownshiftCapacity)*perViewerCascadeRatio
 }
 
 func lossPercentValues(received, lost int64) float64 {

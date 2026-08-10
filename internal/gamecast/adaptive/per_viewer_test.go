@@ -82,7 +82,7 @@ func TestPerViewerControllerDownshiftsOnlyTheWeakViewer(t *testing.T) {
 		}
 		decisions := controller.Observe(at, []PerViewerSample{
 			goodPerViewerSample("strong", at, 15000, index),
-			goodPerViewerSample("weak", at, weakEstimate, index),
+			lowDeliveryPerViewerSample("weak", at, weakEstimate, index),
 		})
 		if seconds < 6 && len(decisions) != 0 {
 			t.Fatalf("early decisions at %ds = %#v", seconds, decisions)
@@ -100,7 +100,7 @@ func TestPerViewerControllerDownshiftsOnlyTheWeakViewer(t *testing.T) {
 	}
 }
 
-func TestPerViewerControllerRecoveryNeedsNextLevelHeadroomForTenSeconds(t *testing.T) {
+func TestPerViewerControllerRecoveryUsesEightSecondProbeWithoutTwentyPercentHeadroom(t *testing.T) {
 	start := time.Unix(13000, 0)
 	controller := NewPerViewerController(BuildLadder(Profile{
 		Width: 1920, Height: 1080, FPS: 60, BitrateKbps: 20000,
@@ -112,37 +112,47 @@ func TestPerViewerControllerRecoveryNeedsNextLevelHeadroomForTenSeconds(t *testi
 			estimate = 7000
 		}
 		controller.Observe(start.Add(time.Duration(seconds)*time.Second), []PerViewerSample{
-			goodPerViewerSample("viewer", start.Add(time.Duration(seconds)*time.Second), estimate, index),
+			lowDeliveryPerViewerSample("viewer", start.Add(time.Duration(seconds)*time.Second), estimate, index),
 		})
 	}
 
-	for index, seconds := range []int{8, 10, 12, 14, 16} {
+	for index, seconds := range []int{8, 10, 12} {
 		at := start.Add(time.Duration(seconds) * time.Second)
 		decisions := controller.Observe(at, []PerViewerSample{
-			goodPerViewerSample("viewer", at, 11999, index+10),
+			goodPerViewerSample("viewer", at, 9000, index+10),
 		})
 		if len(decisions) != 0 {
-			t.Fatalf("recovered without 120%% headroom at %ds: %#v", seconds, decisions)
+			t.Fatalf("probed before eight stable seconds at %ds: %#v", seconds, decisions)
 		}
 	}
 
-	for index, seconds := range []int{18, 20, 22, 24, 26, 28} {
+	for index, seconds := range []int{14, 16} {
 		at := start.Add(time.Duration(seconds) * time.Second)
 		decisions := controller.Observe(at, []PerViewerSample{
-			goodPerViewerSample("viewer", at, 12000, index+20),
+			goodPerViewerSample("viewer", at, 9000, index+20),
 		})
-		if seconds < 28 && len(decisions) != 0 {
-			t.Fatalf("recovered before ten stable seconds at %ds: %#v", seconds, decisions)
+		if seconds < 16 && len(decisions) != 0 {
+			t.Fatalf("probed before eight stable seconds at %ds: %#v", seconds, decisions)
 		}
-		if seconds == 28 {
-			if len(decisions) != 1 || decisions[0].Type != DecisionRecover || decisions[0].ToLevel != 0 {
-				t.Fatalf("recovery decisions = %#v, want one-level recovery", decisions)
-			}
+		if seconds == 16 && (len(decisions) != 1 || decisions[0].Type != DecisionProbe || decisions[0].ToLevel != 0) {
+			t.Fatalf("recovery decisions = %#v, want one-level probe", decisions)
+		}
+	}
+	for index, seconds := range []int{18, 20, 22} {
+		at := start.Add(time.Duration(seconds) * time.Second)
+		decisions := controller.Observe(at, []PerViewerSample{
+			goodPerViewerSample("viewer", at, 9000, index+30),
+		})
+		if seconds < 22 && len(decisions) != 0 {
+			t.Fatalf("probe finished before six seconds at %ds: %#v", seconds, decisions)
+		}
+		if seconds == 22 && (len(decisions) != 1 || decisions[0].Type != DecisionProbeCommit || decisions[0].ToLevel != 0) {
+			t.Fatalf("probe commit decisions = %#v", decisions)
 		}
 	}
 }
 
-func TestPerViewerControllerDoesNotRecoverWithoutBandwidthEstimate(t *testing.T) {
+func TestPerViewerControllerHealthyDeliveryCanProbeWithoutBandwidthEstimate(t *testing.T) {
 	start := time.Unix(14000, 0)
 	controller := NewPerViewerController(BuildLadder(Profile{
 		Width: 1920, Height: 1080, FPS: 60, BitrateKbps: 20000,
@@ -154,19 +164,124 @@ func TestPerViewerControllerDoesNotRecoverWithoutBandwidthEstimate(t *testing.T)
 			estimate = 7000
 		}
 		controller.Observe(start.Add(time.Duration(seconds)*time.Second), []PerViewerSample{
-			goodPerViewerSample("viewer", start.Add(time.Duration(seconds)*time.Second), estimate, index),
+			lowDeliveryPerViewerSample("viewer", start.Add(time.Duration(seconds)*time.Second), estimate, index),
 		})
 	}
-	for index := 4; index <= 12; index++ {
+	var decision ViewerDecision
+	for index := 4; index <= 8; index++ {
 		at := start.Add(time.Duration(index*2) * time.Second)
 		sample := goodPerViewerSample("viewer", at, 0, index)
 		sample.EstimateValid = false
-		if decisions := controller.Observe(at, []PerViewerSample{sample}); len(decisions) != 0 {
-			t.Fatalf("recovered without bandwidth estimate: %#v", decisions)
+		decisions := controller.Observe(at, []PerViewerSample{sample})
+		if len(decisions) > 0 {
+			decision = decisions[0]
+		}
+	}
+	if decision.Type != DecisionProbe || decision.ToLevel != 0 {
+		t.Fatalf("decision = %#v, want guarded recovery probe", decision)
+	}
+}
+
+func TestPerViewerControllerBandwidthEstimateAloneDoesNotDownshift(t *testing.T) {
+	start := time.Unix(14500, 0)
+	controller := NewPerViewerController(BuildLadder(Profile{
+		Width: 1920, Height: 1080, FPS: 60, BitrateKbps: 50000,
+	}), start)
+	for index, seconds := range []int{2, 4, 6, 8, 10} {
+		at := start.Add(time.Duration(seconds) * time.Second)
+		if decisions := controller.Observe(at, []PerViewerSample{
+			goodPerViewerSample("viewer", at, 5000, index),
+		}); len(decisions) != 0 {
+			t.Fatalf("bandwidth estimate alone downshifted at %ds: %#v", seconds, decisions)
+		}
+	}
+	if got := controller.Status(start.Add(10 * time.Second))["viewer"].Level; got != 0 {
+		t.Fatalf("level = %d, want 0", got)
+	}
+}
+
+func TestPerViewerControllerRequiresFurtherCapacityLossForSecondDownshift(t *testing.T) {
+	start := time.Unix(14600, 0)
+	controller := NewPerViewerController(BuildLadder(Profile{
+		Width: 1920, Height: 1080, FPS: 60, BitrateKbps: 50000,
+	}), start)
+	for index, seconds := range []int{2, 4, 6} {
+		at := start.Add(time.Duration(seconds) * time.Second)
+		controller.Observe(at, []PerViewerSample{lowDeliveryPerViewerSample("viewer", at, 6000, index)})
+	}
+	for index, seconds := range []int{16, 18, 20, 22, 24} {
+		at := start.Add(time.Duration(seconds) * time.Second)
+		if decisions := controller.Observe(at, []PerViewerSample{
+			lowDeliveryPerViewerSample("viewer", at, 5000, index+10),
+		}); len(decisions) != 0 {
+			t.Fatalf("cascaded without 25%% deterioration at %ds: %#v", seconds, decisions)
 		}
 	}
 	if got := controller.Status(start.Add(24 * time.Second))["viewer"].Level; got != 1 {
 		t.Fatalf("level = %d, want 1", got)
+	}
+}
+
+func TestPerViewerControllerAllowsSecondDownshiftAfterTwentyFivePercentCapacityLoss(t *testing.T) {
+	start := time.Unix(14650, 0)
+	controller := NewPerViewerController(BuildLadder(Profile{
+		Width: 1920, Height: 1080, FPS: 60, BitrateKbps: 50000,
+	}), start)
+	for index, seconds := range []int{2, 4, 6} {
+		at := start.Add(time.Duration(seconds) * time.Second)
+		controller.Observe(at, []PerViewerSample{lowDeliveryPerViewerSample("viewer", at, 6000, index)})
+	}
+	var decision ViewerDecision
+	for index, seconds := range []int{16, 18, 20} {
+		at := start.Add(time.Duration(seconds) * time.Second)
+		decisions := controller.Observe(at, []PerViewerSample{
+			lowDeliveryPerViewerSample("viewer", at, 4500, index+10),
+		})
+		if len(decisions) > 0 {
+			decision = decisions[0]
+		}
+	}
+	if decision.Type != DecisionDownshift || decision.FromLevel != 1 || decision.ToLevel != 2 {
+		t.Fatalf("decision = %#v, want guarded second downshift", decision)
+	}
+}
+
+func TestPerViewerControllerProtectsFloorAndRollsBackBadProbe(t *testing.T) {
+	start := time.Unix(14700, 0)
+	ladder := BuildLadder(Profile{Width: 1280, Height: 720, FPS: 60, BitrateKbps: 50000})
+	controller := NewPerViewerController(ladder, start)
+	initial := goodPerViewerSample("viewer", start.Add(2*time.Second), 12000, 1)
+	controller.Observe(initial.At, []PerViewerSample{initial})
+	state := controller.viewers["viewer"]
+	state.level = len(ladder) - 1
+	state.connectedAt = start
+	for index, seconds := range []int{4, 6, 8} {
+		at := start.Add(time.Duration(seconds) * time.Second)
+		sample := lowDeliveryPerViewerSample("viewer", at, 200, index+2)
+		sample.PacketsLostDelta = 30
+		sample.FramesDroppedDelta = 4
+		if decisions := controller.Observe(at, []PerViewerSample{sample}); len(decisions) != 0 {
+			t.Fatalf("floor emitted downshift: %#v", decisions)
+		}
+	}
+	if status := controller.Status(start.Add(8 * time.Second))["viewer"]; status.Level != len(ladder)-1 || status.State != "floor-protected" {
+		t.Fatalf("floor status = %#v", status)
+	}
+
+	state.level = 1
+	state.probeActive = true
+	state.probeFromLevel = 2
+	state.probeUntil = start.Add(30 * time.Second)
+	state.window = nil
+	for index, seconds := range []int{10, 12} {
+		at := start.Add(time.Duration(seconds) * time.Second)
+		sample := lowDeliveryPerViewerSample("viewer", at, 1000, index+20)
+		sample.PacketsLostDelta = 30
+		sample.FramesDroppedDelta = 4
+		decisions := controller.Observe(at, []PerViewerSample{sample})
+		if seconds == 12 && (len(decisions) != 1 || decisions[0].Type != DecisionProbeRollback || decisions[0].ToLevel != 2) {
+			t.Fatalf("rollback decisions = %#v", decisions)
+		}
 	}
 }
 
@@ -200,4 +315,10 @@ func goodPerViewerSample(viewerID string, at time.Time, estimateKbps, sequence i
 		PacketsReceivedDelta: 200, PacketsLostDelta: 0, DecodedFPS: 60,
 		IncomingBitrateKbps: 10000, JitterMS: 10,
 	}
+}
+
+func lowDeliveryPerViewerSample(viewerID string, at time.Time, estimateKbps, sequence int) PerViewerSample {
+	sample := goodPerViewerSample(viewerID, at, estimateKbps, sequence)
+	sample.IncomingBitrateKbps = float64(estimateKbps)
+	return sample
 }

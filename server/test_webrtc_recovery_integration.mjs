@@ -140,9 +140,12 @@ test('source and deployed telemetry copies stay byte-identical with complete whi
   const stringFields = pythonSetBody(deployedRegister, 'STATS_STRING_FIELDS');
   const numberFields = pythonSetBody(deployedRegister, 'STATS_NUMBER_FIELDS');
   assert.match(stringFields, /['"]telemetryResetReason['"]/);
+  assert.match(stringFields, /['"]adaptiveStatus['"]/);
   for (const field of diagnosticNumberFields) {
     assert.match(numberFields, new RegExp(`['"]${field}['"]`), `${field} must be persisted`);
   }
+  assert.match(numberFields, /['"]adaptiveNominalBitrate['"]/);
+  assert.match(numberFields, /['"]adaptiveDegradeFloorBitrate['"]/);
   assert.doesNotMatch(numberFields, /diagnosticPacketsSentDelta/);
 });
 
@@ -153,9 +156,9 @@ test('deployed telemetry resource versions and load order are exact', () => {
   assert.deepEqual(scripts, [
     'webrtc-stats.js?v=4',
     'webrtc-quality.js?v=2',
-    'webrtc-adaptive.js?v=5',
+    'webrtc-adaptive.js?v=6',
     'web-share-audio.js?v=2',
-    'inject.js?v=6.25',
+    'inject.js?v=6.26',
     'sfu-client.js?v=1.9',
   ]);
 });

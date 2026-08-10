@@ -41,6 +41,21 @@ test('test-room baseline bypasses custom sender parameters but keeps policy tele
 test('recovery samples include the next higher profile bitrate', () => {
   assert.match(inject, /computePeerAdaptiveProfile\(pc, adaptiveState\.level - 1\)/);
   assert.match(inject, /nextProfileKbps:\s*nextAdaptiveProfile/);
+  assert.match(inject, /nominalKbps:\s*adaptiveProfile/);
+  assert.match(inject, /degradeFloorKbps:\s*adaptiveProfile/);
+  assert.match(inject, /nextNominalKbps:\s*nextAdaptiveProfile/);
+  assert.match(inject, /maxLevel:\s*adaptiveProfile/);
+});
+
+test('share settings expose 30 45 and 60 fps and migrate the old 35 fps default', () => {
+  assert.match(inject, /var FPS_OPTIONS\s*=\s*\[30,\s*45,\s*60\]/);
+  assert.match(inject, /s\.framerate\s*=\s*30/);
+  assert.doesNotMatch(inject, /s\.framerate\s*=\s*35/);
+});
+
+test('the adaptive ladder is the only bitrate ceiling', () => {
+  assert.match(inject, /function computeTargetBitrate\(\)\s*{\s*return maxBitrate\(\);\s*}/);
+  assert.doesNotMatch(inject, /bitrateBaseForResolution/);
 });
 
 test('monitor samples every connected video sender independently', () => {
@@ -50,7 +65,7 @@ test('monitor samples every connected video sender independently', () => {
   assert.match(inject, /evaluateAdaptiveSample\(adaptiveState, adaptiveSample\)/);
 });
 
-test('a peer profile applies bitrate, 24 fps and resolution scaling only to that sender', () => {
+test('a peer profile applies bitrate, frame rate and resolution scaling only to that sender', () => {
   assert.match(inject, /encoding\.scaleResolutionDownBy\s*=\s*profile\.scaleResolutionDownBy/);
   assert.match(inject, /encoding\.maxFramerate\s*=\s*profile\.maxFramerate/);
   assert.match(inject, /encoding\.maxBitrate\s*=\s*profile\.maxBitrate/);
@@ -62,6 +77,8 @@ test('adaptive decisions are reported as edge events with profile metadata', () 
   assert.match(inject, /adaptiveDecision:\s*adaptiveDecision/);
   assert.match(inject, /adaptiveLevel:\s*adaptiveState\.level/);
   assert.match(inject, /adaptiveScale:\s*adaptiveProfile\.scaleResolutionDownBy/);
+  assert.match(inject, /adaptiveNominalBitrate:\s*adaptiveProfile\.nominalBitrate/);
+  assert.match(inject, /adaptiveDegradeFloorBitrate:\s*adaptiveProfile\.degradeFloorBitrate/);
 });
 
 test('adaptive budget uses the Guangzhou server profile and only relayed paths', () => {

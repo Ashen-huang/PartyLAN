@@ -426,12 +426,12 @@ func (p *Publisher) createPeerConnection(payload SessionPayload) (*webrtc.PeerCo
 func newPeerConnectionWithBWE(configuration webrtc.Configuration, mediaEngine *webrtc.MediaEngine, width, height, fps int) (*webrtc.PeerConnection, cc.BandwidthEstimator, error) {
 	registry := &interceptor.Registry{}
 	estimatorCh := make(chan cc.BandwidthEstimator, 1)
-	ladder := adaptive.BuildLadder(adaptive.Profile{Width: width, Height: height, FPS: fps, BitrateKbps: 20000})
+	ladder := adaptive.BuildLadder(adaptive.Profile{Width: width, Height: height, FPS: fps, BitrateKbps: 50000})
 	initialBitrateKbps := ladder[0].BitrateKbps
 	ccFactory, err := cc.NewInterceptor(func() (cc.BandwidthEstimator, error) {
 		return gcc.NewSendSideBWE(
 			gcc.SendSideBWEInitialBitrate(initialBitrateKbps*1000),
-			gcc.SendSideBWEMaxBitrate(20_000_000),
+			gcc.SendSideBWEMaxBitrate(publisherMaxBitrateBps(initialBitrateKbps)),
 		)
 	})
 	if err != nil {
@@ -462,6 +462,15 @@ func newPeerConnectionWithBWE(configuration webrtc.Configuration, mediaEngine *w
 		_ = pc.Close()
 		return nil, nil, fmt.Errorf("P2P GCC estimator was not created")
 	}
+}
+
+func publisherMaxBitrateBps(initialBitrateKbps int) int {
+	const approvedBurstCeilingBps = 50_000_000
+	initialBitrateBps := initialBitrateKbps * 1000
+	if initialBitrateBps > approvedBurstCeilingBps {
+		return initialBitrateBps
+	}
+	return approvedBurstCeilingBps
 }
 
 func (p *Publisher) readSenderRTCP(sessionID string, sender *webrtc.RTPSender) {
