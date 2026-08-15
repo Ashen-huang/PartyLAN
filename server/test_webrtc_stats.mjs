@@ -134,11 +134,13 @@ test('valid inbound samples produce bounded native viewer quality reports', () =
   }, {
     room: 'room-1',
     participantId: 'web-1',
+    screegoSessionId: 'session-1',
     mode: 'native-viewer',
   });
   assert.deepEqual(quality, {
     room: 'room-1',
     participantId: 'web-1',
+    screegoSessionId: 'session-1',
     generation: '2',
     pairId: 'pair-1',
     packetsReceivedDelta: 190,

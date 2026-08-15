@@ -154,11 +154,11 @@ test('deployed telemetry resource versions and load order are exact', () => {
   assert.ok(subFilter, 'script injection sub_filter must exist');
   const scripts = Array.from(subFilter[1].matchAll(/<script src="\/([^"]+)"><\/script>/g), (match) => match[1]);
   assert.deepEqual(scripts, [
-    'webrtc-stats.js?v=4',
+    'webrtc-stats.js?v=5',
     'webrtc-quality.js?v=2',
-    'webrtc-adaptive.js?v=6',
+    'webrtc-adaptive.js?v=7',
     'web-share-audio.js?v=2',
-    'inject.js?v=6.26',
+    'inject.js?v=6.27',
     'sfu-client.js?v=1.9',
   ]);
 });

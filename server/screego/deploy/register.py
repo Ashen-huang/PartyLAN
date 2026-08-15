@@ -39,6 +39,7 @@ GAMECAST_LEGACY_P2P_ALLOWED = os.environ.get(
 ).strip().lower() not in ('0', 'false', 'no', 'off')
 MAX_POST_BODY = 256 * 1024
 USERNAME_RE = re.compile(r'^[a-zA-Z0-9_\-]{2,20}$')
+QUALITY_SESSION_RE = re.compile(r'^[a-zA-Z0-9._:\-]{1,128}$')
 BACKEND_CONFIG_URL = 'http://127.0.0.1:5060/config'
 SFU_SESSIONS_URL = os.environ.get('GAMECAST_SFU_SESSIONS_URL', 'http://127.0.0.1:5053/sessions')
 SFU_SESSIONS_TIMEOUT = float(os.environ.get('GAMECAST_SFU_SESSIONS_TIMEOUT', '1.0'))
@@ -58,7 +59,8 @@ STATS_STRING_FIELDS = set([
     'codec', 'kbps', 'loss', 'jitter', 'pcState', 'targetKbps', 'adaptive',
     'adaptivePolicyVersion', 'adaptiveDecision', 'adaptiveStatus',
     'serverLoadKbps', 'serverNote',
-    'participantId', 'pairId', 'receiverState',
+    'participantId', 'pairId', 'screegoSessionId', 'receiverState',
+    'receiverReason',
 ])
 STATS_NUMBER_FIELDS = set([
     'generation', 'rtt', 'rttMs', 'jitterMs', 'lossPercent', 'upKbps',
@@ -81,8 +83,12 @@ STATS_NUMBER_FIELDS = set([
     'adaptiveLevel', 'adaptiveScale', 'adaptiveMaxBitrate',
     'adaptiveNominalBitrate', 'adaptiveDegradeFloorBitrate',
     'decodedFps', 'incomingBitrateKbps', 'packetsLost', 'framesDropped',
+    'receiverReportAgeMs', 'receiverDecodedFps', 'receiverIncomingKbps',
+    'receiverLossPercent', 'receiverJitterMs', 'senderCapturedFps',
+    'senderEncodedFps', 'senderSentFps',
+    'adaptiveStableMs', 'adaptiveProbeUntil', 'adaptiveProbeImprovedCount',
 ])
-STATS_BOOL_FIELDS = set(['valid', 'visible'])
+STATS_BOOL_FIELDS = set(['valid', 'visible', 'receiverBound'])
 
 control_plane = ControlPlane(
     ttl=ROOM_STATE_TTL,
@@ -273,9 +279,14 @@ def normalize_quality_sample(data):
         value = max(minimum, min(maximum, value))
         return int(value) if integer else float(value)
 
+    screego_session_id = str(data.get('screegoSessionId') or '').strip()
+    if screego_session_id and not QUALITY_SESSION_RE.fullmatch(screego_session_id):
+        raise ControlError('quality_sample_invalid', 400)
+
     return {
         'room': bounded_text('room', 120),
         'participantId': bounded_text('participantId', 128),
+        'screegoSessionId': screego_session_id,
         'generation': bounded_text('generation', 80),
         'pairId': bounded_text('pairId', 120),
         'packetsReceivedDelta': bounded_number('packetsReceivedDelta', 0, 10000000, True),
@@ -294,16 +305,16 @@ def store_quality_sample(data, username):
     sample['reportedAtUnix'] = now
     with quality_lock:
         room = quality_samples.setdefault(sample['room'], {})
-        room[sample['participantId']] = sample
+        room[(sample['participantId'], sample['screegoSessionId'])] = sample
         prune_quality_samples_locked(now)
     return sample
 
 
 def prune_quality_samples_locked(now):
     for room_id, samples in list(quality_samples.items()):
-        for participant_id, sample in list(samples.items()):
+        for sample_key, sample in list(samples.items()):
             if now - sample.get('reportedAtUnix', 0) > QUALITY_RETENTION_TTL:
-                samples.pop(participant_id, None)
+                samples.pop(sample_key, None)
         if not samples:
             quality_samples.pop(room_id, None)
 
@@ -321,7 +332,7 @@ def get_quality_snapshot(room_id, participant_id, username):
             item = dict(sample)
             item['ageSeconds'] = max(0.0, age)
             samples.append(item)
-    samples.sort(key=lambda item: item['participantId'])
+    samples.sort(key=lambda item: (item['participantId'], item['screegoSessionId']))
     return {
         'room': room_id,
         'count': len(samples),

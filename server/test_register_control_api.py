@@ -369,11 +369,11 @@ class RegisterControlAPITest(unittest.TestCase):
         for participant in (
             {
                 "room": "quality-room",
-                "participantId": "client-owner",
-                "clientType": "client",
-                "origin": "client",
+                "participantId": "web-owner",
+                "clientType": "web",
+                "origin": "web",
                 "role": "owner",
-                "name": "Desktop",
+                "name": "Browser Owner",
             },
             {
                 "room": "quality-room",
@@ -390,6 +390,7 @@ class RegisterControlAPITest(unittest.TestCase):
         payload = {
             "room": "quality-room",
             "participantId": "web-viewer",
+            "screegoSessionId": "session-a",
             "generation": "g1",
             "pairId": "relay-udp",
             "packetsReceivedDelta": 100,
@@ -403,6 +404,13 @@ class RegisterControlAPITest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(report["ok"])
 
+        second_payload = dict(payload)
+        second_payload["screegoSessionId"] = "session-b"
+        second_payload["decodedFps"] = 30
+        status, report = self.request("POST", "/api/quality/report", second_payload)
+        self.assertEqual(status, 200)
+        self.assertTrue(report["ok"])
+
         status, forbidden = self.request(
             "GET",
             "/api/quality/snapshot?room=quality-room&participantId=web-viewer",
@@ -412,18 +420,32 @@ class RegisterControlAPITest(unittest.TestCase):
 
         status, snapshot = self.request(
             "GET",
-            "/api/quality/snapshot?room=quality-room&participantId=client-owner",
+            "/api/quality/snapshot?room=quality-room&participantId=web-owner",
         )
         self.assertEqual(status, 200)
-        self.assertEqual(snapshot["count"], 1)
-        self.assertEqual(snapshot["samples"][0]["participantId"], "web-viewer")
-        self.assertEqual(snapshot["samples"][0]["packetsLostDelta"], 8)
+        self.assertEqual(snapshot["count"], 2)
+        self.assertEqual(
+            [sample["screegoSessionId"] for sample in snapshot["samples"]],
+            ["session-a", "session-b"],
+        )
+        self.assertTrue(
+            all(sample["participantId"] == "web-viewer" for sample in snapshot["samples"])
+        )
+        self.assertTrue(
+            all(sample["packetsLostDelta"] == 8 for sample in snapshot["samples"])
+        )
         self.assertNotIn("candidateAddress", snapshot["samples"][0])
+
+        invalid_payload = dict(payload)
+        invalid_payload["screegoSessionId"] = "bad session id"
+        status, invalid = self.request("POST", "/api/quality/report", invalid_payload)
+        self.assertEqual(status, 400)
+        self.assertEqual(invalid["code"], "quality_sample_invalid")
 
         register.quality_clock = lambda: 1008.1
         status, expired = self.request(
             "GET",
-            "/api/quality/snapshot?room=quality-room&participantId=client-owner",
+            "/api/quality/snapshot?room=quality-room&participantId=web-owner",
         )
         self.assertEqual(status, 200)
         self.assertEqual(expired["count"], 0)

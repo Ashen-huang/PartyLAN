@@ -497,7 +497,7 @@ test('web host claim, readiness and normal stop follow the four-phase lease cont
 test('versioned assets load inject before the SFU client without exposing sensitive material', () => {
   const replacement = nginxSource.match(/sub_filter '<\/head>' '([^']+)<\/head>'/);
   assert.ok(replacement);
-  assert.ok(replacement[1].indexOf('/inject.js?v=6.26') >= 0);
+  assert.ok(replacement[1].indexOf('/inject.js?v=6.27') >= 0);
   assert.ok(replacement[1].indexOf('/sfu-client.js?v=1.9') >= 0);
   assert.ok(replacement[1].indexOf('/inject.js') < replacement[1].indexOf('/sfu-client.js'));
 

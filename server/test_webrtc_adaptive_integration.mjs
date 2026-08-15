@@ -65,6 +65,18 @@ test('monitor samples every connected video sender independently', () => {
   assert.match(inject, /evaluateAdaptiveSample\(adaptiveState, adaptiveSample\)/);
 });
 
+test('native peer sessions bind receiver reports to the exact sender connection', () => {
+  assert.match(inject, /__PARTYLAN_REGISTER_PEER_SESSION__/);
+  assert.match(inject, /QUALITY_SNAPSHOT_URL/);
+  assert.match(inject, /screegoSessionId/);
+  assert.match(inject, /receiverReportAgeMs/);
+  assert.match(inject, /receiverDecodedFps/);
+  assert.match(inject, /receiverIncomingKbps/);
+  assert.match(inject, /senderCapturedFps/);
+  assert.match(inject, /senderEncodedFps/);
+  assert.doesNotMatch(inject, /receiverImpaired:\s*false/);
+});
+
 test('a peer profile applies bitrate, frame rate and resolution scaling only to that sender', () => {
   assert.match(inject, /encoding\.scaleResolutionDownBy\s*=\s*profile\.scaleResolutionDownBy/);
   assert.match(inject, /encoding\.maxFramerate\s*=\s*profile\.maxFramerate/);

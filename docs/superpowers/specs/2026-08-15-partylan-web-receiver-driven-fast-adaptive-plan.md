@@ -1,7 +1,7 @@
 # PartyLAN 网页端接收反馈驱动的快速自适应实施计划
 
 **日期：** 2026-08-15
-**状态：** 待实施
+**状态：** 本地验证完成，待广州节点部署
 **设计依据：** `docs/superpowers/specs/2026-08-15-partylan-web-receiver-driven-fast-adaptive-design.md`
 
 ## 控制面与会话绑定红灯
@@ -86,7 +86,8 @@
 
 ## 资源、补丁与完整回归
 
-- 将 Nginx 中 `webrtc-adaptive.js` 缓存键升级为 `v=7`；
+- 将 Nginx 中 `webrtc-stats.js` 缓存键升级为 `v=5`；
+- 将 `webrtc-adaptive.js` 缓存键升级为 `v=7`；
 - 将 `inject.js` 缓存键升级为 `v=6.27`；
 - 更新部署资产测试，保证脚本顺序、版本和策略副本一致；
 - 在干净 Screego 基线上应用全部补丁，运行 UI Node、生产构建、目标 Go 和 auth race 验证；
@@ -108,3 +109,11 @@
 先部署向后兼容的控制面，再重建 Screego/静态资源并短暂重启 Screego，最后平滑重载 Nginx。屏幕 SFU、语音 SFU和无关服务不重启。
 
 部署后检查镜像、进程、端口、HTTP 摘要、Nginx 语法和控制面 API，再在 `test` 房间保留灰度开关供真实 P2P、TURN、多观看者和限速恢复验证。出现会话建立失败、session 无法精确映射、观众互相影响、换档振荡、无法自动恢复或服务异常时，按本次备份回滚。
+
+## 实施记录
+
+- 已用失败测试复现网页房主无法读取接收快照、participant 单键覆盖不同 Screego session、连接缺少精确 session 钩子、接收损伤受旧冷却阻塞、静止源误判、恢复等待过长、probe 未经接收改善提交，以及首次精确受损仍被三样本窗口延迟等问题。
+- 已实现可选非阻塞 Screego peer-session 钩子、按 participant 与 session 保存的短期质量样本、逐发送连接的接收报告绑定、接收验证 probe、重复/过期报告回退、两秒采样下的快速降档和新的诊断字段。
+- 精确接收损伤连续两个新鲜样本即可首次下降；应用新层后下一新鲜受损样本可按容量跳到可持续层。无接收绑定的发送统计路径仍保留原三样本确认和级联保护。
+- 服务器 Node 测试全部通过，共 `127` 项；控制面 Python 测试全部通过，共 `38` 项。注入脚本与 Python 语法、`git diff --check`、源/部署副本摘要核对均通过。
+- Screego 全补丁干净应用、UI 行为测试与生产构建、Screego Go 测试和 auth race 验证通过；PartyLAN 普通及 `partylan_native_media` Go 全仓测试、前端 Node 测试与生产构建通过。

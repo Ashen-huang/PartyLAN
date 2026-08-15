@@ -236,6 +236,66 @@ class ControlPlaneTest(unittest.TestCase):
             self.control.authorize_voice("room-1", "client-owner", "owner")
         self.assertEqual(caught.exception.code, "participant_not_found")
 
+    def test_quality_snapshot_allows_the_current_web_or_client_room_owner(self):
+        client_owner, active_ids = self.control.authorize_quality_snapshot(
+            "room-1", "client-owner", "owner"
+        )
+        self.assertEqual(client_owner["clientType"], "client")
+        self.assertEqual(active_ids, {"client-owner"})
+
+        web_control = ControlPlane(ttl=15, clock=self.clock)
+        web_control.join_presence(
+            {
+                "room": "web-room",
+                "participantId": "web-owner",
+                "clientType": "web",
+                "origin": "web",
+                "role": "owner",
+                "name": "Browser Owner",
+            },
+            "webuser",
+        )
+        web_control.join_presence(
+            {
+                "room": "web-room",
+                "participantId": "web-member",
+                "clientType": "web",
+                "role": "member",
+                "name": "Browser Viewer",
+            },
+            "memberuser",
+        )
+
+        web_owner, active_ids = web_control.authorize_quality_snapshot(
+            "web-room", "web-owner", "webuser"
+        )
+        self.assertEqual(web_owner["clientType"], "web")
+        self.assertEqual(active_ids, {"web-owner", "web-member"})
+
+        with self.assertRaises(ControlError) as caught:
+            web_control.authorize_quality_snapshot(
+                "web-room", "web-member", "memberuser"
+            )
+        self.assertEqual(caught.exception.code, "quality_snapshot_forbidden")
+
+        web_control.claim_share(
+            {"room": "web-room", "participantId": "web-member"},
+            "memberuser",
+        )
+        sharing_member, _ = web_control.authorize_quality_snapshot(
+            "web-room", "web-member", "memberuser"
+        )
+        self.assertTrue(sharing_member["sharing"])
+        reporting_owner = web_control.authorize_quality_report(
+            "web-room", "web-owner", "webuser"
+        )
+        self.assertEqual(reporting_owner["role"], "owner")
+        with self.assertRaises(ControlError) as caught:
+            web_control.authorize_quality_report(
+                "web-room", "web-member", "memberuser"
+            )
+        self.assertEqual(caught.exception.code, "quality_report_forbidden")
+
     def test_voice_token_detects_tampering_expiry_and_wrong_audience(self):
         issued = issue_voice_token(
             "voice-secret",

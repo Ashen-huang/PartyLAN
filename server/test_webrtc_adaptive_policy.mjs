@@ -35,6 +35,34 @@ const bad = (now, overrides = {}) => good(now, {
   ...overrides,
 });
 
+const receiverBad = (now, overrides = {}) => bad(now, {
+  receiverBound: true,
+  receiverReportAgeMs: 500,
+  receiverReportedAtUnix: now / 1000,
+  senderCapturedFps: 60,
+  senderEncodedFps: 30,
+  senderSentFps: 30,
+  receiverDecodedFps: 2,
+  receiverIncomingKbps: 1000,
+  receiverLossPercent: 8,
+  receiverJitterMs: 140,
+  ...overrides,
+});
+
+const receiverGood = (now, overrides = {}) => good(now, {
+  receiverBound: true,
+  receiverReportAgeMs: 500,
+  receiverReportedAtUnix: now / 1000,
+  senderCapturedFps: 30,
+  senderEncodedFps: 30,
+  senderSentFps: 30,
+  receiverDecodedFps: 29,
+  receiverIncomingKbps: 5000,
+  receiverLossPercent: 0.2,
+  receiverJitterMs: 15,
+  ...overrides,
+});
+
 function evaluateMany(state, samples) {
   let result = {state, decision: null};
   for (const sample of samples) result = evaluateAdaptiveSample(result.state, sample);
@@ -434,6 +462,63 @@ test('post-downshift estimator tracking cannot cascade without further degradati
   assert.equal(result.state.level, 1);
 });
 
+test('bound severe receiver impairment descends quickly to the sustainable floor', () => {
+  const floors = [7800, 5900, 3900, 2900, 2000, 1200, 400];
+  let result = evaluateMany(
+    createAdaptiveState(0),
+    [2000, 4000].map((now) => receiverBad(now, {
+      levelDegradeFloorsKbps: floors,
+      availableOutgoingBitrate: 1050000,
+    })),
+  );
+  assert.deepEqual(result.decision, {type: 'downshift', fromLevel: 0, toLevel: 1});
+
+  result = evaluateAdaptiveSample(result.state, receiverBad(6000, {
+    profileKbps: 12000,
+    nominalKbps: 9000,
+    degradeFloorKbps: 5900,
+    levelDegradeFloorsKbps: floors,
+    availableOutgoingBitrate: 1050000,
+  }));
+  assert.deepEqual(result.decision, {type: 'downshift-fast', fromLevel: 1, toLevel: 6});
+  assert.equal(result.state.level, 6);
+});
+
+test('low decoded fps is not receiver impairment when the sender source is idle', () => {
+  const result = evaluateMany(
+    createAdaptiveState(0),
+    [2000, 4000].map((now) => receiverBad(now, {
+      senderSentFps: 1,
+      senderCapturedFps: 1,
+      senderEncodedFps: 1,
+      receiverDecodedFps: 1,
+      receiverIncomingKbps: 50,
+      receiverLossPercent: 0,
+      receiverJitterMs: 10,
+      outboundKbps: 50,
+      availableOutgoingBitrate: 8000000,
+      qualityLimitationReason: 'none',
+    })),
+  );
+  assert.equal(result.decision, null);
+  assert.equal(result.state.level, 0);
+});
+
+test('receiver impairment is detected when capture is healthy but sender fps collapses', () => {
+  const result = evaluateMany(
+    createAdaptiveState(0),
+    [2000, 4000].map((now) => receiverBad(now, {
+      senderCapturedFps: 60,
+      senderEncodedFps: 3,
+      senderSentFps: 3,
+      receiverDecodedFps: 3,
+      receiverIncomingKbps: 900,
+      availableOutgoingBitrate: 1000000,
+    })),
+  );
+  assert.deepEqual(result.decision, {type: 'downshift', fromLevel: 0, toLevel: 1});
+});
+
 test('the 360p18 floor freezes repeated downshift decisions', () => {
   const state = {...createAdaptiveState(0), level: 6, connectedAt: 0};
   const result = evaluateMany(
@@ -454,7 +539,7 @@ test('the 360p18 floor freezes repeated downshift decisions', () => {
 
 test('healthy delivery starts a recovery probe without 120 percent BWE headroom', () => {
   const state = {...createAdaptiveState(0), level: 2, connectedAt: 0};
-  const samples = [2000, 4000, 6000, 8000, 10000].map((now) => good(now, {
+  const samples = [2000, 4000, 6000, 8000].map((now) => receiverGood(now, {
     profileKbps: 8000,
     nominalKbps: 6000,
     degradeFloorKbps: 3900,
@@ -469,7 +554,7 @@ test('healthy delivery starts a recovery probe without 120 percent BWE headroom'
   assert.equal(result.state.probeFromLevel, 2);
 });
 
-test('a recovery probe commits after six healthy seconds and rolls back after two bad samples', () => {
+test('a recovery probe commits only after receiver improvement and otherwise rolls back', () => {
   const baseState = {
     ...createAdaptiveState(0),
     level: 1,
@@ -479,24 +564,79 @@ test('a recovery probe commits after six healthy seconds and rolls back after tw
     probeUntil: 16000,
     probeBadCount: 0,
     probeValidCount: 0,
+    probeBaselineDecodedFps: 18,
+    probeBaselineIncomingKbps: 3000,
+    probeReceiverRequired: true,
   };
-  const healthy = (now) => good(now, {
+  const improved = (now) => receiverGood(now, {
     profileKbps: 12000,
     nominalKbps: 9000,
     degradeFloorKbps: 5900,
     outboundKbps: 7000,
     availableOutgoingBitrate: 8000000,
+    receiverDecodedFps: 28,
+    receiverIncomingKbps: 5000,
   });
-  let result = evaluateMany(baseState, [healthy(12000), healthy(14000), healthy(16000)]);
+  let result = evaluateMany(baseState, [improved(12000), improved(14000), improved(16000)]);
   assert.deepEqual(result.decision, {type: 'probe-commit', fromLevel: 2, toLevel: 1});
   assert.equal(result.state.level, 1);
   assert.equal(result.state.probeFromLevel, null);
 
-  result = evaluateMany(baseState, [
-    bad(12000, {profileKbps: 12000, nominalKbps: 9000, degradeFloorKbps: 5900}),
-    bad(14000, {profileKbps: 12000, nominalKbps: 9000, degradeFloorKbps: 5900}),
-  ]);
+  const unchanged = (now) => receiverGood(now, {
+    profileKbps: 12000,
+    nominalKbps: 9000,
+    degradeFloorKbps: 5900,
+    outboundKbps: 4000,
+    availableOutgoingBitrate: 8000000,
+    receiverDecodedFps: 18,
+    receiverIncomingKbps: 3000,
+  });
+  result = evaluateMany(baseState, [unchanged(12000), unchanged(14000), unchanged(16000)]);
   assert.deepEqual(result.decision, {type: 'probe-rollback', fromLevel: 1, toLevel: 2});
   assert.equal(result.state.level, 2);
+  assert.equal(result.state.probeFromLevel, null);
+});
+
+test('a receiver-validated probe rolls back when its report expires', () => {
+  const state = {
+    ...createAdaptiveState(0),
+    level: 1,
+    probeFromLevel: 2,
+    probeStartedAt: 10000,
+    probeUntil: 16000,
+    probeReceiverRequired: true,
+    probeBaselineDecodedFps: 18,
+    probeBaselineIncomingKbps: 3000,
+  };
+  let result = evaluateAdaptiveSample(state, good(14000, {
+    valid: false,
+    receiverBound: false,
+  }));
+  assert.equal(result.decision, null);
+  result = evaluateAdaptiveSample(result.state, good(16000, {
+    valid: false,
+    receiverBound: false,
+  }));
+  assert.deepEqual(result.decision, {type: 'probe-rollback', fromLevel: 1, toLevel: 2});
+});
+
+test('a repeated receiver report cannot falsely commit a recovery probe', () => {
+  const state = {
+    ...createAdaptiveState(0),
+    level: 1,
+    probeFromLevel: 2,
+    probeStartedAt: 10000,
+    probeUntil: 16000,
+    probeReceiverRequired: true,
+    probeBaselineDecodedFps: 18,
+    probeBaselineIncomingKbps: 3000,
+  };
+  const repeated = (now) => receiverGood(now, {
+    receiverReportedAtUnix: 12,
+    receiverDecodedFps: 30,
+    receiverIncomingKbps: 5000,
+  });
+  const result = evaluateMany(state, [repeated(12000), repeated(14000), repeated(16000)]);
+  assert.deepEqual(result.decision, {type: 'probe-rollback', fromLevel: 1, toLevel: 2});
   assert.equal(result.state.probeFromLevel, null);
 });

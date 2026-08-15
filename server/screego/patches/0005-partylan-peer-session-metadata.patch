@@ -1,0 +1,120 @@
+diff --git a/ui/src/iceSession.test.mjs b/ui/src/iceSession.test.mjs
+--- a/ui/src/iceSession.test.mjs
++++ b/ui/src/iceSession.test.mjs
+@@ -51,6 +51,28 @@ const makeSession = (report = () => undefined) => {
+     };
+ };
+ 
++test('peer session metadata hook is exact, non-fatal and closes with the session', () => {
++    const metadata = [];
++    globalThis.window = {
++        __PARTYLAN_REGISTER_PEER_SESSION__: (event) => metadata.push(event),
++    };
++    const {pc, session} = makeSession();
++    assert.deepEqual(metadata.map(({action, sid, peerId, role}) => ({action, sid, peerId, role})), [
++        {action: 'open', sid: 'sid-1', peerId: 'peer-1', role: 'client'},
++    ]);
++    assert.equal(metadata[0].pc, pc);
++
++    closePeerSession(session);
++    assert.equal(metadata.at(-1).action, 'close');
++    assert.equal(metadata.at(-1).pc, pc);
++
++    globalThis.window.__PARTYLAN_REGISTER_PEER_SESSION__ = () => {
++        throw new Error('injected hook failed');
++    };
++    assert.doesNotThrow(() => makeSession());
++    delete globalThis.window;
++});
++
+ test('candidates wait for the remote description and preserve order', async () => {
+     const {pc, session} = makeSession();
+     const first = {candidate: 'candidate:first', usernameFragment: 'remote-a'};
+diff --git a/ui/src/iceSession.ts b/ui/src/iceSession.ts
+--- a/ui/src/iceSession.ts
++++ b/ui/src/iceSession.ts
+@@ -49,6 +49,42 @@ const isRetryableCandidateError = (error: unknown): boolean =>
+         ? error.name === 'InvalidStateError'
+         : error instanceof Error && error.name === 'InvalidStateError';
+ 
++type PartyLANPeerSessionWindow = Window & {
++    __PARTYLAN_REGISTER_PEER_SESSION__?: (metadata: {
++        action: 'open' | 'close';
++        pc: RTCPeerConnection;
++        sid: string;
++        peerId: string;
++        role: PeerRole;
++    }) => void;
++};
++
++const notifyPartyLANPeerSession = (
++    session: PeerSession,
++    action: 'open' | 'close'
++): void => {
++    try {
++        if (typeof window === 'undefined') return;
++        const hook = (window as PartyLANPeerSessionWindow).__PARTYLAN_REGISTER_PEER_SESSION__;
++        if (typeof hook !== 'function') return;
++        hook({
++            action,
++            pc: session.pc,
++            sid: session.sid,
++            peerId: session.peerId,
++            role: session.role,
++        });
++    } catch (error) {
++        session.report({
++            type: 'partylan_peer_session_hook_failed',
++            sid: session.sid,
++            role: session.role,
++            generation: session.generation,
++            error: errorName(error),
++        });
++    }
++};
++
+ export const createPeerSession = ({
+     sid,
+     peerId,
+@@ -62,17 +98,21 @@ export const createPeerSession = ({
+     pc: RTCPeerConnection;
+     report?: (event: IceDiagnostic) => void;
+-}): PeerSession => ({
+-    sid,
+-    peerId,
+-    role,
+-    pc,
+-    remoteDescriptionReady: false,
+-    pendingRemoteCandidates: [],
+-    generation: 0,
+-    closed: false,
+-    recoveryCount: 0,
+-    cooldownUntil: 0,
+-    report,
+-});
++}): PeerSession => {
++    const session: PeerSession = {
++        sid,
++        peerId,
++        role,
++        pc,
++        remoteDescriptionReady: false,
++        pendingRemoteCandidates: [],
++        generation: 0,
++        closed: false,
++        recoveryCount: 0,
++        cooldownUntil: 0,
++        report,
++    };
++    notifyPartyLANPeerSession(session, 'open');
++    return session;
++};
+ 
+ export const createPeerSessionRegistry = (): PeerSessionRegistry => {
+@@ -302,5 +342,6 @@ export const closePeerSession = (session: PeerSession): void => {
+     settleIceRestart(session, false, 'ice_restart_cancelled');
+     session.closed = true;
+     session.pendingRemoteCandidates.length = 0;
++    notifyPartyLANPeerSession(session, 'close');
+     session.pc.close();
+ };

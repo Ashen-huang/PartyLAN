@@ -580,14 +580,16 @@
     var mode = String(context.mode || '');
     var room = String(context.room || '').trim();
     var participantId = String(context.participantId || '').trim();
+    var screegoSessionId = String(context.screegoSessionId || '').trim();
     var totalPackets = number(sample && sample.packetsReceivedDelta) + number(sample && sample.packetsLostDelta);
     if (
       !sample || !sample.valid ||
       (mode !== 'native-viewer' && mode !== 'sfu-viewer') ||
-      !room || !participantId || !sample.pairId || !(number(sample.elapsedMs) > 0) ||
+      !room || !participantId || (mode === 'native-viewer' && !screegoSessionId) || !sample.pairId ||
+      !(number(sample.elapsedMs) > 0) ||
       totalPackets < 20
     ) return null;
-    return {
+    var report = {
       room: room,
       participantId: participantId,
       generation: String(sample.generation || 0),
@@ -599,6 +601,8 @@
       incomingBitrateKbps: Math.max(0, number(sample.downKbps)),
       jitterMs: Math.max(0, number(sample.jitterMs))
     };
+    if (screegoSessionId) report.screegoSessionId = screegoSessionId;
+    return report;
   }
 
   return {

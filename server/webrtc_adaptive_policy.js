@@ -5,18 +5,25 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
-  var POLICY_VERSION = 'adaptive-per-peer-v4';
+  var POLICY_VERSION = 'adaptive-per-peer-v5';
   var BASELINE_POLICY_VERSION = 'browser-bwe-baseline-v1';
   var OBSERVATION_MS = 4000;
   var WINDOW_SIZE = 3;
   var REQUIRED_BAD = 2;
   var REQUIRED_CONSECUTIVE = 2;
-  var DOWNSHIFT_COOLDOWN_MS = 8000;
-  var RECOVERY_STABLE_MS = 8000;
+  var DOWNSHIFT_COOLDOWN_MS = 6000;
+  var FAST_DOWNSHIFT_SETTLE_MS = 2000;
+  var RECOVERY_STABLE_MS = 6000;
   var RECOVERY_PROBE_MS = 6000;
-  var RECOVERY_COOLDOWN_MS = 12000;
+  var RECOVERY_COOLDOWN_MS = 8000;
   var RECOVERY_HEADROOM = 1.05;
   var CASCADE_DEGRADATION_RATIO = 0.75;
+  var RECEIVER_REPORT_MAX_AGE_MS = 6000;
+  var RECEIVER_ACTIVE_FPS = 8;
+  var RECEIVER_DECODE_RATIO = 0.5;
+  var RECEIVER_HEALTHY_RATIO = 0.75;
+  var RECEIVER_JITTER_LIMIT_MS = 100;
+  var PROBE_IMPROVEMENT_RATIO = 1.15;
   var DEFAULT_MAX_LEVEL = 6;
   var NOMINAL_BITRATE_RATIO = 0.75;
   var DEGRADE_FLOOR_RATIO = 0.65;
@@ -47,11 +54,22 @@
       stableSince: null,
       maxLevel: DEFAULT_MAX_LEVEL,
       lastDownshiftAvailableBitrate: 0,
+      lastDownshiftReceiverDriven: false,
+      fastDownshiftReadyAt: 0,
+      receiverJitterEwma: 0,
+      receiverStatus: 'unavailable',
+      receiverReason: 'receiver-unavailable',
+      lastReceiverReportId: '',
       probeFromLevel: null,
       probeStartedAt: 0,
       probeUntil: 0,
       probeBadCount: 0,
       probeValidCount: 0,
+      probeImprovedCount: 0,
+      probeBaselineDecodedFps: 0,
+      probeBaselineIncomingKbps: 0,
+      probeReceiverRequired: false,
+      probeFailureCount: 0,
       lastDecision: null
     };
   }
@@ -67,17 +85,104 @@
       cooldownUntil: 0,
       stableSince: null,
       lastDownshiftAvailableBitrate: 0,
+      lastDownshiftReceiverDriven: false,
+      fastDownshiftReadyAt: 0,
+      receiverJitterEwma: 0,
+      receiverStatus: 'unavailable',
+      receiverReason: 'receiver-unavailable',
+      lastReceiverReportId: '',
       probeFromLevel: null,
       probeStartedAt: 0,
       probeUntil: 0,
       probeBadCount: 0,
       probeValidCount: 0,
+      probeImprovedCount: 0,
+      probeBaselineDecodedFps: 0,
+      probeBaselineIncomingKbps: 0,
+      probeReceiverRequired: false,
+      probeFailureCount: 0,
       lastDecision: null
     });
   }
 
+  function finiteNumber(value) {
+    var result = Number(value);
+    return Number.isFinite(result) ? result : null;
+  }
+
+  function assessReceiver(sample) {
+    var ageMs = finiteNumber(sample.receiverReportAgeMs);
+    var decodedFps = finiteNumber(sample.receiverDecodedFps);
+    var incomingKbps = finiteNumber(sample.receiverIncomingKbps);
+    var senderFps = Math.max(
+      0,
+      finiteNumber(sample.senderSentFps) || 0,
+      finiteNumber(sample.senderEncodedFps) || 0
+    );
+    var sourceFps = Math.max(
+      senderFps,
+      finiteNumber(sample.senderCapturedFps) || 0
+    );
+    var bound = sample.receiverBound === true && ageMs !== null &&
+      ageMs >= 0 && ageMs <= RECEIVER_REPORT_MAX_AGE_MS && decodedFps !== null;
+    if (!bound) {
+      return {
+        bound: false,
+        impaired: false,
+        healthy: false,
+        reason: 'receiver-unavailable',
+        senderFps: senderFps,
+        sourceFps: sourceFps,
+        decodedFps: decodedFps || 0,
+        incomingKbps: incomingKbps || 0
+      };
+    }
+
+    var sourceActive = sourceFps >= RECEIVER_ACTIVE_FPS;
+    var decodeRatio = senderFps > 0 ? decodedFps / senderFps : 1;
+    var receiverLoss = Math.max(0, finiteNumber(sample.receiverLossPercent) || 0);
+    var receiverJitter = Math.max(
+      0,
+      finiteNumber(sample.receiverSmoothedJitterMs) ||
+        finiteNumber(sample.receiverJitterMs) || 0
+    );
+    var outboundKbps = Math.max(0, finiteNumber(sample.outboundKbps) || 0);
+    var throughputGap = sourceActive && outboundKbps > 0 && incomingKbps !== null &&
+      incomingKbps < outboundKbps * 0.5;
+    var senderDeliveryCollapsed = sourceActive &&
+      senderFps < Math.max(RECEIVER_ACTIVE_FPS, sourceFps * RECEIVER_DECODE_RATIO);
+    var decodeImpaired = sourceActive && (
+      decodedFps < RECEIVER_ACTIVE_FPS || decodeRatio < RECEIVER_DECODE_RATIO ||
+      senderDeliveryCollapsed
+    );
+    var transportImpaired = throughputGap &&
+      (receiverLoss > 5 || receiverJitter > RECEIVER_JITTER_LIMIT_MS);
+    var impaired = decodeImpaired || transportImpaired;
+    var healthyDecode = !sourceActive || decodeRatio >= RECEIVER_HEALTHY_RATIO;
+    var healthy = healthyDecode && receiverLoss < 3 &&
+      receiverJitter <= RECEIVER_JITTER_LIMIT_MS;
+    var reason = 'receiver-healthy';
+    if (decodeImpaired) reason = decodedFps < 1 ? 'receiver-no-frames' : 'receiver-low-fps';
+    else if (transportImpaired) reason = 'receiver-throughput-gap';
+    else if (!healthy) reason = 'receiver-unstable';
+    return {
+      bound: true,
+      impaired: impaired,
+      healthy: healthy,
+      reason: reason,
+      senderFps: senderFps,
+      sourceFps: sourceFps,
+      decodedFps: decodedFps,
+      incomingKbps: incomingKbps || 0,
+      lossPercent: receiverLoss,
+      jitterMs: receiverJitter
+    };
+  }
+
   function isBadSample(sample) {
     if (!sample.valid) return false;
+    var receiver = assessReceiver(sample);
+    if (receiver.bound) return receiver.impaired;
     var nominalKbps = Number(sample.nominalKbps) || Number(sample.profileKbps) || 0;
     var degradeFloorKbps = Number(sample.degradeFloorKbps) || nominalKbps * DEGRADE_FLOOR_RATIO;
     var lowThroughput =
@@ -95,6 +200,8 @@
   }
 
   function isStableSample(sample) {
+    var receiver = assessReceiver(sample);
+    if (receiver.bound && !receiver.healthy) return false;
     var nominalKbps = Number(sample.nominalKbps) || Number(sample.profileKbps) || 0;
     var degradeFloorKbps = Number(sample.degradeFloorKbps) || nominalKbps * DEGRADE_FLOOR_RATIO;
     var nextNominalKbps = Number(sample.nextNominalKbps) || Number(sample.nextProfileKbps) || nominalKbps;
@@ -104,7 +211,7 @@
     return (
       sample.valid &&
       Number(sample.lossPercent) < 2 &&
-      Number(sample.jitterMs) < 60 &&
+      Number(sample.jitterMs) < (receiver.bound ? 120 : 60) &&
       sample.receiverImpaired !== true &&
       nominalKbps > 0 &&
       nextNominalKbps > 0 &&
@@ -113,7 +220,9 @@
   }
 
   function hasIndependentImpairment(sample) {
-    return sample.receiverImpaired === true || Number(sample.lossPercent) > 5 || Number(sample.jitterMs) > 100;
+    var receiver = assessReceiver(sample);
+    return receiver.impaired || sample.receiverImpaired === true ||
+      Number(sample.lossPercent) > 5 || Number(sample.jitterMs) > 100;
   }
 
   function sampleCapacityBitrate(sample) {
@@ -136,17 +245,88 @@
     state.probeUntil = 0;
     state.probeBadCount = 0;
     state.probeValidCount = 0;
+    state.probeImprovedCount = 0;
+    state.probeBaselineDecodedFps = 0;
+    state.probeBaselineIncomingKbps = 0;
+    state.probeReceiverRequired = false;
+  }
+
+  function sampleEffectiveCapacityKbps(sample) {
+    var advertised = Math.max(0, Number(sample.availableOutgoingBitrate) || 0) / 1000;
+    var receiver = assessReceiver(sample);
+    var delivered = receiver.bound ? Math.max(0, receiver.incomingKbps) * 1.2 : 0;
+    if (advertised > 0 && delivered > 0) return Math.min(advertised, delivered);
+    return advertised || delivered || Math.max(0, Number(sample.outboundKbps) || 0);
+  }
+
+  function sustainableLevel(currentLevel, maxLevel, sample) {
+    var floors = Array.isArray(sample.levelDegradeFloorsKbps)
+      ? sample.levelDegradeFloorsKbps
+      : [];
+    var capacity = sampleEffectiveCapacityKbps(sample);
+    if (!(capacity > 0) || floors.length <= currentLevel + 1) {
+      return Math.min(maxLevel, currentLevel + 1);
+    }
+    var sustainableCapacity = capacity / RECOVERY_HEADROOM;
+    for (var level = currentLevel + 1; level <= maxLevel; level += 1) {
+      var floor = Number(floors[level]) || 0;
+      if (floor > 0 && floor <= sustainableCapacity) return level;
+    }
+    return maxLevel;
+  }
+
+  function probeImproved(state, sample) {
+    var receiver = assessReceiver(sample);
+    if (!receiver.bound || !receiver.healthy) return false;
+    var decodedThreshold = state.probeBaselineDecodedFps > 0
+      ? Math.max(state.probeBaselineDecodedFps + 2, state.probeBaselineDecodedFps * PROBE_IMPROVEMENT_RATIO)
+      : 0;
+    var incomingThreshold = state.probeBaselineIncomingKbps > 0
+      ? state.probeBaselineIncomingKbps * PROBE_IMPROVEMENT_RATIO
+      : 0;
+    return (decodedThreshold > 0 && receiver.decodedFps >= decodedThreshold) ||
+      (incomingThreshold > 0 && receiver.incomingKbps >= incomingThreshold);
+  }
+
+  function rollbackProbe(state, sample) {
+    var rollbackLevel = state.probeFromLevel;
+    var rollbackDecision = {
+      type: 'probe-rollback',
+      fromLevel: state.level,
+      toLevel: rollbackLevel
+    };
+    state.level = rollbackLevel;
+    state.status = 'probe-rollback';
+    state.window = [];
+    state.badCount = 0;
+    state.stableSince = null;
+    state.probeFailureCount = Math.min(3, (state.probeFailureCount || 0) + 1);
+    state.cooldownUntil = sample.now + RECOVERY_COOLDOWN_MS * state.probeFailureCount;
+    state.lastDecision = rollbackDecision;
+    clearProbe(state);
+    return {state: state, decision: rollbackDecision};
   }
 
   function evaluateAdaptiveSample(current, sample) {
     var state = Object.assign({
       maxLevel: DEFAULT_MAX_LEVEL,
       lastDownshiftAvailableBitrate: 0,
+      lastDownshiftReceiverDriven: false,
+      fastDownshiftReadyAt: 0,
+      receiverJitterEwma: 0,
+      receiverStatus: 'unavailable',
+      receiverReason: 'receiver-unavailable',
+      lastReceiverReportId: '',
       probeFromLevel: null,
       probeStartedAt: 0,
       probeUntil: 0,
       probeBadCount: 0,
-      probeValidCount: 0
+      probeValidCount: 0,
+      probeImprovedCount: 0,
+      probeBaselineDecodedFps: 0,
+      probeBaselineIncomingKbps: 0,
+      probeReceiverRequired: false,
+      probeFailureCount: 0
     }, current, {lastDecision: null});
     if (!state.pairId && sample.pairId) {
       state.pairId = sample.pairId;
@@ -161,32 +341,56 @@
     if (Number.isFinite(Number(sample.maxLevel))) {
       state.maxLevel = Math.max(0, Number(sample.maxLevel));
     }
+    sample = Object.assign({}, sample);
+    if (sample.receiverBound === true && Number.isFinite(Number(sample.receiverJitterMs))) {
+      var receiverJitter = Math.max(0, Number(sample.receiverJitterMs));
+      state.receiverJitterEwma = state.receiverJitterEwma > 0
+        ? state.receiverJitterEwma * 0.7 + receiverJitter * 0.3
+        : receiverJitter;
+      sample.receiverSmoothedJitterMs = state.receiverJitterEwma;
+    }
+    var receiver = assessReceiver(sample);
+    var receiverReportId = receiver.bound
+      ? String(sample.receiverReportedAtUnix || '')
+      : '';
+    var receiverFresh = !receiverReportId || receiverReportId !== state.lastReceiverReportId;
+    if (receiverReportId && receiverFresh) state.lastReceiverReportId = receiverReportId;
+    state.receiverStatus = receiver.bound ? (receiver.impaired ? 'impaired' : 'healthy') : 'unavailable';
+    state.receiverReason = receiver.reason;
     if (!sample.valid) {
-      if (state.probeFromLevel !== null) state.status = 'probing';
+      if (state.probeFromLevel !== null) {
+        if (state.probeReceiverRequired && !receiver.bound) state.probeBadCount += 1;
+        if (
+          state.probeBadCount >= 2 ||
+          (state.probeReceiverRequired && sample.now >= state.probeUntil)
+        ) return rollbackProbe(state, sample);
+        state.status = 'probing';
+      }
       return {state: state, decision: null};
     }
 
     if (state.probeFromLevel !== null) {
-      state.probeValidCount += 1;
-      if (isBadSample(sample)) state.probeBadCount += 1;
+      if (!receiver.bound || receiverFresh) state.probeValidCount += 1;
+      var missingRequiredReceiver = state.probeReceiverRequired && !receiver.bound;
+      if (
+        (!receiver.bound || receiverFresh) &&
+        (isBadSample(sample) || missingRequiredReceiver)
+      ) state.probeBadCount += 1;
+      if (receiverFresh && probeImproved(state, sample)) state.probeImprovedCount += 1;
       if (state.probeBadCount >= 2) {
-        var rollbackLevel = state.probeFromLevel;
-        var rollbackDecision = {
-          type: 'probe-rollback',
-          fromLevel: state.level,
-          toLevel: rollbackLevel
-        };
-        state.level = rollbackLevel;
-        state.status = 'probe-rollback';
-        state.window = [];
-        state.badCount = 0;
-        state.stableSince = null;
-        state.cooldownUntil = sample.now + RECOVERY_COOLDOWN_MS;
-        state.lastDecision = rollbackDecision;
-        clearProbe(state);
-        return {state: state, decision: rollbackDecision};
+        return rollbackProbe(state, sample);
       }
-      if (sample.now >= state.probeUntil && state.probeValidCount >= 2) {
+      if (sample.now >= state.probeUntil) {
+        if (
+          state.probeReceiverRequired &&
+          (state.probeValidCount < 2 || state.probeImprovedCount < 2)
+        ) {
+          return rollbackProbe(state, sample);
+        }
+        if (state.probeValidCount < 2) {
+          state.status = 'probing';
+          return {state: state, decision: null};
+        }
         var committedFromLevel = state.probeFromLevel;
         var commitDecision = {
           type: 'probe-commit',
@@ -197,8 +401,11 @@
         state.window = [];
         state.badCount = 0;
         state.stableSince = null;
-        state.cooldownUntil = sample.now + RECOVERY_COOLDOWN_MS;
+        state.cooldownUntil = sample.now + RECOVERY_STABLE_MS;
         state.lastDownshiftAvailableBitrate = 0;
+        state.lastDownshiftReceiverDriven = false;
+        state.fastDownshiftReadyAt = 0;
+        state.probeFailureCount = 0;
         state.lastDecision = commitDecision;
         clearProbe(state);
         return {state: state, decision: commitDecision};
@@ -208,6 +415,34 @@
     }
 
     var bad = isBadSample(sample);
+    if (
+      bad && receiver.impaired && receiverFresh && state.lastDownshiftReceiverDriven &&
+      sample.now >= state.fastDownshiftReadyAt && state.level < state.maxLevel
+    ) {
+      var fastLevel = sustainableLevel(state.level, state.maxLevel, sample);
+      if (fastLevel > state.level) {
+        var fastDecision = {
+          type: 'downshift-fast',
+          fromLevel: state.level,
+          toLevel: fastLevel
+        };
+        state.level = fastLevel;
+        state.status = fastLevel >= state.maxLevel ? 'floor-protected' : 'degraded-fast';
+        state.window = [];
+        state.badCount = 0;
+        state.stableSince = null;
+        state.cooldownUntil = sample.now + DOWNSHIFT_COOLDOWN_MS;
+        state.lastDownshiftAvailableBitrate = sampleCapacityBitrate(sample);
+        state.lastDownshiftReceiverDriven = false;
+        state.fastDownshiftReadyAt = 0;
+        state.lastDecision = fastDecision;
+        return {state: state, decision: fastDecision};
+      }
+    }
+    if (receiver.bound && !receiverFresh) {
+      state.status = receiver.impaired ? 'receiver-waiting' : state.status;
+      return {state: state, decision: null};
+    }
     if (bad) {
       state.stableSince = null;
     } else if (isStableSample(sample) && state.level > 0) {
@@ -227,6 +462,10 @@
         state.probeUntil = sample.now + RECOVERY_PROBE_MS;
         state.probeBadCount = 0;
         state.probeValidCount = 0;
+        state.probeImprovedCount = 0;
+        state.probeBaselineDecodedFps = receiver.bound ? receiver.decodedFps : 0;
+        state.probeBaselineIncomingKbps = receiver.bound ? receiver.incomingKbps : 0;
+        state.probeReceiverRequired = receiver.bound;
         state.level = probedLevel;
         state.status = 'probing';
         state.window = [];
@@ -254,10 +493,10 @@
 
     var trailing = state.window.slice(-REQUIRED_CONSECUTIVE);
     var confirmed =
-      state.window.length === WINDOW_SIZE &&
       state.badCount >= REQUIRED_BAD &&
       trailing.length === REQUIRED_CONSECUTIVE &&
-      trailing.every(Boolean);
+      trailing.every(Boolean) &&
+      (receiver.impaired || state.window.length === WINDOW_SIZE);
 
     if (confirmed && state.level < state.maxLevel) {
       var nextLevel = state.level + 1;
@@ -273,6 +512,10 @@
       state.stableSince = null;
       state.cooldownUntil = sample.now + DOWNSHIFT_COOLDOWN_MS;
       state.lastDownshiftAvailableBitrate = sampleCapacityBitrate(sample);
+      state.lastDownshiftReceiverDriven = receiver.impaired;
+      state.fastDownshiftReadyAt = receiver.impaired
+        ? sample.now + FAST_DOWNSHIFT_SETTLE_MS
+        : 0;
       state.lastDecision = downshiftDecision;
       return {state: state, decision: downshiftDecision};
     }
@@ -442,11 +685,14 @@
       requiredBad: REQUIRED_BAD,
       requiredConsecutive: REQUIRED_CONSECUTIVE,
       downshiftCooldownMs: DOWNSHIFT_COOLDOWN_MS,
+      fastDownshiftSettleMs: FAST_DOWNSHIFT_SETTLE_MS,
       recoveryStableMs: RECOVERY_STABLE_MS,
       recoveryProbeMs: RECOVERY_PROBE_MS,
       recoveryCooldownMs: RECOVERY_COOLDOWN_MS,
       recoveryHeadroom: RECOVERY_HEADROOM,
-      cascadeDegradationRatio: CASCADE_DEGRADATION_RATIO
+      cascadeDegradationRatio: CASCADE_DEGRADATION_RATIO,
+      receiverReportMaxAgeMs: RECEIVER_REPORT_MAX_AGE_MS,
+      receiverJitterLimitMs: RECEIVER_JITTER_LIMIT_MS
     }
   };
 });

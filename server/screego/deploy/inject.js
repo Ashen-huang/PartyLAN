@@ -6,6 +6,7 @@
   var REGISTER_URL = '/api/register';
   var STATS_URL = '/api/stats';
   var QUALITY_REPORT_URL = '/api/quality/report';
+  var QUALITY_SNAPSHOT_URL = '/api/quality/snapshot';
   var ROOM_STATE_URL = '/api/room-state';
   var PRESENCE_URL = '/api/presence';
   var SHARE_URL = '/api/share';
@@ -24,6 +25,9 @@
   var currentUser = null;
   var adaptiveStreamingMonitorTimer = 0;
   var adaptiveServerBudgetPeerCount = 0;
+  var adaptiveQualitySnapshot = Object.create(null);
+  var adaptiveQualitySnapshotPromise = null;
+  var screegoPeerSessions = Object.create(null);
   var sfuConnection = null;
   var sfuStatusText = '未启用';
   var activeRoomSocket = null;
@@ -185,6 +189,42 @@
     var state = GameCastWebRTCAdaptive.createAdaptiveState(connectedAt);
     state.policyVersion = currentAdaptivePolicyMode() || GameCastWebRTCAdaptive.POLICY_VERSION;
     return state;
+  }
+
+  function normalizeScreegoSessionId(value) {
+    value = String(value || '').trim();
+    return /^[a-zA-Z0-9._:\-]{1,128}$/.test(value) ? value : '';
+  }
+
+  function handleScreegoPeerSession(metadata) {
+    metadata = metadata || {};
+    var sessionId = normalizeScreegoSessionId(metadata.sid);
+    var pc = metadata.pc;
+    if (!sessionId || !pc) return false;
+    if (metadata.action === 'close') {
+      if (screegoPeerSessions[sessionId] === pc) delete screegoPeerSessions[sessionId];
+      delete adaptiveQualitySnapshot[sessionId];
+      if (pc._gcScreegoSessionId === sessionId) {
+        pc._gcScreegoSessionId = '';
+        pc._gcScreegoPeerId = '';
+        pc._gcScreegoRole = '';
+      }
+      return true;
+    }
+    pc._gcScreegoSessionId = sessionId;
+    pc._gcScreegoPeerId = String(metadata.peerId || '').slice(0, 128);
+    pc._gcScreegoRole = metadata.role === 'host' ? 'host' : 'viewer';
+    screegoPeerSessions[sessionId] = pc;
+    return true;
+  }
+
+  function clearAdaptiveQualitySnapshot() {
+    adaptiveQualitySnapshot = Object.create(null);
+    adaptiveQualitySnapshotPromise = null;
+  }
+
+  function installScreegoPeerSessionHook() {
+    window.__PARTYLAN_REGISTER_PEER_SESSION__ = handleScreegoPeerSession;
   }
 
   function isUnifiedSfuRoom(state) {
@@ -391,6 +431,7 @@
     webPresenceRole = '';
     webPresenceName = '';
     webPresenceMembers = [];
+    clearAdaptiveQualitySnapshot();
     renderWebPresenceMembers();
     if (!roomId) return Promise.resolve(null);
     var payload = JSON.stringify({ room: roomId, participantId: getWebParticipantId() });
@@ -659,6 +700,7 @@
 
   function resetAdaptiveStreamingState() {
     adaptiveServerBudgetPeerCount = 0;
+    clearAdaptiveQualitySnapshot();
     activePCs.forEach(function (pc) {
       pc._gcAdaptiveState = createCurrentAdaptiveState(Date.now());
       pc._gcAdaptivePrev = null;
@@ -991,6 +1033,73 @@
     return profile;
   }
 
+  function computePeerAdaptiveFloorsKbps(pc, maxLevel) {
+    var floors = [];
+    for (var level = 0; level <= maxLevel; level++) {
+      var profile = computePeerAdaptiveProfile(pc, level);
+      floors.push(profile ? profile.degradeFloorBitrate / 1000 : 0);
+    }
+    return floors;
+  }
+
+  function refreshAdaptiveQualitySnapshot() {
+    var roomId = currentRoomId();
+    if (
+      !activeDisplayStream || !webShareLease ||
+      webShareLease.mediaMode !== 'legacy-p2p' || !roomId || !canSendProtectedControl()
+    ) {
+      clearAdaptiveQualitySnapshot();
+      return Promise.resolve(null);
+    }
+    if (adaptiveQualitySnapshotPromise) return adaptiveQualitySnapshotPromise;
+    adaptiveQualitySnapshotPromise = controlRequest(
+      QUALITY_SNAPSHOT_URL + '?room=' + encodeURIComponent(roomId) +
+        '&participantId=' + encodeURIComponent(getWebParticipantId())
+    ).then(function (data) {
+      var next = Object.create(null);
+      var fetchedAt = Date.now();
+      (data && Array.isArray(data.samples) ? data.samples : []).forEach(function (sample) {
+        var sessionId = normalizeScreegoSessionId(sample && sample.screegoSessionId);
+        if (!sessionId) return;
+        sample._gcSnapshotFetchedAt = fetchedAt;
+        next[sessionId] = sample;
+      });
+      adaptiveQualitySnapshot = next;
+      return data;
+    }).catch(function () {
+      clearAdaptiveQualitySnapshot();
+      return null;
+    }).finally(function () {
+      adaptiveQualitySnapshotPromise = null;
+    });
+    return adaptiveQualitySnapshotPromise;
+  }
+
+  function receiverQualityForPeer(pc, now) {
+    var sessionId = normalizeScreegoSessionId(pc && pc._gcScreegoSessionId);
+    if (!sessionId || pc._gcScreegoRole !== 'host') return null;
+    var sample = adaptiveQualitySnapshot[sessionId];
+    if (!sample) return null;
+    var ageMs = Math.max(0, Number(sample.ageSeconds || 0) * 1000) +
+      Math.max(0, now - Number(sample._gcSnapshotFetchedAt || now));
+    if (ageMs > 6000) return null;
+    var totalPackets = Number(sample.packetsReceivedDelta || 0) +
+      Number(sample.packetsLostDelta || 0);
+    return {
+      sessionId: sessionId,
+      participantId: String(sample.participantId || ''),
+      ageMs: ageMs,
+      reportedAtUnix: Math.max(0, Number(sample.reportedAtUnix || 0)),
+      decodedFps: Math.max(0, Number(sample.decodedFps || 0)),
+      incomingKbps: Math.max(0, Number(sample.incomingBitrateKbps || 0)),
+      lossPercent: totalPackets > 0
+        ? Math.max(0, Number(sample.packetsLostDelta || 0)) * 100 / totalPackets
+        : 0,
+      jitterMs: Math.max(0, Number(sample.jitterMs || 0)),
+      framesDroppedDelta: Math.max(0, Number(sample.framesDroppedDelta || 0))
+    };
+  }
+
   function sampleAdaptiveStreamingPeer(descriptor) {
     var pc = descriptor && descriptor.pc;
     if (!shouldUseAdaptiveStreaming(pc) || pc._gcAdaptiveFetchPromise) return;
@@ -999,6 +1108,9 @@
     var nextAdaptiveProfile = adaptiveState && adaptiveState.level > 0
       ? computePeerAdaptiveProfile(pc, adaptiveState.level - 1)
       : adaptiveProfile;
+    var adaptiveFloorsKbps = adaptiveProfile
+      ? computePeerAdaptiveFloorsKbps(pc, adaptiveProfile.maxLevel)
+      : [];
     var prev = pc._gcAdaptivePrev;
     var statsPromise = getStatsWithTimeout(pc, STATS_FETCH_TIMEOUT_MS);
     pc._gcAdaptiveFetchPromise = statsPromise;
@@ -1010,11 +1122,20 @@
       var pair = pairDescription.pairId ? stats.get(pairDescription.pairId) || {} : {};
       var outboundBytesTotal = 0;
       var outboundPacketsSentTotal = 0;
+      var capturedFramesTotal = 0;
+      var outboundFramesEncodedTotal = 0;
+      var outboundFramesSentTotal = 0;
+      var captureReportedFps = 0;
+      var senderReportedFps = 0;
       var qualityReason = 'none';
       var remotePacketsLostTotal = 0;
       var remoteJitterMs = 0;
       var hasRemoteInbound = false;
       stats.forEach(function (report) {
+        if (report.type === 'media-source' && (report.kind === 'video' || report.mediaType === 'video')) {
+          capturedFramesTotal += report.frames || 0;
+          captureReportedFps = Math.max(captureReportedFps, Number(report.framesPerSecond || 0));
+        }
         if (report.type === 'remote-inbound-rtp' && (report.kind === 'video' || report.mediaType === 'video')) {
           hasRemoteInbound = true;
           remotePacketsLostTotal += report.packetsLost || 0;
@@ -1023,11 +1144,15 @@
         if (report.type === 'outbound-rtp' && (report.kind === 'video' || report.mediaType === 'video')) {
           outboundBytesTotal += report.bytesSent || 0;
           outboundPacketsSentTotal += report.packetsSent || 0;
+          outboundFramesEncodedTotal += report.framesEncoded || 0;
+          outboundFramesSentTotal += report.framesSent || 0;
+          senderReportedFps = Math.max(senderReportedFps, Number(report.framesPerSecond || 0));
           if (report.qualityLimitationReason) qualityReason = report.qualityLimitationReason;
         }
       });
 
       var now = Date.now();
+      var receiverQuality = receiverQualityForPeer(pc, now);
       var previousAdaptivePath = pc._gcAdaptiveLastSample
         ? pc._gcAdaptiveLastSample.path || 'unknown'
         : 'unknown';
@@ -1053,7 +1178,19 @@
           ? nextAdaptiveProfile.nominalBitrate / 1000
           : computeTargetBitrate() / 1000,
         maxLevel: adaptiveProfile ? adaptiveProfile.maxLevel : 6,
-        receiverImpaired: false,
+        levelDegradeFloorsKbps: adaptiveFloorsKbps,
+        receiverBound: !!receiverQuality,
+        receiverReportAgeMs: receiverQuality ? receiverQuality.ageMs : 0,
+        receiverReportedAtUnix: receiverQuality ? receiverQuality.reportedAtUnix : 0,
+        receiverParticipantId: receiverQuality ? receiverQuality.participantId : '',
+        receiverDecodedFps: receiverQuality ? receiverQuality.decodedFps : 0,
+        receiverIncomingKbps: receiverQuality ? receiverQuality.incomingKbps : 0,
+        receiverLossPercent: receiverQuality ? receiverQuality.lossPercent : 0,
+        receiverJitterMs: receiverQuality ? receiverQuality.jitterMs : 0,
+        receiverFramesDroppedDelta: receiverQuality ? receiverQuality.framesDroppedDelta : 0,
+        senderCapturedFps: captureReportedFps,
+        senderEncodedFps: senderReportedFps,
+        senderSentFps: senderReportedFps,
         availableOutgoingBitrate: pair.availableOutgoingBitrate || 0,
         qualityLimitationReason: qualityReason
       };
@@ -1081,6 +1218,30 @@
           if (deltas.valid) {
             adaptiveSample.outboundKbps = deltas.outboundKbps;
             adaptiveSample.lossPercent = deltas.lossPercent;
+            var elapsedSeconds = (now - prev.ts) / 1000;
+            var capturedFramesDelta = capturedFramesTotal - Number(prev.framesCaptured || 0);
+            var framesEncodedDelta = outboundFramesEncodedTotal - Number(prev.framesEncoded || 0);
+            var framesSentDelta = outboundFramesSentTotal - Number(prev.framesSent || 0);
+            if (elapsedSeconds > 0) {
+              if (capturedFramesDelta >= 0) {
+                adaptiveSample.senderCapturedFps = Math.max(
+                  adaptiveSample.senderCapturedFps,
+                  capturedFramesDelta / elapsedSeconds
+                );
+              }
+              if (framesEncodedDelta >= 0) {
+                adaptiveSample.senderEncodedFps = Math.max(
+                  adaptiveSample.senderEncodedFps,
+                  framesEncodedDelta / elapsedSeconds
+                );
+              }
+            }
+            if (elapsedSeconds > 0 && framesSentDelta >= 0) {
+              adaptiveSample.senderSentFps = Math.max(
+                adaptiveSample.senderSentFps,
+                framesSentDelta / elapsedSeconds
+              );
+            }
           }
         }
       }
@@ -1089,6 +1250,9 @@
         bytesSent: outboundBytesTotal,
         packetsSent: outboundPacketsSentTotal,
         remotePacketsLost: remotePacketsLostTotal,
+        framesCaptured: capturedFramesTotal,
+        framesEncoded: outboundFramesEncodedTotal,
+        framesSent: outboundFramesSentTotal,
         pairId: adaptiveSample.pairId,
         ts: now
       };
@@ -1112,20 +1276,23 @@
 
   function sampleAdaptiveStreaming() {
     if (!activeDisplayStream) return;
-    var descriptors = getAdaptivePeerDescriptors();
-    var budgetedPeerCount = countServerBudgetedAdaptivePeers(descriptors);
-    if (budgetedPeerCount !== adaptiveServerBudgetPeerCount) {
-      var previousBudgetedPeerCount = adaptiveServerBudgetPeerCount;
-      adaptiveServerBudgetPeerCount = budgetedPeerCount;
-      descriptors.forEach(function (descriptor) {
-        if (!isServerBudgetedAdaptivePeer(descriptor)) return;
-        applyAdaptiveProfile(
-          descriptor.pc,
-          'server-budget:' + previousBudgetedPeerCount + '->' + budgetedPeerCount
-        );
-      });
-    }
-    descriptors.forEach(sampleAdaptiveStreamingPeer);
+    refreshAdaptiveQualitySnapshot().finally(function () {
+      if (!activeDisplayStream) return;
+      var descriptors = getAdaptivePeerDescriptors();
+      var budgetedPeerCount = countServerBudgetedAdaptivePeers(descriptors);
+      if (budgetedPeerCount !== adaptiveServerBudgetPeerCount) {
+        var previousBudgetedPeerCount = adaptiveServerBudgetPeerCount;
+        adaptiveServerBudgetPeerCount = budgetedPeerCount;
+        descriptors.forEach(function (descriptor) {
+          if (!isServerBudgetedAdaptivePeer(descriptor)) return;
+          applyAdaptiveProfile(
+            descriptor.pc,
+            'server-budget:' + previousBudgetedPeerCount + '->' + budgetedPeerCount
+          );
+        });
+      }
+      descriptors.forEach(sampleAdaptiveStreamingPeer);
+    });
   }
 
   function startAdaptiveStreamingMonitor() {
@@ -2251,6 +2418,11 @@
           pc._gcAdaptivePrev = null;
         }
         if (['closed', 'failed'].indexOf(pc.connectionState) >= 0) {
+          var sessionId = normalizeScreegoSessionId(pc._gcScreegoSessionId);
+          if (sessionId && screegoPeerSessions[sessionId] === pc) {
+            delete screegoPeerSessions[sessionId];
+            delete adaptiveQualitySnapshot[sessionId];
+          }
           var i = activePCs.indexOf(pc); if (i >= 0) activePCs.splice(i, 1);
         }
         setTimeout(applyAll, 500);
@@ -3213,9 +3385,10 @@
         var qualityReport = GameCastWebRTCStats.buildViewerQualityReport(diagnosticSample, {
           room: currentRoomId(),
           participantId: getWebParticipantId(),
+          screegoSessionId: pc._gcScreegoSessionId || '',
           mode: mode
         });
-        if (qualityReport && webPresenceRole !== 'owner') {
+        if (qualityReport && mode === 'native-viewer') {
           pc._gcLastQualityReportAt = now;
           controlRequest(QUALITY_REPORT_URL, {
             method: 'POST',
@@ -3343,6 +3516,7 @@
           reportPayload.windowSize = qualityState.window.length;
         }
         if (adaptiveState && adaptiveProfile) {
+          var receiverSample = pc._gcAdaptiveLastSample || {};
           Object.assign(reportPayload, {
             adaptivePolicyVersion: adaptiveState.policyVersion,
             adaptiveDecision: adaptiveDecision,
@@ -3351,7 +3525,24 @@
             adaptiveMaxBitrate: adaptiveProfile.maxBitrate,
             adaptiveNominalBitrate: adaptiveProfile.nominalBitrate,
             adaptiveDegradeFloorBitrate: adaptiveProfile.degradeFloorBitrate,
-            adaptiveStatus: adaptiveState.status
+            adaptiveStatus: adaptiveState.status,
+            screegoSessionId: pc._gcScreegoSessionId || '',
+            receiverState: adaptiveState.receiverStatus || 'unavailable',
+            receiverReason: adaptiveState.receiverReason || 'receiver-unavailable',
+            receiverBound: receiverSample.receiverBound === true,
+            receiverReportAgeMs: receiverSample.receiverReportAgeMs || 0,
+            receiverDecodedFps: receiverSample.receiverDecodedFps || 0,
+            receiverIncomingKbps: receiverSample.receiverIncomingKbps || 0,
+            receiverLossPercent: receiverSample.receiverLossPercent || 0,
+            receiverJitterMs: receiverSample.receiverJitterMs || 0,
+            senderCapturedFps: receiverSample.senderCapturedFps || 0,
+            senderEncodedFps: receiverSample.senderEncodedFps || 0,
+            senderSentFps: receiverSample.senderSentFps || 0,
+            adaptiveStableMs: adaptiveState.stableSince === null
+              ? 0
+              : Math.max(0, Date.now() - adaptiveState.stableSince),
+            adaptiveProbeUntil: adaptiveState.probeUntil || 0,
+            adaptiveProbeImprovedCount: adaptiveState.probeImprovedCount || 0
           });
         }
         if (
@@ -3732,6 +3923,7 @@
       clearRoomMediaMode();
       closeRoomSocket();
     });
+    installScreegoPeerSessionHook();
     patchWebSocket();
     patchFetch();
     patchGDM();

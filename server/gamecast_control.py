@@ -265,7 +265,8 @@ class ControlPlane:
         with self._lock:
             self._prune_locked(now)
             participant = self._get_participant_locked(room_id, participant_id, auth_user)
-            if participant.get("role") == "owner":
+            lease = self._leases.get(room_id)
+            if lease and lease.get("participant_id") == participant_id:
                 raise ControlError("quality_report_forbidden", 403)
             return self._build_participant(room_id, participant, now)
 
@@ -279,11 +280,12 @@ class ControlPlane:
             self._prune_locked(now)
             participant = self._get_participant_locked(room_id, participant_id, auth_user)
             room = self._rooms.get(room_id) or {}
-            if (
-                participant.get("role") != "owner"
-                or participant.get("client_type") != "client"
-                or room.get("owner_participant_id") != participant_id
-            ):
+            lease = self._leases.get(room_id)
+            owns_room = participant.get("role") == "owner" and (
+                room.get("owner_participant_id") == participant_id
+            )
+            owns_share = bool(lease and lease.get("participant_id") == participant_id)
+            if not owns_room and not owns_share:
                 raise ControlError("quality_snapshot_forbidden", 403)
             active_ids = set((self._presence.get(room_id) or {}).keys())
             return self._build_participant(room_id, participant, now), active_ids
