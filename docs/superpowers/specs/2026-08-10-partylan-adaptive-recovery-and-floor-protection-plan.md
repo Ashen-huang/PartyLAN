@@ -117,3 +117,20 @@
   `build/bin/opus.dll` SHA-256 为
   `2134411EA3DAF238B9FA163917292E8C9CF80593822A338A7938B3685269AF1F`。
 - 本阶段未连接广州节点、未替换线上文件、未推送远端；部署与真实限速灰度继续单独执行。
+
+## 广州节点部署记录（2026-08-15）
+
+- 已将提交 `b958345` 对应网页策略与遥测控制面发布到 `partylanapp.com`。线上缓存键为
+  `webrtc-adaptive.js?v=6` 和 `inject.js?v=6.26`，公网响应 SHA-256 分别为
+  `DCB1D5F82182D21E90EC61D3BF4DE3B7031BDF74E63988A44ED64FF7A3EC5426` 与
+  `DBFA2E312E90470790CD0B1ED2F6EC1EEADBC2BAA0F079F2C0C29C8C3D472370`。
+- 线上 Nginx 实际从 `/var/www/screego` 提供注入资源；部署检查发现维护副本
+  `/root/screego/frontend` 不是活动静态目录后，已补备份并原子替换真实活动文件。旧网页资源、
+  控制面和 Nginx 配置统一保存在
+  `/root/screego/backups/adaptive-recovery-20260815T144901+0800`。
+- `nginx -t`、资源 HTTP 摘要、控制面 Python 编译和 `/api/rooms` 代理检查通过；
+  `nginx`、`screego-register`、`gamecast-sfu` 均保持 `active`。
+- Nginx 仅平滑重载，屏幕 SFU、Screego 和语音 SFU 进程未重启；遥测控制面按预期重启并加载
+  `adaptiveStatus`、`adaptiveNominalBitrate` 与 `adaptiveDegradeFloorBitrate` 字段。
+- 真实解除限速后的逐级升档仍需使用实际共享会话验证，并以新产生的
+  `adaptive-per-peer-v4` 遥测作为最终灰度判据。
