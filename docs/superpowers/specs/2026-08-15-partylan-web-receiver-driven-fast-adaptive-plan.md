@@ -1,7 +1,7 @@
 # PartyLAN 网页端接收反馈驱动的快速自适应实施计划
 
 **日期：** 2026-08-15
-**状态：** 本地验证完成，待广州节点部署
+**状态：** 已实施并部署广州节点，等待真实限速灰度验收
 **设计依据：** `docs/superpowers/specs/2026-08-15-partylan-web-receiver-driven-fast-adaptive-design.md`
 
 ## 控制面与会话绑定红灯
@@ -117,3 +117,7 @@
 - 精确接收损伤连续两个新鲜样本即可首次下降；应用新层后下一新鲜受损样本可按容量跳到可持续层。无接收绑定的发送统计路径仍保留原三样本确认和级联保护。
 - 服务器 Node 测试全部通过，共 `127` 项；控制面 Python 测试全部通过，共 `38` 项。注入脚本与 Python 语法、`git diff --check`、源/部署副本摘要核对均通过。
 - Screego 全补丁干净应用、UI 行为测试与生产构建、Screego Go 测试和 auth race 验证通过；PartyLAN 普通及 `partylan_native_media` Go 全仓测试、前端 Node 测试与生产构建通过。
+- 本地功能提交为 `8c98f8f`。广州节点已切换到不可变镜像 `gamecast-sfu:receiver-adaptive-v1-20260815`，镜像 ID 为 `sha256:6f198f7821aece0e90cd6e967f7eaf687a7108ed75e5213bba97c75f4aff4799`，内嵌 Screego 版本为 `partylan-receiver-adaptive-20260815`。
+- 生产 Nginx 的 `webrtc-stats.js` 实际缓存键仍为 `v=3`，因此按线上事实精确替换为 `v=5`；同时将 adaptive 与 inject 分别替换为 `v=7` 和 `v=6.27`。未用维护配置覆盖生产证书、监听端口或公网路由。
+- 独立回滚目录为 `/root/screego/backups/receiver-fast-adaptive-20260815T170032+0800`，包含部署前后静态资源、控制面、Nginx、Compose、镜像、容器、systemd 和摘要记录；staging 位于 `/root/screego/staging/receiver-fast-adaptive-20260815T1658`。
+- 部署后 Nginx、控制面、Screego、屏幕 SFU和语音 SFU均正常；屏幕 SFU PID 与语音 SFU 容器/PID 未变化。公网资源摘要与本地一致，Edge 冒烟确认精确 session 钩子已加载、策略为 `adaptive-per-peer-v5`、版本化资源全部返回 `200` 且控制台无错误或警告。
