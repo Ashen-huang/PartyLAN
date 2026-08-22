@@ -17,6 +17,9 @@
   var SFU_SHARE_START_TIMEOUT_MS = 15000;
   var RECOVERY_STABLE_MS = 20000;
   var RECOVERY_BITRATE_STEPS = [6000000, 8000000];
+  var PEER_DISCONNECTED_GRACE_MS = 12000;
+  var PEER_ORPHAN_GRACE_MS = 12000;
+  var PRESENCE_RECOVERY_MAX_FAILURES = 3;
   var NativeWebSocket = window.WebSocket;
   var NativeRTCPeerConnection = window.RTCPeerConnection;
   if (!window.__PARTYLAN_NATIVE_RTC_PEER_CONNECTION__ && NativeRTCPeerConnection) {
@@ -60,6 +63,9 @@
   var webPresenceTimer = 0;
   var webPresenceRefreshTimer = 0;
   var webPresenceMembers = [];
+  var webPresenceRecoveryPromise = null;
+  var webPresenceRecoveryFailures = 0;
+  var webPresenceRecoveryGeneration = 0;
   var webShareLease = null;
   var webShareHeartbeatTimer = 0;
   var webShareSafetyTimer = 0;
@@ -196,21 +202,85 @@
     return /^[a-zA-Z0-9._:\-]{1,128}$/.test(value) ? value : '';
   }
 
+  function clearPeerQualityState(pc) {
+    if (!pc) return;
+    pc._gcAdaptiveState = null;
+    pc._gcAdaptivePrev = null;
+    pc._gcAdaptiveProfile = null;
+    pc._gcAdaptiveLastSample = null;
+    pc._gcAdaptivePendingDecision = '';
+    pc._gcQualityState = null;
+    pc._gcProtectionMaxBitrate = 0;
+    pc._gcProtectionMaxWidth = 0;
+    pc._gcProtectionMaxHeight = 0;
+    pc._gcProtectionRecoveryStep = 0;
+    pc._gcProtectionChangedAt = 0;
+    pc._gcStatsSnapshot = null;
+    pc._gcTelemetryReasonLatch = null;
+    pc._gcReceiverParticipantId = '';
+  }
+
+  function resetPeerQualityState(pc) {
+    if (!pc) return;
+    clearPeerQualityState(pc);
+    pc._gcAdaptiveState = createCurrentAdaptiveState(Date.now());
+    pc._gcQualityState = typeof GameCastWebRTCQuality !== 'undefined'
+      ? GameCastWebRTCQuality.createQualityState(Date.now())
+      : null;
+    pc._gcLifecycleCleaned = false;
+    pc._gcLifecycleOrphaned = false;
+    pc._gcOrphanedSince = 0;
+    pc._gcDisconnectedSince = 0;
+  }
+
+  function clearPeerLifecycleTimers(pc) {
+    if (!pc) return;
+    if (pc._gcDisconnectedTimer) {
+      clearTimeout(pc._gcDisconnectedTimer);
+      pc._gcDisconnectedTimer = 0;
+    }
+    if (pc._gcOrphanedTimer) {
+      clearTimeout(pc._gcOrphanedTimer);
+      pc._gcOrphanedTimer = 0;
+    }
+  }
+
+  function cleanupPeerConnectionState(pc, close, reason) {
+    if (!pc || pc._gcLifecycleCleanupInProgress) return false;
+    pc._gcLifecycleCleanupInProgress = true;
+    var sessionId = normalizeScreegoSessionId(pc._gcScreegoSessionId);
+    if (sessionId && screegoPeerSessions[sessionId] === pc) delete screegoPeerSessions[sessionId];
+    if (sessionId) delete adaptiveQualitySnapshot[sessionId];
+    clearPeerLifecycleTimers(pc);
+    var index = activePCs.indexOf(pc);
+    if (index >= 0) activePCs.splice(index, 1);
+    clearPeerQualityState(pc);
+    pc._gcScreegoSessionId = '';
+    pc._gcScreegoPeerId = '';
+    pc._gcScreegoRole = '';
+    pc._gcLifecycleOrphaned = false;
+    pc._gcLifecycleCleaned = true;
+    if (reason) console.log('[GameCast] 清理媒体会话:', reason, getTrackedPeerId(pc));
+    if (close && String(pc.connectionState || '').toLowerCase() !== 'closed') {
+      try { pc.close(); } catch (e) {}
+    }
+    return true;
+  }
+
   function handleScreegoPeerSession(metadata) {
     metadata = metadata || {};
     var sessionId = normalizeScreegoSessionId(metadata.sid);
     var pc = metadata.pc;
     if (!sessionId || !pc) return false;
     if (metadata.action === 'close') {
-      if (screegoPeerSessions[sessionId] === pc) delete screegoPeerSessions[sessionId];
-      delete adaptiveQualitySnapshot[sessionId];
-      if (pc._gcScreegoSessionId === sessionId) {
-        pc._gcScreegoSessionId = '';
-        pc._gcScreegoPeerId = '';
-        pc._gcScreegoRole = '';
-      }
+      cleanupPeerConnectionState(pc, false, 'session-close');
       return true;
     }
+    var existingPeer = screegoPeerSessions[sessionId];
+    if (existingPeer && existingPeer !== pc) cleanupPeerConnectionState(existingPeer, true, 'session-replaced');
+    pc._gcLifecycleCleaned = false;
+    pc._gcLifecycleOrphaned = false;
+    pc._gcLifecycleCleanupInProgress = false;
     pc._gcScreegoSessionId = sessionId;
     pc._gcScreegoPeerId = String(metadata.peerId || '').slice(0, 128);
     pc._gcScreegoRole = metadata.role === 'host' ? 'host' : 'viewer';
@@ -345,6 +415,53 @@
     return merged;
   }
 
+  function hasWebPresenceParticipant(participantId) {
+    participantId = String(participantId || '').trim();
+    if (!participantId) return false;
+    return webPresenceMembers.some(function (participant) {
+      return participant && participant.participantId === participantId;
+    });
+  }
+
+  function getPeerReceiverParticipantId(pc) {
+    if (!pc) return '';
+    if (pc._gcReceiverParticipantId) return pc._gcReceiverParticipantId;
+    var sessionId = normalizeScreegoSessionId(pc._gcScreegoSessionId);
+    var sample = sessionId ? adaptiveQualitySnapshot[sessionId] : null;
+    return String(sample && sample.participantId || '').trim();
+  }
+
+  function reconcileOrphanedPeerConnections() {
+    if (!activeDisplayStream || !Array.isArray(webPresenceMembers)) return;
+    var now = Date.now();
+    activePCs.slice().forEach(function (pc) {
+      if (!pc || pc._gcLifecycleCleaned || pc._gcScreegoRole !== 'host') return;
+      var participantId = getPeerReceiverParticipantId(pc);
+      if (!participantId || participantId === getWebParticipantId()) return;
+      if (hasWebPresenceParticipant(participantId)) {
+        pc._gcLifecycleOrphaned = false;
+        pc._gcOrphanedSince = 0;
+        if (pc._gcOrphanedTimer) {
+          clearTimeout(pc._gcOrphanedTimer);
+          pc._gcOrphanedTimer = 0;
+        }
+        return;
+      }
+      pc._gcLifecycleOrphaned = true;
+      if (!pc._gcOrphanedSince) pc._gcOrphanedSince = now;
+      if (!pc._gcOrphanedTimer) {
+        pc._gcOrphanedTimer = setTimeout(function () {
+          pc._gcOrphanedTimer = 0;
+          if (
+            !pc._gcLifecycleCleaned &&
+            pc._gcLifecycleOrphaned &&
+            Date.now() - pc._gcOrphanedSince >= PEER_ORPHAN_GRACE_MS
+          ) cleanupPeerConnectionState(pc, true, 'presence-orphan');
+        }, PEER_ORPHAN_GRACE_MS);
+      }
+    });
+  }
+
   function webCanStartShare(state) {
     if (!state || !state.sharing) return true;
     return state.shareOwnerParticipantId === getWebParticipantId();
@@ -383,6 +500,39 @@
     });
   }
 
+  function recoverWebPresence(roomId) {
+    roomId = String(roomId || currentRoomId() || '').trim();
+    if (!roomId) return Promise.resolve(null);
+    if (webPresenceRecoveryPromise) return webPresenceRecoveryPromise;
+    var generation = webPresenceRecoveryGeneration;
+    webPresenceRecoveryPromise = Promise.resolve().then(function () {
+      webPresenceRoom = '';
+      return ensureWebPresence(roomId);
+    }).then(function (data) {
+      if (generation !== webPresenceRecoveryGeneration) return null;
+      if (!data) throw new Error('presence_recovery_failed');
+      webPresenceRecoveryFailures = 0;
+      if (activeDisplayStream && webShareLease) return heartbeatWebShare().then(function () {
+        if (!webShareLease) throw new Error('share_lease_invalid');
+        return refreshWebPresence().then(function (refreshed) {
+          if (!refreshed) throw new Error('presence_refresh_failed');
+          return data;
+        });
+      });
+      return data;
+    }).catch(function (error) {
+      webPresenceRecoveryFailures += 1;
+      console.warn('[GameCast/control] Presence 自愈失败', webPresenceRecoveryFailures, error && error.message || error);
+      if (activeDisplayStream && webPresenceRecoveryFailures >= PRESENCE_RECOVERY_MAX_FAILURES) {
+        return stopWebShare(false).then(function () { return null; });
+      }
+      return null;
+    }).finally(function () {
+      webPresenceRecoveryPromise = null;
+    });
+    return webPresenceRecoveryPromise;
+  }
+
   function refreshWebPresence() {
     var roomId = currentRoomId();
     if (!roomId || webPresenceRoom !== roomId) return Promise.resolve(null);
@@ -391,8 +541,17 @@
       if (data.room) rememberRoomState(data.room);
       renderWebPresenceMembers();
       syncShareButtonAvailability();
+      reconcileOrphanedPeerConnections();
+      if (activeDisplayStream && Array.isArray(data.participants) && !hasWebPresenceParticipant(getWebParticipantId())) {
+        recoverWebPresence(roomId);
+      }
       return data;
-    }).catch(function () { return null; });
+    }).catch(function (error) {
+      if (activeDisplayStream && !(error && error.code === 'not_authenticated')) {
+        recoverWebPresence(roomId);
+      }
+      return null;
+    });
   }
 
   function heartbeatWebPresence() {
@@ -403,8 +562,10 @@
       body: JSON.stringify({ room: roomId, participantId: getWebParticipantId(), ttl: ROOM_STATE_TTL })
     }).catch(function (error) {
       if (error && error.code === 'participant_not_found') {
-        webPresenceRoom = '';
-        return ensureWebPresence(roomId);
+        return recoverWebPresence(roomId);
+      }
+      if (activeDisplayStream && !(error && error.code === 'not_authenticated')) {
+        return recoverWebPresence(roomId);
       }
       return null;
     });
@@ -423,6 +584,8 @@
 
   function leaveWebPresence(useBeacon) {
     var roomId = webPresenceRoom;
+    webPresenceRecoveryGeneration += 1;
+    webPresenceRecoveryFailures = 0;
     if (webPresenceTimer) clearInterval(webPresenceTimer);
     if (webPresenceRefreshTimer) clearInterval(webPresenceRefreshTimer);
     webPresenceTimer = 0;
@@ -614,6 +777,7 @@
       activeDisplayStream = null;
       activeVideoTrack = null;
       activeCaptureAudioMode = 'off';
+      closeActivePeerConnections('share-stop');
       resetAdaptiveStreamingState();
       return releaseWebShare(useBeacon);
     }).finally(function () {
@@ -639,6 +803,7 @@
     sfuDisconnect();
     stopDisplayStreamTracks(failedStream);
     notifyDisplayStreamEnded(failedStream);
+    closeActivePeerConnections('share-abort');
     resetAdaptiveStreamingState();
     showSfuStatus('错误: ' + (error && error.code || 'sfu_unavailable'));
     webShareAbortPromise = releaseWebShare(false).finally(function () {
@@ -702,10 +867,7 @@
     adaptiveServerBudgetPeerCount = 0;
     clearAdaptiveQualitySnapshot();
     activePCs.forEach(function (pc) {
-      pc._gcAdaptiveState = createCurrentAdaptiveState(Date.now());
-      pc._gcAdaptivePrev = null;
-      pc._gcAdaptiveProfile = null;
-      pc._gcAdaptivePendingDecision = '';
+      resetPeerQualityState(pc);
     });
   }
 
@@ -776,6 +938,7 @@
 
   function peerConnectionLooksUsable(pc) {
     if (!pc) return false;
+    if (pc._gcLifecycleCleaned || pc._gcLifecycleOrphaned) return false;
     var state = (pc.connectionState || '').toLowerCase();
     return state !== 'closed' && state !== 'failed';
   }
@@ -951,7 +1114,7 @@
     var descriptors = [];
     var seen = [];
     activePCs.forEach(function (pc) {
-      if (!shouldUseAdaptiveStreaming(pc) || seen.indexOf(pc) >= 0) return;
+      if (!shouldUseAdaptiveStreaming(pc) || pc._gcLifecycleOrphaned || seen.indexOf(pc) >= 0) return;
       seen.push(pc);
       descriptors.push({pc: pc, mode: 'native-host'});
     });
@@ -1046,7 +1209,8 @@
     var roomId = currentRoomId();
     if (
       !activeDisplayStream || !webShareLease ||
-      webShareLease.mediaMode !== 'legacy-p2p' || !roomId || !canSendProtectedControl()
+      webShareLease.mediaMode !== 'legacy-p2p' || !roomId || !canSendProtectedControl() ||
+      webPresenceRecoveryPromise
     ) {
       clearAdaptiveQualitySnapshot();
       return Promise.resolve(null);
@@ -1102,7 +1266,7 @@
 
   function sampleAdaptiveStreamingPeer(descriptor) {
     var pc = descriptor && descriptor.pc;
-    if (!shouldUseAdaptiveStreaming(pc) || pc._gcAdaptiveFetchPromise) return;
+    if (!shouldUseAdaptiveStreaming(pc) || pc._gcAdaptiveFetchPromise || webPresenceRecoveryPromise) return;
     var adaptiveState = pc._gcAdaptiveState || createCurrentAdaptiveState(Date.now());
     var adaptiveProfile = computePeerAdaptiveProfile(pc);
     var nextAdaptiveProfile = adaptiveState && adaptiveState.level > 0
@@ -1153,6 +1317,9 @@
 
       var now = Date.now();
       var receiverQuality = receiverQualityForPeer(pc, now);
+      if (receiverQuality && receiverQuality.participantId) {
+        pc._gcReceiverParticipantId = receiverQuality.participantId;
+      }
       var previousAdaptivePath = pc._gcAdaptiveLastSample
         ? pc._gcAdaptiveLastSample.path || 'unknown'
         : 'unknown';
@@ -1275,9 +1442,9 @@
   }
 
   function sampleAdaptiveStreaming() {
-    if (!activeDisplayStream) return;
+    if (!activeDisplayStream || webPresenceRecoveryPromise) return;
     refreshAdaptiveQualitySnapshot().finally(function () {
-      if (!activeDisplayStream) return;
+      if (!activeDisplayStream || webPresenceRecoveryPromise) return;
       var descriptors = getAdaptivePeerDescriptors();
       var budgetedPeerCount = countServerBudgetedAdaptivePeers(descriptors);
       if (budgetedPeerCount !== adaptiveServerBudgetPeerCount) {
@@ -1643,10 +1810,12 @@
     window.WebSocket = WrappedWebSocket;
   }
 
-  function closeActivePeerConnections() {
+  function closeActivePeerConnections(reason) {
     activePCs.slice().forEach(function (pc) {
-      try { pc.close(); } catch (e) {}
+      cleanupPeerConnectionState(pc, true, reason || 'share-stop');
     });
+    screegoPeerSessions = Object.create(null);
+    clearAdaptiveQualitySnapshot();
   }
 
   function closeRoomSocket() {
@@ -2077,6 +2246,7 @@
       var inRoom = !!roomId;
       if (!inRoom) {
         if (activeDisplayStream) stopRoomStateHeartbeat();
+        if (!activeDisplayStream) closeActivePeerConnections('room-exit');
         resetAdaptiveStreamingState();
         if (activeDisplayStream || webShareLease) stopWebShare(false);
         else sfuDisconnect();
@@ -2417,13 +2587,25 @@
           pc._gcAdaptiveState = createCurrentAdaptiveState(Date.now());
           pc._gcAdaptivePrev = null;
         }
-        if (['closed', 'failed'].indexOf(pc.connectionState) >= 0) {
-          var sessionId = normalizeScreegoSessionId(pc._gcScreegoSessionId);
-          if (sessionId && screegoPeerSessions[sessionId] === pc) {
-            delete screegoPeerSessions[sessionId];
-            delete adaptiveQualitySnapshot[sessionId];
+        if (pc.connectionState === 'connected') {
+          pc._gcDisconnectedSince = 0;
+          if (pc._gcDisconnectedTimer) {
+            clearTimeout(pc._gcDisconnectedTimer);
+            pc._gcDisconnectedTimer = 0;
           }
-          var i = activePCs.indexOf(pc); if (i >= 0) activePCs.splice(i, 1);
+        } else if (pc.connectionState === 'disconnected' && !pc._gcDisconnectedTimer) {
+          pc._gcDisconnectedSince = Date.now();
+          pc._gcDisconnectedTimer = setTimeout(function () {
+            pc._gcDisconnectedTimer = 0;
+            if (
+              !pc._gcLifecycleCleaned &&
+              String(pc.connectionState || '').toLowerCase() === 'disconnected' &&
+              Date.now() - pc._gcDisconnectedSince >= PEER_DISCONNECTED_GRACE_MS
+            ) cleanupPeerConnectionState(pc, true, 'disconnected-timeout');
+          }, PEER_DISCONNECTED_GRACE_MS);
+        }
+        if (['closed', 'failed'].indexOf(pc.connectionState) >= 0) {
+          cleanupPeerConnectionState(pc, false, 'connection-' + pc.connectionState);
         }
         setTimeout(applyAll, 500);
       });

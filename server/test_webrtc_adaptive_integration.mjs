@@ -118,3 +118,35 @@ test('server budget count changes reapply every relayed peer profile', () => {
   assert.match(sampler, /isServerBudgetedAdaptivePeer\(descriptor\)/);
   assert.match(sampler, /applyAdaptiveProfile\(\s*descriptor\.pc,\s*'server-budget:'/);
 });
+
+test('share lifecycle reset clears quality and ICE protection state', () => {
+  const reset = inject.slice(
+    inject.indexOf('function clearPeerQualityState'),
+    inject.indexOf('function getSfuPeerConnection'),
+  );
+  assert.match(reset, /pc\._gcQualityState\s*=\s*null/);
+  assert.match(reset, /pc\._gcProtectionMaxBitrate\s*=\s*0/);
+  assert.match(reset, /pc\._gcProtectionMaxWidth\s*=\s*0/);
+  assert.match(reset, /pc\._gcProtectionMaxHeight\s*=\s*0/);
+  assert.match(reset, /pc\._gcProtectionRecoveryStep\s*=\s*0/);
+  assert.match(inject, /closeActivePeerConnections\(\s*'share-stop'\s*\)/);
+});
+
+test('peer lifecycle removes replaced, disconnected and orphaned sessions individually', () => {
+  assert.match(inject, /function cleanupPeerConnectionState\(pc,/);
+  assert.match(inject, /cleanupPeerConnectionState\(existingPeer,\s*true,\s*'session-replaced'\)/);
+  assert.match(inject, /cleanupPeerConnectionState\(pc,\s*false,\s*'session-close'\)/);
+  assert.match(inject, /PEER_DISCONNECTED_GRACE_MS/);
+  assert.match(inject, /_gcOrphanedSince/);
+  assert.match(inject, /reconcileOrphanedPeerConnections\(\)/);
+});
+
+test('sharing presence loss self-heals before stopping media', () => {
+  assert.match(inject, /function recoverWebPresence\(roomId\)/);
+  assert.match(inject, /activeDisplayStream\s*&&[\s\S]*!hasWebPresenceParticipant/);
+  assert.match(inject, /recoverWebPresence\(roomId\)/);
+  assert.match(inject, /PRESENCE_RECOVERY_MAX_FAILURES/);
+  assert.match(inject, /stopWebShare\(false\)/);
+  assert.match(inject, /webPresenceRecoveryPromise/);
+  assert.match(inject, /!activeDisplayStream\s*\|\|\s*webPresenceRecoveryPromise/);
+});
