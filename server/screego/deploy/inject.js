@@ -689,6 +689,7 @@
       if (error && (error.code === 'share_lease_expired' || error.code === 'share_lease_invalid')) {
         clearWebShareTimers();
         webShareLease = null;
+        if (activeDisplayStream) stopWebShare(false);
       }
       return null;
     });

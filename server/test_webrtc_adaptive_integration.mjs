@@ -150,3 +150,9 @@ test('sharing presence loss self-heals before stopping media', () => {
   assert.match(inject, /webPresenceRecoveryPromise/);
   assert.match(inject, /!activeDisplayStream\s*\|\|\s*webPresenceRecoveryPromise/);
 });
+
+test('expired share leases stop media and clear the session lifecycle', () => {
+  assert.match(inject, /share_lease_expired.*share_lease_invalid/);
+  assert.match(inject, /webShareLease\s*=\s*null;[\s\S]*if\s*\(activeDisplayStream\)\s*stopWebShare\(false\)/);
+  assert.match(inject, /closeActivePeerConnections\('share-stop'\)/);
+});
