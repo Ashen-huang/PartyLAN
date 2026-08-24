@@ -511,6 +511,12 @@
     var unified = applyRoomMediaMode(lastRoomState);
     anchors.forEach(function (anchor) { anchor.replaceChildren(); });
     if (!currentRoomId() || !unified || !webPresenceMembers.length) {
+      if (drawerAnchor && currentRoomId() && !webPresenceMembers.length) {
+        var empty = document.createElement('div');
+        empty.className = 'gc-hover-empty';
+        empty.textContent = unified ? '暂无在线成员' : '正在同步房间成员';
+        drawerAnchor.appendChild(empty);
+      }
       syncWebHoverSharePanel();
       return;
     }
@@ -722,7 +728,6 @@
     if (window.matchMedia) webHoverToolsMediaQuery = window.matchMedia('(hover: none), (pointer: coarse)');
     bindWebHoverTools(root);
     syncWebHoverSharePanel();
-    renderWebPresenceMembers();
     return root;
   }
 
@@ -730,11 +735,12 @@
     var roomId = currentRoomId();
     var stateRoom = String(lastRoomState && lastRoomState.room || '').trim();
     var unified = !!roomId && sameRoomId(stateRoom, roomId) && isUnifiedSfuRoom(lastRoomState);
-    if (!roomId || !unified) {
+    if (!roomId) {
       destroyWebHoverTools();
       return;
     }
-    ensureWebHoverTools(roomId);
+    var root = ensureWebHoverTools(roomId);
+    if (root) root.setAttribute('data-gc-unified', unified ? '1' : '0');
     syncWebHoverSharePanel();
   }
 
@@ -4189,6 +4195,7 @@
       '#gc-hover-tools .gc-presence-member { display:flex; align-items:center; justify-content:space-between; gap:9px; min-width:0; padding:7px 8px; border:1px solid rgba(148,163,184,.13); border-radius:9px; background:rgba(255,255,255,.05); font-size:11px; line-height:1.35; }' +
       '#gc-hover-tools .gc-presence-member-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#f8fafc; }' +
       '#gc-hover-tools .gc-presence-member-meta { flex:0 0 auto; max-width:132px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#94a3b8; font-size:10px; }' +
+      '#gc-hover-tools .gc-hover-empty { padding:12px 4px 4px; color:#64748b; font-size:11px; line-height:1.45; }' +
       '#partylan-presence-roster .gc-presence-member { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:4px 0; font-size:13px; line-height:1.45; }' +
       '#partylan-presence-roster .gc-presence-member-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#f8fafc; }' +
       '#partylan-presence-roster .gc-presence-member-meta { flex-shrink:0; color:#94a3b8; font-size:11px; }' +

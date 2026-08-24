@@ -624,7 +624,7 @@ test('web hover tools stay outside the viewing layout and preserve diagnostics',
 test('versioned assets load inject before the SFU client without exposing sensitive material', () => {
   const replacement = nginxSource.match(/sub_filter '<\/head>' '([^']+)<\/head>'/);
   assert.ok(replacement);
-  assert.ok(replacement[1].indexOf('/inject.js?v=6.30') >= 0);
+  assert.ok(replacement[1].indexOf('/inject.js?v=6.31') >= 0);
   assert.ok(replacement[1].indexOf('/sfu-client.js?v=1.9') >= 0);
   assert.ok(replacement[1].indexOf('/inject.js') < replacement[1].indexOf('/sfu-client.js'));
 

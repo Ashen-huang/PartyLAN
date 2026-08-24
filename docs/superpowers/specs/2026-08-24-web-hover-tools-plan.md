@@ -72,11 +72,11 @@ node --test (Get-ChildItem server -Filter 'test_*.mjs' | Select-Object -ExpandPr
 
 ## 任务六：缓存版本、构建与线上灰度
 
-- 将 `nginx-screego.conf` 和生产配置中的注入脚本缓存版本从 `v6.29` 升级到 `v6.30`。
+- 将 `nginx-screego.conf` 和生产配置中的注入脚本缓存版本从 `v6.30` 升级到 `v6.31`。
 - 运行 `git diff --check`、全套网页 Node 测试和生产构建。
 - 线上部署前确认无活动房间，备份 `/var/www/screego/inject.js`、`/root/screego/frontend/inject.js`、生产 Nginx 配置及进程/容器状态。
 - 只原子替换网页注入脚本和生产配置中的缓存版本，执行 `nginx -t` 与平滑 reload；不重启 SFU、控制面、语音服务或容器。
-- 线上验证 `inject.js?v=6.30` 摘要、统一/非统一房间显示、诊断面板、观看区尺寸和近期 5xx。
+- 线上验证 `inject.js?v=6.31` 摘要、统一/非统一房间显示、诊断面板、观看区尺寸和近期 5xx。
 - 保留带时间戳的回滚备份，部署记录写入本计划文档。
 
 ## 执行记录
@@ -90,4 +90,6 @@ node --test (Get-ChildItem server -Filter 'test_*.mjs' | Select-Object -ExpandPr
   - 生产 Nginx 仅将 `inject.js?v=6.29` 更新为 `v6.30`，`nginx -t` 通过并平滑 reload。
   - 屏幕/语音容器、注册进程 PID `437977`、Screego PID `438580` 和 Nginx master PID `62312` 保持不变；5053/5054 健康检查通过，近期无新增 5xx。
   - 部署前后活动房间数均为 `0`。
-  - 回滚备份：`/root/screego/backups/web-hover-tools-20260824T110711+0800`；暂存目录：`/root/screego/staging/web-hover-tools-20260824T110711+0800`。
+- 回滚备份：`/root/screego/backups/web-hover-tools-20260824T110711+0800`；暂存目录：`/root/screego/staging/web-hover-tools-20260824T110711+0800`。
+- 修正版 `v6.31` 于 2026-08-24 13:41（+08:00）部署：修复侧栏首次创建时的成员渲染递归；房间 URL 存在但统一状态尚未确认时保留边缘手柄，统一状态确认后启用成员和共享控制。
+- 修正版摘要：`ae8059e11645029f16c21c3089e7d2bf08c02fe2e0557cf2bb268b9ec3f24704`；回滚备份：`/root/screego/backups/web-hover-tools-20260824T134100+0800`；暂存目录：`/root/screego/staging/web-hover-tools-20260824T134100+0800`。
