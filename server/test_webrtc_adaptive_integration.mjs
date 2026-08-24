@@ -65,6 +65,16 @@ test('monitor samples every connected video sender independently', () => {
   assert.match(inject, /evaluateAdaptiveSample\(adaptiveState, adaptiveSample\)/);
 });
 
+test('hidden share pages freeze adaptive sampling until fresh feedback returns', () => {
+  const sampler = inject.slice(
+    inject.indexOf('function pauseAdaptiveStreamingEvidence()'),
+    inject.indexOf('function startAdaptiveStreamingMonitor()'),
+  );
+  assert.match(sampler, /document\.visibilityState\s*===\s*'hidden'/);
+  assert.match(sampler, /pauseAdaptiveState/);
+  assert.match(sampler, /return/);
+});
+
 test('native peer sessions bind receiver reports to the exact sender connection', () => {
   assert.match(inject, /__PARTYLAN_REGISTER_PEER_SESSION__/);
   assert.match(inject, /QUALITY_SNAPSHOT_URL/);
@@ -91,6 +101,18 @@ test('adaptive decisions are reported as edge events with profile metadata', () 
   assert.match(inject, /adaptiveScale:\s*adaptiveProfile\.scaleResolutionDownBy/);
   assert.match(inject, /adaptiveNominalBitrate:\s*adaptiveProfile\.nominalBitrate/);
   assert.match(inject, /adaptiveDegradeFloorBitrate:\s*adaptiveProfile\.degradeFloorBitrate/);
+});
+
+test('relay load diagnostics use the active adaptive ceiling instead of the configured target', () => {
+  const diagnostics = inject.slice(
+    inject.indexOf('var adaptiveTargetKbpsValue'),
+    inject.indexOf('var serverLoadRatio', inject.indexOf('var adaptiveTargetKbpsValue')),
+  );
+  assert.match(
+    diagnostics,
+    /currentFlowKbps\s*=\s*Math\.max\(adaptiveTargetKbpsValue,\s*upKbpsValue\s*\|\|\s*0,\s*downKbpsValue\s*\|\|\s*0\)/,
+  );
+  assert.doesNotMatch(diagnostics, /Math\.max\(targetKbpsValue,/);
 });
 
 test('adaptive budget uses the Guangzhou server profile and only relayed paths', () => {

@@ -1442,10 +1442,31 @@
     });
   }
 
+  function pauseAdaptiveStreamingEvidence() {
+    if (
+      typeof GameCastWebRTCAdaptive === 'undefined' ||
+      typeof GameCastWebRTCAdaptive.pauseAdaptiveState !== 'function'
+    ) return;
+    getAdaptivePeerDescriptors().forEach(function (descriptor) {
+      if (!descriptor.pc._gcAdaptiveState) return;
+      descriptor.pc._gcAdaptiveState = GameCastWebRTCAdaptive.pauseAdaptiveState(
+        descriptor.pc._gcAdaptiveState
+      );
+    });
+  }
+
   function sampleAdaptiveStreaming() {
     if (!activeDisplayStream || webPresenceRecoveryPromise) return;
+    if (document.visibilityState === 'hidden') {
+      pauseAdaptiveStreamingEvidence();
+      return;
+    }
     refreshAdaptiveQualitySnapshot().finally(function () {
       if (!activeDisplayStream || webPresenceRecoveryPromise) return;
+      if (document.visibilityState === 'hidden') {
+        pauseAdaptiveStreamingEvidence();
+        return;
+      }
       var descriptors = getAdaptivePeerDescriptors();
       var budgetedPeerCount = countServerBudgetedAdaptivePeers(descriptors);
       if (budgetedPeerCount !== adaptiveServerBudgetPeerCount) {
@@ -3593,7 +3614,7 @@
       var adaptiveTargetKbpsValue = Math.round(
         (adaptiveProfile && adaptiveProfile.maxBitrate ? adaptiveProfile.maxBitrate : computeTargetBitrate()) / 1000
       );
-      var currentFlowKbps = Math.max(targetKbpsValue, upKbpsValue || 0, downKbpsValue || 0);
+      var currentFlowKbps = Math.max(adaptiveTargetKbpsValue, upKbpsValue || 0, downKbpsValue || 0);
       var estimatedMembers = Math.max(1, getMemberCountEstimate());
       var estimatedViewers = Math.max(1, estimatedMembers - 1);
       var sfuSuggested = Math.max(1, Math.floor((SERVER_PROFILE.safeNetMbps * 1000) / Math.max(1, currentFlowKbps)));

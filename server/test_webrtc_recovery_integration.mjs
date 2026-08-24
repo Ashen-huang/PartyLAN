@@ -156,9 +156,9 @@ test('deployed telemetry resource versions and load order are exact', () => {
   assert.deepEqual(scripts, [
     'webrtc-stats.js?v=5',
     'webrtc-quality.js?v=2',
-    'webrtc-adaptive.js?v=7',
+    'webrtc-adaptive.js?v=8',
     'web-share-audio.js?v=2',
-    'inject.js?v=6.27',
+    'inject.js?v=6.28',
     'sfu-client.js?v=1.9',
   ]);
 });

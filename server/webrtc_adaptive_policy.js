@@ -5,7 +5,7 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
-  var POLICY_VERSION = 'adaptive-per-peer-v5';
+  var POLICY_VERSION = 'adaptive-per-peer-v6';
   var BASELINE_POLICY_VERSION = 'browser-bwe-baseline-v1';
   var OBSERVATION_MS = 4000;
   var WINDOW_SIZE = 3;
@@ -23,7 +23,6 @@
   var RECEIVER_DECODE_RATIO = 0.5;
   var RECEIVER_HEALTHY_RATIO = 0.75;
   var RECEIVER_JITTER_LIMIT_MS = 100;
-  var PROBE_IMPROVEMENT_RATIO = 1.15;
   var DEFAULT_MAX_LEVEL = 6;
   var NOMINAL_BITRATE_RATIO = 0.75;
   var DEGRADE_FLOOR_RATIO = 0.65;
@@ -55,6 +54,7 @@
       maxLevel: DEFAULT_MAX_LEVEL,
       lastDownshiftAvailableBitrate: 0,
       lastDownshiftReceiverDriven: false,
+      lastDownshiftPressure: '',
       fastDownshiftReadyAt: 0,
       receiverJitterEwma: 0,
       receiverStatus: 'unavailable',
@@ -69,7 +69,9 @@
       probeBaselineDecodedFps: 0,
       probeBaselineIncomingKbps: 0,
       probeReceiverRequired: false,
+      probePressure: '',
       probeFailureCount: 0,
+      pressure: 'unavailable',
       lastDecision: null
     };
   }
@@ -86,6 +88,7 @@
       stableSince: null,
       lastDownshiftAvailableBitrate: 0,
       lastDownshiftReceiverDriven: false,
+      lastDownshiftPressure: '',
       fastDownshiftReadyAt: 0,
       receiverJitterEwma: 0,
       receiverStatus: 'unavailable',
@@ -100,9 +103,31 @@
       probeBaselineDecodedFps: 0,
       probeBaselineIncomingKbps: 0,
       probeReceiverRequired: false,
+      probePressure: '',
       probeFailureCount: 0,
+      pressure: 'unavailable',
       lastDecision: null
     });
+  }
+
+  function pauseAdaptiveState(current) {
+    var state = Object.assign({}, current, {
+      status: current && current.probeFromLevel !== null && current.probeFromLevel !== undefined
+        ? 'probing'
+        : 'feedback-paused',
+      window: [],
+      badCount: 0,
+      stableSince: null,
+      receiverJitterEwma: 0,
+      receiverStatus: 'unavailable',
+      receiverReason: 'receiver-unavailable',
+      probeBadCount: 0,
+      probeValidCount: 0,
+      probeImprovedCount: 0,
+      pressure: 'unavailable',
+      lastDecision: null
+    });
+    return state;
   }
 
   function finiteNumber(value) {
@@ -139,6 +164,7 @@
     }
 
     var sourceActive = sourceFps >= RECEIVER_ACTIVE_FPS;
+    var senderActive = senderFps >= RECEIVER_ACTIVE_FPS;
     var decodeRatio = senderFps > 0 ? decodedFps / senderFps : 1;
     var receiverLoss = Math.max(0, finiteNumber(sample.receiverLossPercent) || 0);
     var receiverJitter = Math.max(
@@ -147,18 +173,18 @@
         finiteNumber(sample.receiverJitterMs) || 0
     );
     var outboundKbps = Math.max(0, finiteNumber(sample.outboundKbps) || 0);
-    var throughputGap = sourceActive && outboundKbps > 0 && incomingKbps !== null &&
+    var throughputGap = senderActive && outboundKbps > 0 && incomingKbps !== null &&
       incomingKbps < outboundKbps * 0.5;
     var senderDeliveryCollapsed = sourceActive &&
       senderFps < Math.max(RECEIVER_ACTIVE_FPS, sourceFps * RECEIVER_DECODE_RATIO);
-    var decodeImpaired = sourceActive && (
-      decodedFps < RECEIVER_ACTIVE_FPS || decodeRatio < RECEIVER_DECODE_RATIO ||
-      senderDeliveryCollapsed
+    var decodeImpaired = senderActive && (
+      decodedFps < RECEIVER_ACTIVE_FPS || decodeRatio < RECEIVER_DECODE_RATIO
     );
     var transportImpaired = throughputGap &&
       (receiverLoss > 5 || receiverJitter > RECEIVER_JITTER_LIMIT_MS);
     var impaired = decodeImpaired || transportImpaired;
-    var healthyDecode = !sourceActive || decodeRatio >= RECEIVER_HEALTHY_RATIO;
+    var receiverFollowsSender = senderFps <= 0 || decodeRatio >= RECEIVER_HEALTHY_RATIO;
+    var healthyDecode = !sourceActive || receiverFollowsSender;
     var healthy = healthyDecode && receiverLoss < 3 &&
       receiverJitter <= RECEIVER_JITTER_LIMIT_MS;
     var reason = 'receiver-healthy';
@@ -172,6 +198,8 @@
       reason: reason,
       senderFps: senderFps,
       sourceFps: sourceFps,
+      senderCollapsed: senderDeliveryCollapsed,
+      receiverFollowsSender: receiverFollowsSender,
       decodedFps: decodedFps,
       incomingKbps: incomingKbps || 0,
       lossPercent: receiverLoss,
@@ -179,10 +207,27 @@
     };
   }
 
+  function classifyPressure(sample, receiver) {
+    if (!sample.valid || !receiver.bound) return 'unavailable';
+    if (receiver.impaired || sample.receiverImpaired === true) return 'network';
+    if (!receiver.healthy) return 'unavailable';
+    if (
+      receiver.receiverFollowsSender && (
+        String(sample.qualityLimitationReason || '').toLowerCase() === 'cpu' ||
+        receiver.senderCollapsed
+      )
+    ) return 'cpu';
+    return 'healthy';
+  }
+
   function isBadSample(sample) {
     if (!sample.valid) return false;
     var receiver = assessReceiver(sample);
-    if (receiver.bound) return receiver.impaired;
+    if (receiver.bound) {
+      var pressure = classifyPressure(sample, receiver);
+      return pressure === 'cpu' || pressure === 'network';
+    }
+    if (sample.receiverBound === false) return false;
     var nominalKbps = Number(sample.nominalKbps) || Number(sample.profileKbps) || 0;
     var degradeFloorKbps = Number(sample.degradeFloorKbps) || nominalKbps * DEGRADE_FLOOR_RATIO;
     var lowThroughput =
@@ -201,7 +246,8 @@
 
   function isStableSample(sample) {
     var receiver = assessReceiver(sample);
-    if (receiver.bound && !receiver.healthy) return false;
+    if (receiver.bound && classifyPressure(sample, receiver) !== 'healthy') return false;
+    if (sample.receiverBound === false) return false;
     var nominalKbps = Number(sample.nominalKbps) || Number(sample.profileKbps) || 0;
     var degradeFloorKbps = Number(sample.degradeFloorKbps) || nominalKbps * DEGRADE_FLOOR_RATIO;
     var nextNominalKbps = Number(sample.nextNominalKbps) || Number(sample.nextProfileKbps) || nominalKbps;
@@ -221,7 +267,7 @@
 
   function hasIndependentImpairment(sample) {
     var receiver = assessReceiver(sample);
-    return receiver.impaired || sample.receiverImpaired === true ||
+    return classifyPressure(sample, receiver) === 'network' ||
       Number(sample.lossPercent) > 5 || Number(sample.jitterMs) > 100;
   }
 
@@ -249,6 +295,7 @@
     state.probeBaselineDecodedFps = 0;
     state.probeBaselineIncomingKbps = 0;
     state.probeReceiverRequired = false;
+    state.probePressure = '';
   }
 
   function sampleEffectiveCapacityKbps(sample) {
@@ -275,19 +322,6 @@
     return maxLevel;
   }
 
-  function probeImproved(state, sample) {
-    var receiver = assessReceiver(sample);
-    if (!receiver.bound || !receiver.healthy) return false;
-    var decodedThreshold = state.probeBaselineDecodedFps > 0
-      ? Math.max(state.probeBaselineDecodedFps + 2, state.probeBaselineDecodedFps * PROBE_IMPROVEMENT_RATIO)
-      : 0;
-    var incomingThreshold = state.probeBaselineIncomingKbps > 0
-      ? state.probeBaselineIncomingKbps * PROBE_IMPROVEMENT_RATIO
-      : 0;
-    return (decodedThreshold > 0 && receiver.decodedFps >= decodedThreshold) ||
-      (incomingThreshold > 0 && receiver.incomingKbps >= incomingThreshold);
-  }
-
   function rollbackProbe(state, sample) {
     var rollbackLevel = state.probeFromLevel;
     var rollbackDecision = {
@@ -312,6 +346,7 @@
       maxLevel: DEFAULT_MAX_LEVEL,
       lastDownshiftAvailableBitrate: 0,
       lastDownshiftReceiverDriven: false,
+      lastDownshiftPressure: '',
       fastDownshiftReadyAt: 0,
       receiverJitterEwma: 0,
       receiverStatus: 'unavailable',
@@ -326,6 +361,7 @@
       probeBaselineDecodedFps: 0,
       probeBaselineIncomingKbps: 0,
       probeReceiverRequired: false,
+      probePressure: '',
       probeFailureCount: 0
     }, current, {lastDecision: null});
     if (!state.pairId && sample.pairId) {
@@ -350,48 +386,43 @@
       sample.receiverSmoothedJitterMs = state.receiverJitterEwma;
     }
     var receiver = assessReceiver(sample);
+    var pressure = classifyPressure(sample, receiver);
     var receiverReportId = receiver.bound
       ? String(sample.receiverReportedAtUnix || '')
       : '';
     var receiverFresh = !receiverReportId || receiverReportId !== state.lastReceiverReportId;
     if (receiverReportId && receiverFresh) state.lastReceiverReportId = receiverReportId;
-    state.receiverStatus = receiver.bound ? (receiver.impaired ? 'impaired' : 'healthy') : 'unavailable';
+    state.receiverStatus = pressure === 'network'
+      ? 'impaired'
+      : (pressure === 'cpu' || pressure === 'healthy' ? 'healthy' : 'unavailable');
     state.receiverReason = receiver.reason;
-    if (!sample.valid) {
-      if (state.probeFromLevel !== null) {
-        if (state.probeReceiverRequired && !receiver.bound) state.probeBadCount += 1;
-        if (
-          state.probeBadCount >= 2 ||
-          (state.probeReceiverRequired && sample.now >= state.probeUntil)
-        ) return rollbackProbe(state, sample);
-        state.status = 'probing';
-      }
-      return {state: state, decision: null};
+    state.pressure = pressure;
+    if (
+      !sample.valid || sample.receiverBound === false ||
+      (sample.receiverBound === true && !receiver.bound)
+    ) {
+      return {state: pauseAdaptiveState(state), decision: null};
     }
 
     if (state.probeFromLevel !== null) {
-      if (!receiver.bound || receiverFresh) state.probeValidCount += 1;
-      var missingRequiredReceiver = state.probeReceiverRequired && !receiver.bound;
-      if (
-        (!receiver.bound || receiverFresh) &&
-        (isBadSample(sample) || missingRequiredReceiver)
-      ) state.probeBadCount += 1;
-      if (receiverFresh && probeImproved(state, sample)) state.probeImprovedCount += 1;
+      if (!receiver.bound || !receiverFresh || !receiverReportId) {
+        state.status = 'probing';
+        return {state: state, decision: null};
+      }
+      state.probeValidCount += 1;
+      var probePressure = state.probePressure || 'network';
+      if (pressure === probePressure) state.probeBadCount += 1;
+      if (pressure === 'healthy') state.probeImprovedCount += 1;
       if (state.probeBadCount >= 2) {
         return rollbackProbe(state, sample);
       }
       if (sample.now >= state.probeUntil) {
-        if (
-          state.probeReceiverRequired &&
-          (state.probeValidCount < 2 || state.probeImprovedCount < 2)
-        ) {
-          return rollbackProbe(state, sample);
-        }
-        if (state.probeValidCount < 2) {
+        if (state.probeValidCount < 2 || state.probeImprovedCount < 2) {
           state.status = 'probing';
           return {state: state, decision: null};
         }
         var committedFromLevel = state.probeFromLevel;
+        var committedPressure = probePressure;
         var commitDecision = {
           type: 'probe-commit',
           fromLevel: committedFromLevel,
@@ -405,6 +436,7 @@
         state.lastDownshiftAvailableBitrate = 0;
         state.lastDownshiftReceiverDriven = false;
         state.fastDownshiftReadyAt = 0;
+        state.lastDownshiftPressure = state.level === 0 ? '' : committedPressure;
         state.probeFailureCount = 0;
         state.lastDecision = commitDecision;
         clearProbe(state);
@@ -416,10 +448,13 @@
 
     var bad = isBadSample(sample);
     if (
-      bad && receiver.impaired && receiverFresh && state.lastDownshiftReceiverDriven &&
+      pressure === 'network' && receiverFresh && state.lastDownshiftReceiverDriven &&
       sample.now >= state.fastDownshiftReadyAt && state.level < state.maxLevel
     ) {
-      var fastLevel = sustainableLevel(state.level, state.maxLevel, sample);
+      var fastLevel = Math.min(
+        sustainableLevel(state.level, state.maxLevel, sample),
+        state.level + 2
+      );
       if (fastLevel > state.level) {
         var fastDecision = {
           type: 'downshift-fast',
@@ -434,6 +469,7 @@
         state.cooldownUntil = sample.now + DOWNSHIFT_COOLDOWN_MS;
         state.lastDownshiftAvailableBitrate = sampleCapacityBitrate(sample);
         state.lastDownshiftReceiverDriven = false;
+        state.lastDownshiftPressure = 'network';
         state.fastDownshiftReadyAt = 0;
         state.lastDecision = fastDecision;
         return {state: state, decision: fastDecision};
@@ -466,6 +502,7 @@
         state.probeBaselineDecodedFps = receiver.bound ? receiver.decodedFps : 0;
         state.probeBaselineIncomingKbps = receiver.bound ? receiver.incomingKbps : 0;
         state.probeReceiverRequired = receiver.bound;
+        state.probePressure = state.lastDownshiftPressure || 'network';
         state.level = probedLevel;
         state.status = 'probing';
         state.window = [];
@@ -483,7 +520,9 @@
       return {state: state, decision: null};
     }
 
-    var downshiftBad = cascadeAllowsDownshift(state, sample, bad);
+    var downshiftBad = pressure === 'cpu'
+      ? bad
+      : cascadeAllowsDownshift(state, sample, bad);
     state.window = state.window.concat([downshiftBad]).slice(-WINDOW_SIZE);
     state.badCount = state.window.filter(Boolean).length;
     if (sample.now - state.connectedAt < OBSERVATION_MS) {
@@ -496,24 +535,25 @@
       state.badCount >= REQUIRED_BAD &&
       trailing.length === REQUIRED_CONSECUTIVE &&
       trailing.every(Boolean) &&
-      (receiver.impaired || state.window.length === WINDOW_SIZE);
+      (pressure === 'cpu' || pressure === 'network' || state.window.length === WINDOW_SIZE);
 
     if (confirmed && state.level < state.maxLevel) {
       var nextLevel = state.level + 1;
       var downshiftDecision = {
-        type: 'downshift',
+        type: pressure === 'cpu' ? 'downshift-cpu' : 'downshift',
         fromLevel: state.level,
         toLevel: nextLevel
       };
       state.level = nextLevel;
-      state.status = 'degraded-confirmed';
+      state.status = pressure === 'cpu' ? 'degraded-cpu' : 'degraded-confirmed';
       state.window = [];
       state.badCount = 0;
       state.stableSince = null;
       state.cooldownUntil = sample.now + DOWNSHIFT_COOLDOWN_MS;
       state.lastDownshiftAvailableBitrate = sampleCapacityBitrate(sample);
-      state.lastDownshiftReceiverDriven = receiver.impaired;
-      state.fastDownshiftReadyAt = receiver.impaired
+      state.lastDownshiftReceiverDriven = pressure === 'network';
+      state.lastDownshiftPressure = pressure;
+      state.fastDownshiftReadyAt = pressure === 'network'
         ? sample.now + FAST_DOWNSHIFT_SETTLE_MS
         : 0;
       state.lastDecision = downshiftDecision;
@@ -675,6 +715,7 @@
     BASELINE_POLICY_VERSION: BASELINE_POLICY_VERSION,
     resolveAdaptiveMode: resolveAdaptiveMode,
     createAdaptiveState: createAdaptiveState,
+    pauseAdaptiveState: pauseAdaptiveState,
     evaluateAdaptiveSample: evaluateAdaptiveSample,
     computeEncodingProfile: computeEncodingProfile,
     computeSenderDeltas: computeSenderDeltas,
