@@ -1,7 +1,7 @@
 # PartyLAN 跨端兼容默认共享档位与网页窗口捕获回退实施计划
 
 **日期：** 2026-08-24  
-**状态：** 已实施并完成本地验证，等待线上部署确认
+**状态：** 已实施、本地验证并完成广州节点部署
 **设计依据：** `docs/superpowers/specs/2026-08-24-partylan-compatible-default-share-design.md`
 
 ## 任务一：为网页捕获和弹窗时序建立红灯
@@ -87,4 +87,9 @@ go test -tags partylan_native_media ./... -count=1
 - 缓存版本从 `inject.js?v=6.28` 升级为 `inject.js?v=6.29`；未修改自适应策略、SFU、TURN、Presence、语音隔离或客户端最小化窗口还原逻辑。
 - 服务器 Node 测试 `143/143`、Python 测试 `38/38`、前端 Node 测试 `40/40`、前端生产构建、普通 Go 全仓测试和 `partylan_native_media` Go 全仓测试全部通过。
 - Windows 客户端构建完成：`build/bin/PartyLAN.exe`，大小 `21,591,040` 字节，SHA-256 `D4B8C078209020CEE7C312280C8ACDE2466DB7EDA97DE18CBD51B1DAEFEAF5DB`。
-- 广州节点尚未部署本轮 `inject.js?v=6.29` 和 Nginx 版本变更；部署需用户另行确认。
+- 广州节点（`root@8.134.126.54`）已于 2026-08-24 10:23（+08:00）完成本轮部署：
+  - 网页注入脚本版本为 `inject.js?v=6.29`；`/var/www/screego/inject.js` 与 `/root/screego/frontend/inject.js` SHA-256 均为 `F6D8DBC48D4C615C7651E90F51264D70DA3ACC0822826A2E08E1FBC01A885A48`。
+  - 生产 Nginx `/etc/nginx/conf.d/screego.conf` 只变更 `v6.28 → v6.29`，`nginx -t` 通过并执行平滑 reload。
+  - 屏幕 SFU、语音 SFU、控制面和注册进程均未重启；屏幕容器 `f71be3eb8c6a...`、语音容器 `71cf9a548274...`、注册进程 PID `437977` 与 Screego PID `438580` 保持不变。
+  - 部署前后房间数均为 `0`；5053/5054 健康检查通过，部署后 Nginx 日志未发现新增 5xx。
+  - 线上回滚备份：`/root/screego/backups/compatible-default-share-20260824T102048+0800`；暂存目录：`/root/screego/staging/compatible-default-share-20260824T102048+0800`。
