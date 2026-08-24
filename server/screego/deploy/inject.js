@@ -4464,6 +4464,7 @@
       muts.forEach(function (m) {
         m.addedNodes.forEach(function (nd) {
           if (nd.nodeType !== 1) return;
+          if (nd.id === 'gc-hover-tools' || (nd.closest && nd.closest('#gc-hover-tools'))) return;
           translateNode(nd);
           enhanceSnackbars(nd);
           hideCloseCheckbox(nd);

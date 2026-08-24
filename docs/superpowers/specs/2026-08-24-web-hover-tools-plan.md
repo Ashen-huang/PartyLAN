@@ -72,11 +72,11 @@ node --test (Get-ChildItem server -Filter 'test_*.mjs' | Select-Object -ExpandPr
 
 ## 任务六：缓存版本、构建与线上灰度
 
-- 将 `nginx-screego.conf` 和生产配置中的注入脚本缓存版本从 `v6.30` 升级到 `v6.31`。
+- 将 `nginx-screego.conf` 和生产配置中的注入脚本缓存版本从 `v6.31` 升级到 `v6.32`。
 - 运行 `git diff --check`、全套网页 Node 测试和生产构建。
 - 线上部署前确认无活动房间，备份 `/var/www/screego/inject.js`、`/root/screego/frontend/inject.js`、生产 Nginx 配置及进程/容器状态。
 - 只原子替换网页注入脚本和生产配置中的缓存版本，执行 `nginx -t` 与平滑 reload；不重启 SFU、控制面、语音服务或容器。
-- 线上验证 `inject.js?v=6.31` 摘要、统一/非统一房间显示、诊断面板、观看区尺寸和近期 5xx。
+- 线上验证 `inject.js?v=6.32` 摘要、统一/非统一房间显示、诊断面板、观看区尺寸和近期 5xx。
 - 保留带时间戳的回滚备份，部署记录写入本计划文档。
 
 ## 执行记录
@@ -95,3 +95,4 @@ node --test (Get-ChildItem server -Filter 'test_*.mjs' | Select-Object -ExpandPr
 - 修正版摘要：`ae8059e11645029f16c21c3089e7d2bf08c02fe2e0557cf2bb268b9ec3f24704`；回滚备份：`/root/screego/backups/web-hover-tools-20260824T134100+0800`；暂存目录：`/root/screego/staging/web-hover-tools-20260824T134100+0800`。
 - 13:49 发现维护用 `nginx-screego.conf` 仅监听 `5050`，直接覆盖生产 `/etc/nginx/conf.d/screego.conf` 会移除公网 `80/443`；已从 `/etc/nginx/sites-available/screego` 恢复完整生产 server block，仅保留 `v6.31` 资源版本。修复备份：`/root/screego/backups/public-https-repair-20260824T135200+0800`。
 - 修复后 `80` 正确跳转 HTTPS，公网 `443` TCP 可达，HTTPS 首页返回 `200`，注入资源摘要仍为 `ae8059e11645029f16c21c3089e7d2bf08c02fe2e0557cf2bb268b9ec3f24704`。后续只允许在完整生产配置上做原子版本替换，不得用维护配置覆盖公网 server block。
+- `v6.32` 于 2026-08-24 14:02（+08:00）部署：主 MutationObserver 忽略 `#gc-hover-tools` 子树，避免进入/创建房间时侧栏成员节点变更触发无限 DOM 增强循环。摘要：`fd65451066c4061145cc2ca61e9d1e463d9addbf2d08e5efd2e6f182f262405a`；回滚备份：`/root/screego/backups/room-click-freeze-20260824T140000+0800`。

@@ -158,7 +158,7 @@ test('deployed telemetry resource versions and load order are exact', () => {
     'webrtc-quality.js?v=2',
     'webrtc-adaptive.js?v=8',
     'web-share-audio.js?v=2',
-    'inject.js?v=6.31',
+    'inject.js?v=6.32',
     'sfu-client.js?v=1.9',
   ]);
 });
