@@ -93,3 +93,5 @@ node --test (Get-ChildItem server -Filter 'test_*.mjs' | Select-Object -ExpandPr
 - 回滚备份：`/root/screego/backups/web-hover-tools-20260824T110711+0800`；暂存目录：`/root/screego/staging/web-hover-tools-20260824T110711+0800`。
 - 修正版 `v6.31` 于 2026-08-24 13:41（+08:00）部署：修复侧栏首次创建时的成员渲染递归；房间 URL 存在但统一状态尚未确认时保留边缘手柄，统一状态确认后启用成员和共享控制。
 - 修正版摘要：`ae8059e11645029f16c21c3089e7d2bf08c02fe2e0557cf2bb268b9ec3f24704`；回滚备份：`/root/screego/backups/web-hover-tools-20260824T134100+0800`；暂存目录：`/root/screego/staging/web-hover-tools-20260824T134100+0800`。
+- 13:49 发现维护用 `nginx-screego.conf` 仅监听 `5050`，直接覆盖生产 `/etc/nginx/conf.d/screego.conf` 会移除公网 `80/443`；已从 `/etc/nginx/sites-available/screego` 恢复完整生产 server block，仅保留 `v6.31` 资源版本。修复备份：`/root/screego/backups/public-https-repair-20260824T135200+0800`。
+- 修复后 `80` 正确跳转 HTTPS，公网 `443` TCP 可达，HTTPS 首页返回 `200`，注入资源摘要仍为 `ae8059e11645029f16c21c3089e7d2bf08c02fe2e0557cf2bb268b9ec3f24704`。后续只允许在完整生产配置上做原子版本替换，不得用维护配置覆盖公网 server block。
