@@ -75,6 +75,12 @@
   var webShareAbortPromise = null;
   var webAudioCaptureNoticeTimer = 0;
   var activeCaptureAudioMode = 'off';
+  var webHoverToolsRoot = null;
+  var webHoverToolsRoomId = '';
+  var webHoverToolsPinnedSide = '';
+  var webHoverToolsMediaQuery = null;
+  var webHoverToolsOutsideHandler = null;
+  var webHoverToolsKeyHandler = null;
 
   var QUALITY = {
     quality:  { label: '清晰优先', bitrate: 50000000, desc: '带宽不足时优先保分辨率', pref: 'maintain-resolution' },
@@ -316,6 +322,7 @@
     document.querySelectorAll('[data-partylan-legacy-roster]').forEach(function (roster) {
       roster.style.display = unified ? 'none' : '';
     });
+    syncWebHoverToolsVisibility();
     return unified;
   }
 
@@ -324,6 +331,7 @@
     document.querySelectorAll('[data-partylan-legacy-roster]').forEach(function (roster) {
       roster.style.display = '';
     });
+    destroyWebHoverTools();
   }
 
   function rememberRoomState(state) {
@@ -469,37 +477,265 @@
     return state.shareOwnerParticipantId === getWebParticipantId();
   }
 
+  function buildWebPresenceMemberItem(participant) {
+    var name = participant.name || participant.participantId;
+    var labels = [participant.clientType === 'client' ? '客户端' : '网页端'];
+    labels.push(participant.role === 'owner' ? '房主' : '成员');
+    if (participant.participantId === getWebParticipantId()) labels.push('当前');
+    if (participant.sharing) labels.push('共享中');
+
+    var item = document.createElement('div');
+    item.dataset.gcPresenceMember = '1';
+    item.setAttribute('data-gc-presence-member', '1');
+    item.className = 'gc-presence-member';
+
+    var memberName = document.createElement('span');
+    memberName.className = 'gc-presence-member-name';
+    memberName.textContent = name;
+
+    var memberMeta = document.createElement('span');
+    memberMeta.className = 'gc-presence-member-meta';
+    memberMeta.textContent = labels.join(' · ');
+
+    item.appendChild(memberName);
+    item.appendChild(memberMeta);
+    return item;
+  }
+
   function renderWebPresenceMembers() {
-    var anchor = document.getElementById('partylan-presence-roster');
+    var anchors = [];
+    var tooltipAnchor = document.getElementById('partylan-presence-roster');
+    var drawerAnchor = document.getElementById('gc-web-presence-roster');
+    if (tooltipAnchor) anchors.push(tooltipAnchor);
+    if (drawerAnchor && drawerAnchor !== tooltipAnchor) anchors.push(drawerAnchor);
     var unified = applyRoomMediaMode(lastRoomState);
-    if (!anchor) return;
-    anchor.replaceChildren();
-    if (!currentRoomId() || !unified || !webPresenceMembers.length) return;
+    anchors.forEach(function (anchor) { anchor.replaceChildren(); });
+    if (!currentRoomId() || !unified || !webPresenceMembers.length) {
+      syncWebHoverSharePanel();
+      return;
+    }
 
-    webPresenceMembers.forEach(function (participant) {
-      var name = participant.name || participant.participantId;
-      var labels = [participant.clientType === 'client' ? '客户端' : '网页端'];
-      labels.push(participant.role === 'owner' ? '房主' : '成员');
-      if (participant.participantId === getWebParticipantId()) labels.push('当前');
-      if (participant.sharing) labels.push('共享中');
-
-      var item = document.createElement('div');
-      item.dataset.gcPresenceMember = '1';
-      item.setAttribute('data-gc-presence-member', '1');
-      item.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;padding:4px 0;font-size:13px;line-height:1.45';
-
-      var memberName = document.createElement('span');
-      memberName.textContent = name;
-      memberName.style.cssText = 'min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#f8fafc';
-
-      var memberMeta = document.createElement('span');
-      memberMeta.textContent = labels.join(' · ');
-      memberMeta.style.cssText = 'flex-shrink:0;color:#94a3b8;font-size:11px';
-
-      item.appendChild(memberName);
-      item.appendChild(memberMeta);
-      anchor.appendChild(item);
+    anchors.forEach(function (anchor) {
+      webPresenceMembers.forEach(function (participant) {
+        anchor.appendChild(buildWebPresenceMemberItem(participant));
+      });
     });
+    syncWebHoverSharePanel();
+  }
+
+  var WEB_HOVER_MEMBER_ICON_PATH = 'M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5s-3 1.34-3 3 1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5C15 14.17 10.33 13 8 13zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.86 1.97 3.45V19h7v-2.5c0-2.33-4.67-3.5-7-3.5z';
+  var WEB_HOVER_SHARE_ICON_PATH = 'M4 5h16v14H4zM7 8h10M7 12h6M7 16h4';
+  var WEB_HOVER_CLOSE_ICON_PATH = 'M6 6l12 12M18 6L6 18';
+
+  function webHoverIcon(path) {
+    return '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="' + path + '"></path></svg>';
+  }
+
+  function webHoverToolsIsTouch() {
+    return !!(webHoverToolsMediaQuery && webHoverToolsMediaQuery.matches);
+  }
+
+  function setWebHoverToolsPinned(side) {
+    webHoverToolsPinnedSide = side || '';
+    if (!webHoverToolsRoot) return;
+    if (webHoverToolsPinnedSide) webHoverToolsRoot.setAttribute('data-gc-pinned-side', webHoverToolsPinnedSide);
+    else webHoverToolsRoot.removeAttribute('data-gc-pinned-side');
+  }
+
+  function closeWebHoverTools() {
+    setWebHoverToolsPinned('');
+  }
+
+  function destroyWebHoverTools() {
+    if (webHoverToolsOutsideHandler && document.removeEventListener) document.removeEventListener('click', webHoverToolsOutsideHandler, true);
+    if (webHoverToolsKeyHandler && document.removeEventListener) document.removeEventListener('keydown', webHoverToolsKeyHandler, true);
+    if (webHoverToolsMediaQuery && webHoverToolsMediaQuery.removeEventListener) {
+      webHoverToolsMediaQuery.removeEventListener('change', syncWebHoverToolsVisibility);
+    }
+    webHoverToolsOutsideHandler = null;
+    webHoverToolsKeyHandler = null;
+    webHoverToolsMediaQuery = null;
+    webHoverToolsPinnedSide = '';
+    webHoverToolsRoomId = '';
+    if (webHoverToolsRoot && webHoverToolsRoot.parentNode) {
+      if (typeof webHoverToolsRoot.parentNode.removeChild === 'function') webHoverToolsRoot.parentNode.removeChild(webHoverToolsRoot);
+      else if (typeof webHoverToolsRoot.remove === 'function') webHoverToolsRoot.remove();
+    }
+    webHoverToolsRoot = null;
+  }
+
+  function setWebHoverShareHint(text, tone) {
+    if (!webHoverToolsRoot) return;
+    var hint = webHoverToolsRoot.querySelector('#gc-hover-share-hint');
+    if (!hint) return;
+    hint.textContent = text || '';
+    hint.dataset.tone = tone || 'neutral';
+  }
+
+  function saveWebHoverShareSettings() {
+    if (!webHoverToolsRoot) return;
+    var res = webHoverToolsRoot.querySelector('#gc-hover-share-res');
+    var fps = webHoverToolsRoot.querySelector('#gc-hover-share-fps');
+    var quality = webHoverToolsRoot.querySelector('#gc-hover-share-quality');
+    var audio = webHoverToolsRoot.querySelector('#gc-hover-share-audio');
+    if (!res || !fps || !quality || !audio) return;
+    var captureState = saveCaptureSettings(res.value, fps.value);
+    var settings = loadCfg();
+    settings.qualityMode = QUALITY[quality.value] ? quality.value : 'balanced';
+    settings.audioMode = AUDIO_MODES[audio.value] ? audio.value : 'app';
+    delete settings.sfuMode;
+    saveCfg(settings);
+    res.value = captureState.res;
+    fps.value = String(captureState.fps);
+    if (activeDisplayStream) syncHostSfuState(currentRoomId());
+    setWebHoverShareHint('设置已保存，下次共享时生效。', 'success');
+    syncWebHoverSharePanel();
+  }
+
+  function shareOwnerLabel(state) {
+    if (!state || !state.sharing) return '当前没有共享者';
+    var ownerId = String(state.shareOwnerParticipantId || '').trim();
+    var owner = webPresenceMembers.find(function (participant) {
+      return participant && participant.participantId === ownerId;
+    });
+    return owner ? owner.name : (ownerId || '其他成员');
+  }
+
+  function syncWebHoverSharePanel() {
+    if (!webHoverToolsRoot) return;
+    var config = extCfg();
+    var state = lastRoomState;
+    var unified = isUnifiedSfuRoom(state) && sameRoomId(state && state.room, currentRoomId());
+    var status = webHoverToolsRoot.querySelector('#gc-hover-share-status');
+    var owner = webHoverToolsRoot.querySelector('#gc-hover-share-owner');
+    var res = webHoverToolsRoot.querySelector('#gc-hover-share-res');
+    var fps = webHoverToolsRoot.querySelector('#gc-hover-share-fps');
+    var quality = webHoverToolsRoot.querySelector('#gc-hover-share-quality');
+    var audio = webHoverToolsRoot.querySelector('#gc-hover-share-audio');
+    var start = webHoverToolsRoot.querySelector('#gc-hover-share-start');
+    var stop = webHoverToolsRoot.querySelector('#gc-hover-share-stop');
+    if (res) res.value = config.res;
+    if (fps) fps.value = String(config.fps);
+    if (quality) quality.value = QUALITY[config.qm] ? config.qm : 'balanced';
+    if (audio) audio.value = AUDIO_MODES[config.audio] ? config.audio : 'app';
+    if (status) {
+      status.textContent = activeDisplayStream ? '共享中' : state && state.sharing ? '其他成员共享中' : '未开始共享';
+      status.dataset.tone = activeDisplayStream ? 'live' : state && state.sharing ? 'busy' : 'idle';
+    }
+    if (owner) owner.textContent = activeDisplayStream ? webDisplayName() : shareOwnerLabel(state);
+    var blocked = !!(state && state.sharing && !webCanStartShare(state));
+    var canStart = unified && !blocked && !activeDisplayStream && !!findShareStartButton();
+    if (start) {
+      start.disabled = !canStart;
+      start.title = blocked ? '当前已有成员正在共享' : (unified ? '' : '当前房间尚未启用统一共享');
+    }
+    if (stop) {
+      stop.hidden = !activeDisplayStream;
+      stop.disabled = !activeDisplayStream;
+    }
+    if (!unified) setWebHoverShareHint('等待房间共享状态确认。', 'neutral');
+  }
+
+  function bindWebHoverTools(root) {
+    var leftHandle = root.querySelector('#gc-hover-members-handle');
+    var rightHandle = root.querySelector('#gc-hover-share-handle');
+    var closeButtons = root.querySelectorAll('[data-gc-hover-close]');
+    [leftHandle, rightHandle].forEach(function (handle) {
+      if (!handle) return;
+      handle.addEventListener('click', function (event) {
+        if (!webHoverToolsIsTouch()) return;
+        event.preventDefault();
+        event.stopPropagation();
+        var side = handle.dataset.gcHoverSide || '';
+        setWebHoverToolsPinned(webHoverToolsPinnedSide === side ? '' : side);
+      });
+    });
+    closeButtons.forEach(function (button) {
+      button.addEventListener('click', function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        closeWebHoverTools();
+      });
+    });
+    var apply = root.querySelector('#gc-hover-share-apply');
+    if (apply) apply.addEventListener('click', function () { saveWebHoverShareSettings(); });
+    var start = root.querySelector('#gc-hover-share-start');
+    if (start) start.addEventListener('click', function () {
+      var button = findShareStartButton();
+      if (!button) return setWebHoverShareHint('共享入口暂不可用，请刷新后重试。', 'error');
+      createShareSetupModal(button);
+      syncWebHoverSharePanel();
+    });
+    var stop = root.querySelector('#gc-hover-share-stop');
+    if (stop) stop.addEventListener('click', function () {
+      if (activeDisplayStream) void stopWebShare(false);
+    });
+    webHoverToolsOutsideHandler = function (event) {
+      if (!webHoverToolsIsTouch() || !webHoverToolsRoot || webHoverToolsRoot.contains(event.target)) return;
+      closeWebHoverTools();
+    };
+    webHoverToolsKeyHandler = function (event) {
+      if (event.key === 'Escape') closeWebHoverTools();
+    };
+    if (document.addEventListener) {
+      document.addEventListener('click', webHoverToolsOutsideHandler, true);
+      document.addEventListener('keydown', webHoverToolsKeyHandler, true);
+    }
+  }
+
+  function ensureWebHoverTools(roomId) {
+    if (!roomId) return null;
+    if (!document || typeof document.createElement !== 'function' || !document.body) return null;
+    if (webHoverToolsRoot && sameRoomId(webHoverToolsRoomId, roomId)) return webHoverToolsRoot;
+    destroyWebHoverTools();
+    var root = document.createElement('div');
+    root.id = 'gc-hover-tools';
+    root.setAttribute('aria-label', 'GameCast 房间工具');
+    root.innerHTML =
+      '<div class="gc-hover-edge gc-hover-edge-left" data-gc-hover-side="left">' +
+        '<button id="gc-hover-members-handle" class="gc-hover-handle" type="button" data-gc-hover-side="left" aria-label="显示成员列表" title="成员列表">' + webHoverIcon(WEB_HOVER_MEMBER_ICON_PATH) + '</button>' +
+        '<aside class="gc-hover-drawer gc-hover-members-drawer" aria-label="成员列表">' +
+          '<div class="gc-hover-drawer-header"><span>成员</span><button type="button" class="gc-hover-close" data-gc-hover-close aria-label="关闭成员列表">' + webHoverIcon(WEB_HOVER_CLOSE_ICON_PATH) + '</button></div>' +
+          '<div id="gc-web-presence-roster" class="gc-presence-roster" aria-live="polite"></div>' +
+        '</aside>' +
+      '</div>' +
+      '<div class="gc-hover-edge gc-hover-edge-right" data-gc-hover-side="right">' +
+        '<button id="gc-hover-share-handle" class="gc-hover-handle" type="button" data-gc-hover-side="right" aria-label="显示共享设置" title="共享设置">' + webHoverIcon(WEB_HOVER_SHARE_ICON_PATH) + '</button>' +
+        '<aside class="gc-hover-drawer gc-hover-share-drawer" aria-label="共享设置">' +
+          '<div class="gc-hover-drawer-header"><span>共享</span><button type="button" class="gc-hover-close" data-gc-hover-close aria-label="关闭共享设置">' + webHoverIcon(WEB_HOVER_CLOSE_ICON_PATH) + '</button></div>' +
+          '<div id="gc-hover-share-status" class="gc-hover-share-status" role="status">未开始共享</div>' +
+          '<div id="gc-hover-share-owner" class="gc-hover-share-owner">当前没有共享者</div>' +
+          '<div class="gc-hover-share-grid">' +
+            '<label>分辨率<select id="gc-hover-share-res">' + Object.keys(RESOLUTIONS).map(function (key) { return '<option value="' + key + '">' + RESOLUTIONS[key].label + '</option>'; }).join('') + '</select></label>' +
+            '<label>帧率<select id="gc-hover-share-fps">' + buildFpsOptionsHtml(30) + '</select></label>' +
+            '<label>优先模式<select id="gc-hover-share-quality"><option value="quality">清晰优先</option><option value="balanced">均衡</option><option value="smooth">流畅优先</option></select></label>' +
+            '<label>音频<select id="gc-hover-share-audio"><option value="app">窗口/标签页</option><option value="off">不共享</option><option value="system">全屏系统音频</option></select></label>' +
+          '</div>' +
+          '<button id="gc-hover-share-apply" class="gc-hover-share-secondary" type="button">应用设置</button>' +
+          '<div class="gc-hover-share-actions"><button id="gc-hover-share-start" class="gc-hover-share-primary" type="button">开始共享</button><button id="gc-hover-share-stop" class="gc-hover-share-danger" type="button" hidden>停止共享</button></div>' +
+          '<div id="gc-hover-share-hint" class="gc-hover-share-hint" role="status">共享设置仅在点击后生效。</div>' +
+        '</aside>' +
+      '</div>';
+    document.body.appendChild(root);
+    webHoverToolsRoot = root;
+    webHoverToolsRoomId = roomId;
+    if (window.matchMedia) webHoverToolsMediaQuery = window.matchMedia('(hover: none), (pointer: coarse)');
+    bindWebHoverTools(root);
+    syncWebHoverSharePanel();
+    renderWebPresenceMembers();
+    return root;
+  }
+
+  function syncWebHoverToolsVisibility() {
+    var roomId = currentRoomId();
+    var stateRoom = String(lastRoomState && lastRoomState.room || '').trim();
+    var unified = !!roomId && sameRoomId(stateRoom, roomId) && isUnifiedSfuRoom(lastRoomState);
+    if (!roomId || !unified) {
+      destroyWebHoverTools();
+      return;
+    }
+    ensureWebHoverTools(roomId);
+    syncWebHoverSharePanel();
   }
 
   function recoverWebPresence(roomId) {
@@ -830,6 +1066,7 @@
         if (button.title === '当前已有成员正在共享') button.removeAttribute('title');
       }
     });
+    syncWebHoverSharePanel();
   }
 
   function sameRoomId(left, right) {
@@ -3132,10 +3369,10 @@
     var c = extCfg();
     var overlay = document.createElement('div');
     overlay.id = 'gc-share-setup-modal';
-    overlay.style.cssText = 'position:fixed;inset:0;z-index:100001;background:rgba(2,6,23,.66);display:flex;align-items:center;justify-content:center;padding:18px;backdrop-filter:blur(8px)';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:100001;background:rgba(2,6,23,.52);display:flex;align-items:center;justify-content:flex-end;padding:18px 24px;backdrop-filter:blur(6px)';
 
     var panel = document.createElement('div');
-    panel.style.cssText = 'width:min(420px,100%);background:rgba(15,12,41,.96);border:1px solid rgba(124,58,237,.35);border-radius:18px;box-shadow:0 24px 80px rgba(0,0,0,.5);padding:18px 18px 16px;color:#e2e8f0';
+    panel.style.cssText = 'width:min(360px,100%);max-height:calc(100vh - 36px);overflow:auto;background:rgba(15,12,41,.97);border:1px solid rgba(124,58,237,.35);border-radius:14px;box-shadow:0 20px 56px rgba(0,0,0,.5);padding:14px 14px 12px;color:#e2e8f0';
 
     var html = '<div style="font-size:17px;font-weight:700;color:#f8fafc">共享前画面设置</div>';
     html += '<div style="font-size:12px;line-height:1.6;color:#94a3b8;margin-top:6px;margin-bottom:14px">这里修改后，会先保存参数，再继续打开浏览器的共享选择窗口。</div>';
@@ -3925,6 +4162,62 @@
     document.head.appendChild(s);
   }
 
+  function applyWebHoverToolsTheme() {
+    if (document.getElementById('gc-hover-tools-theme')) return;
+    var s = document.createElement('style');
+    s.id = 'gc-hover-tools-theme';
+    s.textContent =
+      '#gc-hover-tools { position:fixed; inset:0; z-index:9990; pointer-events:none; color:#e2e8f0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }' +
+      '#gc-hover-tools .gc-hover-edge { position:absolute; top:50%; width:18px; height:190px; transform:translateY(-50%); pointer-events:auto; }' +
+      '#gc-hover-tools .gc-hover-edge-left { left:0; }' +
+      '#gc-hover-tools .gc-hover-edge-right { right:0; }' +
+      '#gc-hover-tools .gc-hover-handle { position:absolute; top:50%; width:18px; height:64px; transform:translateY(-50%); padding:0; border:1px solid rgba(148,163,184,.24); background:rgba(15,23,42,.78); color:#a5b4fc; cursor:pointer; display:grid; place-items:center; box-shadow:0 12px 32px rgba(2,6,23,.26); transition:background .18s,color .18s,border-color .18s; }' +
+      '#gc-hover-tools .gc-hover-edge-left .gc-hover-handle { left:0; border-left:0; border-radius:0 10px 10px 0; }' +
+      '#gc-hover-tools .gc-hover-edge-right .gc-hover-handle { right:0; border-right:0; border-radius:10px 0 0 10px; }' +
+      '#gc-hover-tools .gc-hover-handle:hover, #gc-hover-tools .gc-hover-handle:focus-visible { background:rgba(30,41,59,.96); color:#67e8f9; border-color:rgba(34,211,238,.58); outline:2px solid rgba(34,211,238,.34); outline-offset:2px; }' +
+      '#gc-hover-tools .gc-hover-handle svg { width:18px; height:18px; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }' +
+      '#gc-hover-tools .gc-hover-edge-left .gc-hover-handle svg { fill:currentColor; stroke:none; }' +
+      '#gc-hover-tools .gc-hover-drawer { position:absolute; top:50%; width:min(300px,calc(100vw - 32px)); max-height:min(560px,calc(100vh - 32px)); overflow:auto; padding:12px; border:1px solid rgba(124,58,237,.34); background:rgba(15,12,41,.96); border-radius:14px; box-shadow:0 20px 60px rgba(2,6,23,.48); backdrop-filter:blur(16px); opacity:0; pointer-events:none; transition:transform .2s ease,opacity .18s ease; }' +
+      '#gc-hover-tools .gc-hover-edge-left .gc-hover-drawer { left:18px; transform:translate(-100%,-50%); }' +
+      '#gc-hover-tools .gc-hover-edge-right .gc-hover-drawer { right:18px; transform:translate(100%,-50%); }' +
+      '#gc-hover-tools .gc-hover-edge:hover .gc-hover-drawer, #gc-hover-tools .gc-hover-edge:focus-within .gc-hover-drawer, #gc-hover-tools[data-gc-pinned-side="left"] .gc-hover-edge-left .gc-hover-drawer, #gc-hover-tools[data-gc-pinned-side="right"] .gc-hover-edge-right .gc-hover-drawer { opacity:1; pointer-events:auto; transform:translate(0,-50%); }' +
+      '#gc-hover-tools .gc-hover-drawer-header { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:0 0 9px; border-bottom:1px solid rgba(148,163,184,.16); color:#f8fafc; font-size:13px; font-weight:700; }' +
+      '#gc-hover-tools .gc-hover-close { width:28px; height:28px; padding:0; border:0; border-radius:8px; background:transparent; color:#94a3b8; cursor:pointer; display:grid; place-items:center; }' +
+      '#gc-hover-tools .gc-hover-close:hover, #gc-hover-tools .gc-hover-close:focus-visible { background:rgba(148,163,184,.14); color:#f8fafc; outline:2px solid rgba(34,211,238,.28); outline-offset:1px; }' +
+      '#gc-hover-tools .gc-hover-close svg { width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; }' +
+      '#gc-hover-tools .gc-presence-roster { display:grid; gap:5px; padding-top:9px; }' +
+      '#gc-hover-tools .gc-presence-member { display:flex; align-items:center; justify-content:space-between; gap:9px; min-width:0; padding:7px 8px; border:1px solid rgba(148,163,184,.13); border-radius:9px; background:rgba(255,255,255,.05); font-size:11px; line-height:1.35; }' +
+      '#gc-hover-tools .gc-presence-member-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#f8fafc; }' +
+      '#gc-hover-tools .gc-presence-member-meta { flex:0 0 auto; max-width:132px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#94a3b8; font-size:10px; }' +
+      '#partylan-presence-roster .gc-presence-member { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:4px 0; font-size:13px; line-height:1.45; }' +
+      '#partylan-presence-roster .gc-presence-member-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#f8fafc; }' +
+      '#partylan-presence-roster .gc-presence-member-meta { flex-shrink:0; color:#94a3b8; font-size:11px; }' +
+      '#gc-hover-tools .gc-hover-share-status { margin-top:10px; color:#67e8f9; font-size:13px; font-weight:700; }' +
+      '#gc-hover-tools .gc-hover-share-status[data-tone="busy"] { color:#fbbf24; }' +
+      '#gc-hover-tools .gc-hover-share-status[data-tone="idle"] { color:#94a3b8; }' +
+      '#gc-hover-tools .gc-hover-share-owner { margin-top:3px; color:#94a3b8; font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }' +
+      '#gc-hover-tools .gc-hover-share-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:12px; }' +
+      '#gc-hover-tools .gc-hover-share-grid label { display:flex; flex-direction:column; gap:4px; color:#a5b4fc; font-size:10px; font-weight:600; }' +
+      '#gc-hover-tools .gc-hover-share-grid select { width:100%; min-width:0; padding:7px 8px; border:1px solid rgba(124,58,237,.34); border-radius:8px; background:rgba(15,12,41,.76); color:#e2e8f0; font-size:11px; outline:none; }' +
+      '#gc-hover-tools .gc-hover-share-grid select:focus-visible { border-color:#22d3ee; outline:2px solid rgba(34,211,238,.24); outline-offset:1px; }' +
+      '#gc-hover-tools .gc-hover-share-secondary, #gc-hover-tools .gc-hover-share-primary, #gc-hover-tools .gc-hover-share-danger { width:100%; min-height:34px; margin-top:9px; padding:7px 10px; border-radius:8px; cursor:pointer; font-size:11px; font-weight:700; transition:background .16s,border-color .16s,opacity .16s; }' +
+      '#gc-hover-tools .gc-hover-share-secondary { border:1px solid rgba(124,58,237,.34); background:rgba(124,58,237,.12); color:#c4b5fd; }' +
+      '#gc-hover-tools .gc-hover-share-primary { border:1px solid rgba(34,211,238,.46); background:linear-gradient(135deg,#7c3aed,#0891b2); color:#fff; }' +
+      '#gc-hover-tools .gc-hover-share-danger { border:1px solid rgba(248,113,113,.42); background:rgba(127,29,29,.42); color:#fecaca; }' +
+      '#gc-hover-tools .gc-hover-share-secondary:hover, #gc-hover-tools .gc-hover-share-secondary:focus-visible { background:rgba(124,58,237,.24); }' +
+      '#gc-hover-tools .gc-hover-share-primary:hover, #gc-hover-tools .gc-hover-share-primary:focus-visible { background:linear-gradient(135deg,#8b5cf6,#06b6d4); }' +
+      '#gc-hover-tools .gc-hover-share-danger:hover, #gc-hover-tools .gc-hover-share-danger:focus-visible { background:rgba(153,27,27,.58); }' +
+      '#gc-hover-tools button:disabled { opacity:.46; cursor:not-allowed; }' +
+      '#gc-hover-tools .gc-hover-share-actions { display:grid; grid-template-columns:1fr; gap:0; }' +
+      '#gc-hover-tools .gc-hover-share-hint { min-height:30px; padding-top:8px; color:#64748b; font-size:10px; line-height:1.45; }' +
+      '#gc-hover-tools .gc-hover-share-hint[data-tone="success"] { color:#6ee7b7; }' +
+      '#gc-hover-tools .gc-hover-share-hint[data-tone="error"] { color:#fca5a5; }' +
+      '#gc-hover-tools .gc-hover-share-danger[hidden] { display:none; }' +
+      '@media (hover:none), (pointer:coarse) { #gc-hover-tools .gc-hover-edge { width:30px; } #gc-hover-tools .gc-hover-handle { width:30px; height:72px; } #gc-hover-tools .gc-hover-edge-left .gc-hover-drawer { left:30px; } #gc-hover-tools .gc-hover-edge-right .gc-hover-drawer { right:30px; } }' +
+      '@media (prefers-reduced-motion: reduce) { #gc-hover-tools .gc-hover-drawer, #gc-hover-tools .gc-hover-handle, #gc-hover-tools button { transition:none !important; } }';
+    document.head.appendChild(s);
+  }
+
   /* ── 替换 logo ── */
   function replaceLogo(root) {
     root.querySelectorAll('img').forEach(function (img) {
@@ -4196,6 +4489,8 @@
     startConnectionStats();
     fetchUsername();
     applyTheme();
+    applyWebHoverToolsTheme();
+    syncWebHoverToolsVisibility();
     replaceLogo(document.body);
     setTimeout(injectHistoryDropdown, 1500);
     setTimeout(fillRoomIdDefault, 2000);
@@ -4218,6 +4513,7 @@
       if (canMaintainRoomState(currentRoomId())) sendRoomStateBeacon(false, roomStateHeartbeatRoomId || currentRoomId());
       leaveWebPresence(true);
       clearRoomMediaMode();
+      destroyWebHoverTools();
       closeRoomSocket();
     });
     installScreegoPeerSessionHook();

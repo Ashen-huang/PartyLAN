@@ -609,10 +609,22 @@ test('share setup completion does not click until capture resolves', async () =>
   assert.equal(button.clicked, true);
 });
 
+test('web hover tools stay outside the viewing layout and preserve diagnostics', () => {
+  assert.match(injectSource, /root\.id = 'gc-hover-tools'/);
+  assert.match(injectSource, /id=\"gc-web-presence-roster\"/);
+  assert.match(injectSource, /id=\"gc-hover-share-start\"/);
+  assert.match(injectSource, /function syncWebHoverToolsVisibility\(\)/);
+  assert.match(injectSource, /function destroyWebHoverTools\(\)/);
+  assert.match(injectSource, /position:fixed; inset:0; z-index:9990/);
+  assert.match(injectSource, /statsOverlayId = 'gc-stats-overlay'/);
+  assert.match(injectSource, /matchMedia\('\(hover: none\), \(pointer: coarse\)'\)/);
+  assert.match(injectSource, /justify-content:flex-end;padding:18px 24px/);
+});
+
 test('versioned assets load inject before the SFU client without exposing sensitive material', () => {
   const replacement = nginxSource.match(/sub_filter '<\/head>' '([^']+)<\/head>'/);
   assert.ok(replacement);
-  assert.ok(replacement[1].indexOf('/inject.js?v=6.29') >= 0);
+  assert.ok(replacement[1].indexOf('/inject.js?v=6.30') >= 0);
   assert.ok(replacement[1].indexOf('/sfu-client.js?v=1.9') >= 0);
   assert.ok(replacement[1].indexOf('/inject.js') < replacement[1].indexOf('/sfu-client.js'));
 
