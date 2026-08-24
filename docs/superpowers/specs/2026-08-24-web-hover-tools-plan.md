@@ -78,3 +78,16 @@ node --test (Get-ChildItem server -Filter 'test_*.mjs' | Select-Object -ExpandPr
 - 只原子替换网页注入脚本和生产配置中的缓存版本，执行 `nginx -t` 与平滑 reload；不重启 SFU、控制面、语音服务或容器。
 - 线上验证 `inject.js?v=6.30` 摘要、统一/非统一房间显示、诊断面板、观看区尺寸和近期 5xx。
 - 保留带时间戳的回滚备份，部署记录写入本计划文档。
+
+## 执行记录
+
+- 网页端实现提交：`afef89f feat: 增加网页端悬停共享工具层`。
+- 新增固定悬停工具层：左侧成员 Presence 抽屉、右侧共享状态/快速设置抽屉；工具层使用 fixed/transform，不参与 Screego 观看区布局。
+- `gc-stats-overlay` 保持原位置、数据和展开逻辑；共享设置确认期间仍等待捕获 Promise，不因鼠标离开关闭。
+- 网页 Node 全套测试 `144/144` 通过；Python 服务测试 `38/38` 通过（运行时显式设置 `NO_PROXY=127.0.0.1,localhost`，避免本机代理拦截 localhost）；前端生产构建通过；`node --check` 与 `git diff --check` 通过。
+- 广州节点（`root@8.134.126.54`）于 2026-08-24 11:08（+08:00）完成 `inject.js?v=6.30` 部署：
+  - `/var/www/screego/inject.js` 与 `/root/screego/frontend/inject.js` SHA-256 均为 `79C32E732CC1BE43849C9A974EE5F79DC3B9AE3955A10965BF8B5D48D5334DD8`。
+  - 生产 Nginx 仅将 `inject.js?v=6.29` 更新为 `v6.30`，`nginx -t` 通过并平滑 reload。
+  - 屏幕/语音容器、注册进程 PID `437977`、Screego PID `438580` 和 Nginx master PID `62312` 保持不变；5053/5054 健康检查通过，近期无新增 5xx。
+  - 部署前后活动房间数均为 `0`。
+  - 回滚备份：`/root/screego/backups/web-hover-tools-20260824T110711+0800`；暂存目录：`/root/screego/staging/web-hover-tools-20260824T110711+0800`。
