@@ -136,7 +136,10 @@ function loadHarness(fetchImpl = async () => jsonResponse({ ok: false })) {
       '    syncViewerSfuState: syncViewerSfuState,',
       '    claimWebShare: claimWebShare,',
       '    heartbeatWebShare: heartbeatWebShare,',
-      '    releaseWebShare: releaseWebShare',
+      '    releaseWebShare: releaseWebShare,',
+      '    requestDisplayMediaWithCompatibilityFallback: requestDisplayMediaWithCompatibilityFallback,',
+      '    buildCompatibilityDisplayMediaRequest: buildCompatibilityDisplayMediaRequest,',
+      '    finishShareSetupCapture: finishShareSetupCapture',
       '  };',
       '})();',
     ].join('\n'),
@@ -494,10 +497,122 @@ test('web host claim, readiness and normal stop follow the four-phase lease cont
   assert.ok(stopping >= 0 && close > stopping && release > close);
 });
 
+test('display capture has a compatibility request and retries only recoverable picker errors', () => {
+  const capture = injectSource.slice(
+    injectSource.indexOf('function buildDisplayMediaRequest('),
+    injectSource.indexOf('function showWebAudioCaptureNotice('),
+  );
+  assert.match(capture, /function buildCompatibilityDisplayMediaRequest\(/);
+  assert.match(capture, /name === 'TypeError'[\s\S]{0,180}name === 'OverconstrainedError'[\s\S]{0,180}name === 'NotReadableError'/);
+  assert.doesNotMatch(capture, /name === 'NotAllowedError'|name === 'AbortError'|name === 'NotFoundError'|name === 'InvalidStateError'/);
+  assert.match(capture, /compatibility/i);
+});
+
+test('web sharing keeps 720p30 as the default without overwriting saved settings', () => {
+  const defaults = injectSource.slice(
+    injectSource.indexOf('function ensureDefaultShareSettings('),
+    injectSource.indexOf('function normalizeResolutionKey('),
+  );
+  assert.match(defaults, /s\.resolution = '1280x720'/);
+  assert.match(defaults, /s\.framerate = 30/);
+  assert.match(defaults, /if \(!s\.resolution\)/);
+  assert.match(defaults, /if \(!s\.framerate\)/);
+});
+
+test('display capture fallback drops browser-specific constraints once and preserves audio intent', async () => {
+  const harness = loadHarness();
+  const calls = [];
+  const stream = { id: 'compat-stream' };
+  const request = (constraints) => {
+    calls.push(constraints);
+    if (calls.length === 1) {
+      return Promise.reject(Object.assign(new Error('window constraints rejected'), { name: 'NotReadableError' }));
+    }
+    return Promise.resolve(stream);
+  };
+
+  const result = await harness.api.requestDisplayMediaWithCompatibilityFallback(
+    { video: { width: { ideal: 1280 } }, audio: true, windowAudio: 'window' },
+    { audio: 'app' },
+    request,
+  );
+  assert.equal(result, stream);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].video, true);
+  assert.equal(calls[1].audio, true);
+  assert.equal(Object.keys(calls[1]).length, 2);
+
+  calls.length = 0;
+  await assert.rejects(
+    harness.api.requestDisplayMediaWithCompatibilityFallback(
+      { video: {}, audio: true },
+      { audio: 'app' },
+      () => {
+        calls.push({});
+        return Promise.reject(Object.assign(new Error('cancelled'), { name: 'NotAllowedError' }));
+      },
+    ),
+    { name: 'NotAllowedError' },
+  );
+  assert.equal(calls.length, 1);
+});
+
+test('display capture fallback also catches a synchronous browser TypeError', async () => {
+  const harness = loadHarness();
+  let attempts = 0;
+  const result = await harness.api.requestDisplayMediaWithCompatibilityFallback(
+    { video: {}, audio: false },
+    { audio: 'off' },
+    () => {
+      attempts += 1;
+      if (attempts === 1) throw Object.assign(new Error('invalid display options'), { name: 'TypeError' });
+      return Promise.resolve({ id: 'sync-compatible-stream' });
+    },
+  );
+  assert.equal(result.id, 'sync-compatible-stream');
+  assert.equal(attempts, 2);
+});
+
+test('share setup waits for the capture promise before clicking the current start button', () => {
+  const setup = injectSource.slice(
+    injectSource.indexOf('function createShareSetupModal('),
+    injectSource.indexOf('function collectShareStartButtons('),
+  );
+  assert.match(setup, /finishShareSetupCapture\(capturePromise, findShareStartButton/);
+  assert.doesNotMatch(
+    setup,
+    /primeDisplayMediaRequestForShare\(\);[\s\S]{0,260}closeShareSetupModal\(true\);[\s\S]{0,120}btn\.click\(\)/,
+  );
+});
+
+test('share setup completion does not click until capture resolves', async () => {
+  const harness = loadHarness();
+  let resolveCapture;
+  const capturePromise = new Promise((resolve) => { resolveCapture = resolve; });
+  const events = [];
+  const button = { isConnected: true };
+
+  const completion = harness.api.finishShareSetupCapture(
+    capturePromise,
+    () => button,
+    (currentButton) => {
+      events.push('ready');
+      currentButton.clicked = true;
+    },
+    () => events.push('error'),
+  );
+  assert.deepEqual(events, []);
+  assert.equal(button.clicked, undefined);
+  resolveCapture({ id: 'stream' });
+  await completion;
+  assert.deepEqual(events, ['ready']);
+  assert.equal(button.clicked, true);
+});
+
 test('versioned assets load inject before the SFU client without exposing sensitive material', () => {
   const replacement = nginxSource.match(/sub_filter '<\/head>' '([^']+)<\/head>'/);
   assert.ok(replacement);
-  assert.ok(replacement[1].indexOf('/inject.js?v=6.28') >= 0);
+  assert.ok(replacement[1].indexOf('/inject.js?v=6.29') >= 0);
   assert.ok(replacement[1].indexOf('/sfu-client.js?v=1.9') >= 0);
   assert.ok(replacement[1].indexOf('/inject.js') < replacement[1].indexOf('/sfu-client.js'));
 

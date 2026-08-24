@@ -56,6 +56,8 @@
   var shareSetupBypassUntil = 0;
   var shareSetupPendingButton = null;
   var shareSetupClaimSeq = 0;
+  var shareSetupCapturePromise = null;
+  var shareSetupCaptureSeq = 0;
   var webParticipantId = '';
   var webPresenceRoom = '';
   var webPresenceRole = '';
@@ -2403,6 +2405,41 @@
     };
   }
 
+  function buildCompatibilityDisplayMediaRequest(audioMode) {
+    return {
+      video: true,
+      audio: audioMode !== 'off'
+    };
+  }
+
+  function displayMediaErrorName(error) {
+    return String(error && (error.name || error.code || '') || '').trim();
+  }
+
+  function isRecoverableDisplayMediaError(error) {
+    var name = displayMediaErrorName(error);
+    return name === 'TypeError' || name === 'OverconstrainedError' || name === 'NotReadableError';
+  }
+
+  function requestDisplayMediaWithCompatibilityFallback(preferredConstraints, settings, request) {
+    var requester = request || nativeGetDisplayMedia;
+    if (!requester) return Promise.reject(new Error('screen capture is not available'));
+    var invoke = function (constraints) {
+      return Promise.resolve().then(function () { return requester(constraints); });
+    };
+    return invoke(preferredConstraints).catch(function (preferredError) {
+      if (!isRecoverableDisplayMediaError(preferredError)) throw preferredError;
+      var mode = settings && settings.audio ? settings.audio : extCfg().audio;
+      console.warn('[GameCast] 首选共享约束失败，尝试兼容捕获:', displayMediaErrorName(preferredError) || 'Error');
+      return invoke(buildCompatibilityDisplayMediaRequest(mode)).catch(function (fallbackError) {
+        try {
+          fallbackError._gcPreferredCaptureError = displayMediaErrorName(preferredError);
+        } catch (e) {}
+        throw fallbackError;
+      });
+    });
+  }
+
   function showWebAudioCaptureNotice(reason) {
     var previous = document.getElementById('gc-audio-safety-notice');
     if (previous) previous.remove();
@@ -2420,6 +2457,21 @@
       if (notice.parentNode) notice.parentNode.removeChild(notice);
       webAudioCaptureNoticeTimer = 0;
     }, 5000);
+  }
+
+  function showDisplayCaptureError(error) {
+    var previous = document.getElementById('gc-share-start-error');
+    if (previous) previous.remove();
+    var notice = document.createElement('div');
+    notice.id = 'gc-share-start-error';
+    var raw = displayMediaErrorName(error);
+    if (error && error.message) raw += (raw ? ': ' : '') + error.message;
+    notice.textContent = '共享启动失败：' + localizeDisplayMediaReason(raw);
+    notice.style.cssText = 'position:fixed;right:20px;bottom:20px;z-index:100002;max-width:460px;padding:10px 14px;background:rgba(69,10,10,.96);color:#fef2f2;border:1px solid rgba(248,113,113,.5);border-left:4px solid #f87171;border-radius:6px;box-shadow:0 12px 32px rgba(2,6,23,.32);font-size:13px;line-height:1.5;letter-spacing:0';
+    document.body.appendChild(notice);
+    setTimeout(function () {
+      if (notice.parentNode) notice.parentNode.removeChild(notice);
+    }, 7000);
   }
 
   function activateCapturedDisplayStream(stream, settings) {
@@ -2497,7 +2549,7 @@
     };
     var built = buildDisplayMediaRequest();
 
-    request.promise = nativeGetDisplayMedia(built.constraints).then(function (stream) {
+    request.promise = requestDisplayMediaWithCompatibilityFallback(built.constraints, built.settings).then(function (stream) {
       request.stream = stream || null;
       return stream;
     }).catch(function (error) {
@@ -2545,7 +2597,7 @@
       }
 
       var built = buildDisplayMediaRequest(constraints);
-      return nativeGetDisplayMedia(built.constraints).then(function (stream) {
+      return requestDisplayMediaWithCompatibilityFallback(built.constraints, built.settings).then(function (stream) {
         return activateCapturedDisplayStream(stream, built.settings);
       }).catch(function (error) {
         releaseWebShare(false);
@@ -3047,8 +3099,25 @@
     return document.getElementById('gc-share-setup-modal');
   }
 
+  function finishShareSetupCapture(capturePromise, resolveButton, onReady, onError) {
+    return Promise.resolve(capturePromise).then(function () {
+      var button = typeof resolveButton === 'function' ? resolveButton() : null;
+      if (!button || !button.isConnected) throw new Error('share start button unavailable');
+      if (typeof onReady === 'function') onReady(button);
+      return button;
+    }).catch(function (error) {
+      if (typeof onError === 'function') onError(error);
+      return null;
+    });
+  }
+
   function closeShareSetupModal(keepLease) {
     shareSetupClaimSeq += 1;
+    if (!keepLease) {
+      shareSetupCaptureSeq += 1;
+      shareSetupCapturePromise = null;
+      if (primedDisplayMediaRequest) clearPrimedDisplayMediaRequest(primedDisplayMediaRequest, true);
+    }
     var modal = getShareSetupModal();
     if (modal) modal.remove();
     shareSetupPendingButton = null;
@@ -3114,17 +3183,41 @@
     panel.querySelector('#gc-share-modal-confirm').addEventListener('click', function () {
       var btn = shareSetupPendingButton;
       if (!btn || !btn.isConnected || confirmButton.disabled || !webShareLease) return closeShareSetupModal(false);
+      if (shareSetupCapturePromise) return;
       var state = saveCaptureSettings(resSelect.value, fpsSelect.value);
       fpsSelect.value = state.fps;
-      try { primeDisplayMediaRequestForShare(); } catch (e) { releaseWebShare(false); }
-      shareSetupBypassButton = btn;
-      shareSetupBypassUntil = Date.now() + 4000;
+      var capturePromise;
+      try {
+        capturePromise = primeDisplayMediaRequestForShare();
+      } catch (e) {
+        releaseWebShare(false);
+        showDisplayCaptureError(e);
+        return closeShareSetupModal(false);
+      }
+      if (!capturePromise || typeof capturePromise.then !== 'function') {
+        releaseWebShare(false);
+        showDisplayCaptureError(new Error('capture request unavailable'));
+        return closeShareSetupModal(false);
+      }
+      var captureSeq = ++shareSetupCaptureSeq;
+      shareSetupCapturePromise = capturePromise;
       closeShareSetupModal(true);
-      btn.click();
-      if (webShareSafetyTimer) clearTimeout(webShareSafetyTimer);
-      webShareSafetyTimer = setTimeout(function () {
-        if (!activeDisplayStream) releaseWebShare(false);
-      }, 15000);
+      finishShareSetupCapture(capturePromise, findShareStartButton, function (currentButton) {
+        if (captureSeq !== shareSetupCaptureSeq) return;
+        shareSetupCapturePromise = null;
+        shareSetupBypassButton = currentButton;
+        shareSetupBypassUntil = Date.now() + 4000;
+        currentButton.click();
+        if (webShareSafetyTimer) clearTimeout(webShareSafetyTimer);
+        webShareSafetyTimer = setTimeout(function () {
+          if (!activeDisplayStream) releaseWebShare(false);
+        }, 15000);
+      }, function (error) {
+        if (captureSeq !== shareSetupCaptureSeq) return;
+        shareSetupCapturePromise = null;
+        releaseWebShare(false);
+        showDisplayCaptureError(error);
+      });
     });
   }
 

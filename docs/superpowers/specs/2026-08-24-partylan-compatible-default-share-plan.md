@@ -1,7 +1,7 @@
 # PartyLAN 跨端兼容默认共享档位与网页窗口捕获回退实施计划
 
 **日期：** 2026-08-24  
-**状态：** 待实施  
+**状态：** 已实施并完成本地验证，等待线上部署确认
 **设计依据：** `docs/superpowers/specs/2026-08-24-partylan-compatible-default-share-design.md`
 
 ## 任务一：为网页捕获和弹窗时序建立红灯
@@ -77,3 +77,14 @@ go test -tags partylan_native_media ./... -count=1
 ```
 
 最后执行脚本语法检查、`git diff --check`、策略副本摘要核对和敏感信息扫描。完成本地验证后停止，广州节点部署需用户另行确认。
+
+## 执行记录
+
+- 已先以红灯复现客户端默认值不一致、网页注入脚本缺少兼容捕获请求，以及设置弹窗在捕获 Promise 完成前立即点击旧按钮的问题。
+- 客户端默认改为 `1280×720@30 FPS`；网页端继续只在没有用户保存设置时使用 `1280×720@30 FPS`，不覆盖既有高画质偏好。
+- 网页端新增一次性兼容捕获：仅对 `TypeError`、`OverconstrainedError`、`NotReadableError` 重试 `video:true` 加按模式决定的 `audio`，取消授权等错误不重试。
+- 设置弹窗改为等待捕获 Promise 完成后重新查找当前开始按钮并只点击一次；重复确认、页面重绘和失败路径均清理 pending 请求与共享租约。
+- 缓存版本从 `inject.js?v=6.28` 升级为 `inject.js?v=6.29`；未修改自适应策略、SFU、TURN、Presence、语音隔离或客户端最小化窗口还原逻辑。
+- 服务器 Node 测试 `143/143`、Python 测试 `38/38`、前端 Node 测试 `40/40`、前端生产构建、普通 Go 全仓测试和 `partylan_native_media` Go 全仓测试全部通过。
+- Windows 客户端构建完成：`build/bin/PartyLAN.exe`，大小 `21,591,040` 字节，SHA-256 `D4B8C078209020CEE7C312280C8ACDE2466DB7EDA97DE18CBD51B1DAEFEAF5DB`。
+- 广州节点尚未部署本轮 `inject.js?v=6.29` 和 Nginx 版本变更；部署需用户另行确认。

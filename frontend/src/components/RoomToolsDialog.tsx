@@ -79,8 +79,8 @@ export default function RoomToolsDialog({
 }: RoomToolsDialogProps) {
   const [sourceKind, setSourceKind] = useState<ShareSourceKind>('display');
   const [sourceId, setSourceId] = useState('');
-  const [resolutionKey, setResolutionKey] = useState<string>('original');
-  const [fpsValue, setFpsValue] = useState<number>(60);
+  const [resolutionKey, setResolutionKey] = useState<string>('1280x720');
+  const [fpsValue, setFpsValue] = useState<number>(30);
   const selectedResolution = useMemo(() => parseResolutionKey(resolutionKey), [resolutionKey]);
   const displaySources = useMemo(() => shareSources.filter((source) => source.kind === 'display'), [shareSources]);
   const windowSources = useMemo(() => shareSources.filter((source) => source.kind === 'window'), [shareSources]);
