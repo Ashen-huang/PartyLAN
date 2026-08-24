@@ -1,7 +1,7 @@
 # PartyLAN CPU 感知的网页自适应与恢复实施计划
 
 **日期：** 2026-08-24
-**状态：** 已实施并完成本地验证，等待线上部署确认
+**状态：** 已实施并部署广州节点，等待线上实测反馈
 **设计依据：** `docs/superpowers/specs/2026-08-24-partylan-cpu-aware-adaptive-recovery-design.md`
 
 ## 任务一：建立 CPU/网络分类红灯
@@ -138,7 +138,7 @@ go test -tags partylan_native_media ./... -count=1
 - 搜索密钥、口令、私钥和临时日志路径；
 - 审计最终 diff，确认没有客户端媒体、SFU、TURN、Presence 或无关生成文件改动。
 
-本轮完成代码和本地验证后停止，不直接部署广州节点。线上部署和 `test` 灰度由用户另行确认。
+本轮先完成代码和本地验证；取得用户部署确认后，再按下述记录增量部署广州节点。
 
 ## 实施记录
 
@@ -149,4 +149,16 @@ go test -tags partylan_native_media ./... -count=1
 - TURN/SFU 容量显示改用当前自适应档位上限和实时流量；缓存键升级为 `webrtc-adaptive.js?v=8`、`inject.js?v=6.28`。
 - 服务器 Node 测试 `137/137`、Python 测试 `38/38`、前端 Node 测试 `40/40`、前端生产构建、普通 Go 全仓测试和 `partylan_native_media` Go 全仓测试全部通过。
 - `inject.js` 和两份策略脚本语法检查、`git diff --check`、敏感信息扫描及策略副本摘要核对通过；两份策略 SHA-256 均为 `7BC6876444F5888A91A17BCC42995204C2F2A675860B8CA3DA692DB7879B7765`。
-- 未修改客户端原生媒体、SFU、TURN、Presence 或控制面实现，也未部署广州节点。
+- 未修改客户端原生媒体、SFU、TURN、Presence 或控制面实现。
+
+## 广州节点部署记录
+
+- 部署提交：`a516d56 fix: 修复网页共享自适应误降档与恢复`。
+- 部署时间：`2026-08-24T09:27:27+08:00`。
+- 回滚备份：`/root/screego/backups/cpu-aware-adaptive-20260824T092528+0800`。
+- 暂存目录：`/root/screego/staging/cpu-aware-adaptive-20260824T092528+0800`。
+- 仅原子替换线上两份 `inject.js` 和两份 `webrtc-adaptive.js`，并在生产 Nginx 配置中将缓存版本升级为 `webrtc-adaptive.js?v=8`、`inject.js?v=6.28`；未覆盖整份线上 Nginx 配置。
+- 正式域名返回的 `inject.js` SHA-256 为 `74E57897732C9F43651D59F7818BA3B20F435D5B01DAB135C01E8AD0F17F6972`，`webrtc-adaptive.js` SHA-256 为 `7BC6876444F5888A91A17BCC42995204C2F2A675860B8CA3DA692DB7879B7765`，与部署文件一致。
+- Nginx 配置测试和无中断重载通过；Nginx 主进程、屏幕 SFU、语音 SFU、控制面及 Screego 的 PID 均未变化，屏幕与语音容器 ID 和镜像未变化。
+- 部署后 `/api/rooms` 返回零个活动房间，屏幕 SFU 和语音 SFU 健康检查通过，最近 200 条 Nginx 访问记录无 5xx。
+- 部署脚本的预检查因 `pipefail` 在正式替换前触发过两次自动恢复；当时没有活动房间，恢复发生在资源切换前。最终线上版本、资源摘要、配置摘要、服务状态和进程快照均已独立复核为目标状态。
