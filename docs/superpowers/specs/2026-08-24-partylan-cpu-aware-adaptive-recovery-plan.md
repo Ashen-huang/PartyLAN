@@ -1,0 +1,141 @@
+# PartyLAN CPU 感知的网页自适应与恢复实施计划
+
+**日期：** 2026-08-24
+**状态：** 已确认，开始实施
+**设计依据：** `docs/superpowers/specs/2026-08-24-partylan-cpu-aware-adaptive-recovery-design.md`
+
+## 任务一：建立 CPU/网络分类红灯
+
+修改：
+
+- `server/test_webrtc_adaptive_policy.mjs`
+
+新增测试样本和断言：
+
+- 采集 `60 FPS`、编码/发送 `3 FPS`、接收 `3 FPS` 且 `qualityLimitationReason=cpu` 时，接收端状态不是 impaired；
+- 连续 CPU 压力只产生 `downshift-cpu`，每次下降一级，并且不能准备 `downshift-fast`；
+- CPU 压力经过冷却和新的连续样本后才能继续降一级；
+- 发送 `60 FPS`、接收 `3 FPS` 且接收报告新鲜时仍分类为网络异常；
+- 网络快速降档根据可持续带宽计算目标，但单次最多跨两级。
+
+先运行：
+
+```powershell
+node --test server/test_webrtc_adaptive_policy.mjs
+```
+
+确认旧 `adaptive-per-peer-v5` 因 CPU 误判、旧决策类型和无跨度上限而失败。
+
+## 任务二：实现压力分类和受控降档
+
+同步修改并最终保持字节一致：
+
+- `server/webrtc_adaptive_policy.js`
+- `server/screego/deploy/webrtc-adaptive.js`
+
+实施：
+
+- 策略版本升级为 `adaptive-per-peer-v6`；
+- 将接收评估中的发送崩帧从 `decodeImpaired` 移出；
+- 新增 CPU、网络、健康和不可用压力分类；
+- CPU 连续两个样本后用 `downshift-cpu` 逐级下降，不设置接收驱动的快速降档状态；
+- 网络路径保留普通降档，并将快速目标限制为 `currentLevel + 2`；
+- 状态记录最近降档压力类型，供恢复探测选择正确提交条件；
+- path/session 复位时清空新增状态。
+
+运行任务一测试，直到全部通过；再运行集成副本一致性测试：
+
+```powershell
+node --test server/test_webrtc_adaptive_policy.mjs server/test_webrtc_adaptive_integration.mjs
+```
+
+## 任务三：建立恢复与反馈冻结红灯
+
+修改：
+
+- `server/test_webrtc_adaptive_policy.mjs`
+- `server/test_webrtc_adaptive_integration.mjs`
+
+新增或改写测试：
+
+- 健康接收反馈即使 FPS 和码率没有比探测基线提高 `15%`，两个新鲜样本后仍提交 probe；
+- CPU 降档后的 probe 在 CPU 压力解除且两个样本健康后提交；CPU 压力持续两个样本时回滚；
+- `page-hidden`、无效样本和接收报告过期不累计 probe 失败、不提交、不回滚；
+- 重复接收报告不累计有效样本；
+- 恢复新鲜反馈后，需要两个样本才能恢复决策；
+- `sampleAdaptiveStreaming()` 在共享页面隐藏时不调用每连接采样器。
+
+先运行目标测试，确认旧实现因固定改善比例、超时回滚和隐藏页面仍采样而失败。
+
+## 任务四：实现健康证据恢复和后台冻结
+
+修改：
+
+- `server/webrtc_adaptive_policy.js`
+- `server/screego/deploy/webrtc-adaptive.js`
+- `server/screego/deploy/inject.js`
+
+实施：
+
+- 删除固定 `PROBE_IMPROVEMENT_RATIO` 和改善计数作为提交门槛；
+- probe 只累计新鲜、有效、与降档原因相匹配的健康/异常样本；
+- 缺失、过期、重复或无效接收反馈时保持 probe 状态，不按墙钟超时回滚；
+- 网络 probe 以接收健康为提交依据；CPU probe 额外要求 CPU 压力解除；
+- 保持两个明确异常样本回滚和递增冷却；
+- 共享页面隐藏时冻结自适应采样，恢复后由新鲜反馈重新推进状态机。
+
+运行：
+
+```powershell
+node --test server/test_webrtc_adaptive_policy.mjs server/test_webrtc_adaptive_integration.mjs
+```
+
+## 任务五：修复诊断负载和资源版本
+
+修改：
+
+- `server/test_webrtc_adaptive_integration.mjs`
+- `server/test_webrtc_recovery_integration.mjs`
+- `server/screego/deploy/inject.js`
+- `server/screego/deploy/nginx-screego.conf`
+
+先增加红灯断言：
+
+- 单流估算使用当前 `adaptiveTargetKbpsValue` 和实际上下行最大值；
+- 估算公式不再使用原始 `targetKbpsValue`；
+- 加载资源精确为 `webrtc-adaptive.js?v=8` 和 `inject.js?v=6.28`。
+
+然后修改注入脚本与 Nginx 配置，运行：
+
+```powershell
+node --test server/test_webrtc_adaptive_integration.mjs server/test_webrtc_recovery_integration.mjs server/test_web_unified_sfu_integration.mjs
+```
+
+## 任务六：完整回归与交付检查
+
+运行服务器全部自动测试：
+
+```powershell
+$serverTests = Get-ChildItem server -Filter 'test_*.mjs' | Select-Object -ExpandProperty FullName
+node --test $serverTests
+python -m unittest discover -s server -p "test_*.py"
+```
+
+由于注入资源会被客户端内嵌网页加载，再运行前端和 Go 全仓回归：
+
+```powershell
+$frontendTests = Get-ChildItem frontend/tests -Filter '*.test.mjs' | Select-Object -ExpandProperty FullName
+node --test $frontendTests
+npm run build --prefix frontend
+go test ./... -count=1
+go test -tags partylan_native_media ./... -count=1
+```
+
+最后执行：
+
+- `git diff --check`；
+- 源策略与部署策略摘要对比；
+- 搜索密钥、口令、私钥和临时日志路径；
+- 审计最终 diff，确认没有客户端媒体、SFU、TURN、Presence 或无关生成文件改动。
+
+本轮完成代码和本地验证后停止，不直接部署广州节点。线上部署和 `test` 灰度由用户另行确认。
