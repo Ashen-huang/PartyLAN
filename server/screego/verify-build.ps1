@@ -12,7 +12,7 @@ try {
   if (-not (Test-Path "node_modules/.bin/tsc.cmd") -and -not (Test-Path "node_modules/.bin/tsc")) {
     throw "Screego UI dependencies are missing; install the lockfile dependencies before verification"
   }
-  node --test --experimental-strip-types src/iceSession.test.mjs src/Room.fullscreen.test.mjs src/partylanMode.test.mjs
+  node --test --experimental-strip-types src/iceSession.test.mjs src/Room.fullscreen.test.mjs src/Room.native-ui.test.mjs src/partylanMode.test.mjs
   if ($LASTEXITCODE -ne 0) { throw "Screego UI behavior tests failed" }
   npm run build
   if ($LASTEXITCODE -ne 0) { throw "Screego UI build failed" }

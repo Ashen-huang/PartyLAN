@@ -22,6 +22,14 @@ WebSocket signaling, and `5054/UDP` for ICE media.
    failed or repeatedly degraded session remains protected without rebuilding
    the peer connection.
 
+For a native web UI rollout, build the locked Screego source after applying
+all patches, including `0006-partylan-native-web-ui.patch`, and create a new
+immutable image tag. The image must pass the temporary-container check before
+the production compose file is changed. Load `/etc/gamecast-sfu/runtime.env`
+explicitly for both the temporary and production compose commands; omitting
+it causes the Screego container to restart because its external IP and secret
+are unset.
+
 Before a voice rollout, build the immutable image from the repository root:
 
 ```bash

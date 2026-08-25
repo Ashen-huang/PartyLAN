@@ -622,10 +622,23 @@ test('web hover tools stay outside the viewing layout and preserve diagnostics',
   assert.match(injectSource, /justify-content:flex-end;padding:18px 24px/);
 });
 
+test('native PartyLAN UI owns the action rail without legacy injection interception', () => {
+  assert.match(injectSource, /function nativeWebUiActive\(\)/);
+  assert.match(injectSource, /document\.querySelector\('\[data-partylan-native-tools\]'\)/);
+  assert.match(injectSource, /btn\.dataset\.partylanNativeShare === 'true'/);
+  assert.match(injectSource, /if \(nativeWebUiActive\(\)\) return;/);
+});
+
+test('native share keeps the browser picker inside the user activation window', () => {
+  assert.match(injectSource, /if \(nativeUiShare\) \{/);
+  assert.match(injectSource, /requestDisplayMediaWithCompatibilityFallback\(nativeBuilt\.constraints, nativeBuilt\.settings\)/);
+  assert.match(injectSource, /return claimWebShare\(\)\.then\(function \(\) \{/);
+});
+
 test('versioned assets load inject before the SFU client without exposing sensitive material', () => {
   const replacement = nginxSource.match(/sub_filter '<\/head>' '([^']+)<\/head>'/);
   assert.ok(replacement);
-  assert.ok(replacement[1].indexOf('/inject.js?v=6.32') >= 0);
+  assert.ok(replacement[1].indexOf('/inject.js?v=6.33') >= 0);
   assert.ok(replacement[1].indexOf('/sfu-client.js?v=1.9') >= 0);
   assert.ok(replacement[1].indexOf('/inject.js') < replacement[1].indexOf('/sfu-client.js'));
 

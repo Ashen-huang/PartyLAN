@@ -1,0 +1,547 @@
+diff --git a/ui/src/Room.native-ui.test.mjs b/ui/src/Room.native-ui.test.mjs
+new file mode 100644
+index 0000000..d891e08
+--- /dev/null
++++ b/ui/src/Room.native-ui.test.mjs
+@@ -0,0 +1,24 @@
++import assert from 'node:assert/strict';
++import {readFile} from 'node:fs/promises';
++import test from 'node:test';
++
++const roomSource = await readFile(new URL('./Room.tsx', import.meta.url), 'utf8');
++const useRoomSource = await readFile(new URL('./useRoom.ts', import.meta.url), 'utf8');
++
++test('Room renders the native PartyLAN side rail and stable action hooks', () => {
++    assert.match(roomSource, /data-partylan-native-tools/);
++    assert.match(roomSource, /data-partylan-native-share="true"/);
++    assert.match(roomSource, /id="partylan-presence-roster"/);
++    assert.match(roomSource, /aria-label="Leave Room"/);
++});
++
++test('Room no longer renders the legacy bottom control toolbar', () => {
++    assert.doesNotMatch(roomSource, /className=\{classes\.control\}/);
++    assert.match(roomSource, /className=\{classes\.sideRailBar\}/);
++});
++
++test('native share keeps the PartyLAN media control hook and room leave hook', () => {
++    assert.match(useRoomSource, /__PARTYLAN_NATIVE_UI_SHARE__/);
++    assert.match(useRoomSource, /const leave = \(\): void/);
++    assert.match(useRoomSource, /return \{state, room, share, stopShare, setName, leave\}/);
++});
+diff --git a/ui/src/Room.tsx b/ui/src/Room.tsx
+index b2ce09b..b9dfeaf 100644
+--- a/ui/src/Room.tsx
++++ b/ui/src/Room.tsx
+@@ -8,6 +8,9 @@ import PeopleIcon from '@mui/icons-material/People';
+ import VolumeMuteIcon from '@mui/icons-material/VolumeOff';
+ import VolumeIcon from '@mui/icons-material/VolumeUp';
+ import SettingsIcon from '@mui/icons-material/Settings';
++import CloseIcon from '@mui/icons-material/Close';
++import LogoutIcon from '@mui/icons-material/Logout';
++import MenuIcon from '@mui/icons-material/Menu';
+ import {useHotkeys} from 'react-hotkeys-hook';
+ import {Video} from './Video';
+ import {makeStyles} from 'tss-react/mui';
+@@ -89,11 +92,13 @@ export const Room = ({
+     share,
+     stopShare,
+     setName,
++    leave,
+ }: {
+     state: ConnectedRoom;
+     share: () => void;
+     stopShare: () => void;
+     setName: (name: string) => void;
++    leave: () => void;
+ }) => {
+     const {classes} = useStyles();
+     const [open, setOpen] = React.useState(false);
+@@ -104,6 +109,8 @@ export const Room = ({
+     const [selectedStream, setSelectedStream] = React.useState<string | typeof HostStream>();
+     const [videoElement, setVideoElement] = React.useState<FullScreenHTMLVideoElement | null>(null);
+     const [fullscreen, setFullscreen] = React.useState(false);
++    const [activePanel, setActivePanel] = React.useState<'share' | 'members' | null>(null);
++    const [railHovered, setRailHovered] = React.useState(false);
+ 
+     useShowOnMouseMovement(setShowControl);
+ 
+@@ -188,6 +195,7 @@ export const Room = ({
+     );
+ 
+     const controlVisible = showControl || open || hoverControl;
++    const sidePanelOpen = railHovered || activePanel !== null;
+ 
+     useHotkeys('s', () => (state.hostStream ? stopShare() : share()), [state.hostStream]);
+     useHotkeys(
+@@ -294,69 +302,178 @@ export const Room = ({
+                 </Typography>
+             )}
+ 
+-            {controlVisible && (
+-                <Paper className={classes.control} elevation={10} {...setHoverState}>
+-                    {(stream?.getAudioTracks().length ?? 0) > 0 && videoElement && (
+-                        <AudioControl video={videoElement} />
+-                    )}
+-                    <Box sx={{whiteSpace: 'nowrap'}}>
+-                        {state.hostStream ? (
+-                            <Tooltip title="Cancel Presentation" arrow>
+-                                <IconButton onClick={stopShare} size="large">
+-                                    <CancelPresentationIcon fontSize="large" />
+-                                </IconButton>
+-                            </Tooltip>
+-                        ) : (
+-                            <Tooltip title="Start Presentation" arrow>
+-                                <IconButton onClick={share} size="large">
+-                                    <PresentToAllIcon fontSize="large" />
+-                                </IconButton>
+-                            </Tooltip>
+-                        )}
+-
+-                        <Tooltip
+-                            classes={{tooltip: classes.noMaxWidth}}
+-                            title={
+-                                <div>
+-                                    <Typography variant="h5">Member List</Typography>
+-                                    <div id="partylan-presence-roster" />
+-                                    <div data-partylan-legacy-roster>
+-                                        {state.users.map((user) => (
+-                                            <Typography key={user.id}>
+-                                                {user.name} {flags(user)}
+-                                            </Typography>
+-                                        ))}
+-                                    </div>
+-                                </div>
++            <Box
++                className={classes.sideRail}
++                data-partylan-native-tools
++                onMouseEnter={() => setRailHovered(true)}
++                onMouseLeave={() => setRailHovered(false)}
++            >
++                {!sidePanelOpen && (
++                    <Paper className={classes.sideRailHandle} elevation={10}>
++                        <IconButton
++                            aria-label="Open Room Tools"
++                            onFocus={() => setRailHovered(true)}
++                            size="large"
++                        >
++                            <MenuIcon fontSize="large" />
++                        </IconButton>
++                    </Paper>
++                )}
++                {sidePanelOpen && <Paper className={classes.sideRailBar} elevation={10}>
++                    <Tooltip title={state.hostStream ? 'Cancel Presentation' : 'Start Presentation'} placement="left" arrow>
++                        <IconButton
++                            data-partylan-native-share="true"
++                            aria-label={state.hostStream ? 'Cancel Presentation' : 'Start Presentation'}
++                            onClick={
++                                state.hostStream
++                                    ? stopShare
++                                    : () => setActivePanel(activePanel === 'share' ? null : 'share')
+                             }
+-                            arrow
++                            size="large"
++                        >
++                            {state.hostStream ? (
++                                <CancelPresentationIcon fontSize="large" />
++                            ) : (
++                                <PresentToAllIcon fontSize="large" />
++                            )}
++                        </IconButton>
++                    </Tooltip>
++                    <Tooltip title="Member List" placement="left" arrow>
++                        <IconButton
++                            aria-label="Member List"
++                            onClick={() => setActivePanel(activePanel === 'members' ? null : 'members')}
++                            size="large"
+                         >
+                             <Badge badgeContent={state.users.length} color="primary">
+                                 <PeopleIcon fontSize="large" />
+                             </Badge>
+-                        </Tooltip>
+-                        <Tooltip title={fullscreen ? 'Exit Fullscreen' : 'Fullscreen'} arrow>
++                        </IconButton>
++                    </Tooltip>
++                    <Tooltip title={fullscreen ? 'Exit Fullscreen' : 'Fullscreen'} placement="left" arrow>
++                        <IconButton
++                            aria-label={fullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
++                            onClick={() => void handleFullscreen()}
++                            disabled={!selectedStream}
++                            size="large"
++                        >
++                            {fullscreen ? <FullscreenExitIcon fontSize="large" /> : <FullScreenIcon fontSize="large" />}
++                        </IconButton>
++                    </Tooltip>
++                    <Tooltip title="Settings" placement="left" arrow>
++                        <IconButton aria-label="Settings" onClick={() => setOpen(true)} size="large">
++                            <SettingsIcon fontSize="large" />
++                        </IconButton>
++                    </Tooltip>
++                    <Tooltip title="Leave Room" placement="left" arrow>
++                        <IconButton aria-label="Leave Room" onClick={leave} size="large">
++                            <LogoutIcon fontSize="large" />
++                        </IconButton>
++                    </Tooltip>
++                </Paper>}
++
++                {sidePanelOpen && activePanel === 'members' && (
++                    <Paper className={classes.sideDrawer} elevation={10}>
++                        <Box className={classes.sideDrawerHeader}>
++                            <Typography variant="h6">Member List</Typography>
++                            <IconButton aria-label="Close Member List" onClick={() => setActivePanel(null)} size="small">
++                                <CloseIcon />
++                            </IconButton>
++                        </Box>
++                        <Box id="partylan-presence-roster" className={classes.memberList} />
++                        <Box data-partylan-legacy-roster className={classes.memberList}>
++                            {state.users.map((user) => (
++                                <Typography key={user.id} variant="body2" className={classes.memberRow}>
++                                    {user.name} {flags(user)}
++                                </Typography>
++                            ))}
++                        </Box>
++                    </Paper>
++                )}
++
++                {sidePanelOpen && activePanel === 'share' && (
++                    <Paper className={classes.sideDrawer} elevation={10}>
++                        <Box className={classes.sideDrawerHeader}>
++                            <Typography variant="h6">Share</Typography>
++                            <IconButton aria-label="Close Share Panel" onClick={() => setActivePanel(null)} size="small">
++                                <CloseIcon />
++                            </IconButton>
++                        </Box>
++                        <Typography variant="body2" color="text.secondary" sx={{mb: 1.5}}>
++                            {state.hostStream ? 'You are sharing' : 'Ready to share your screen'}
++                        </Typography>
++                        {!state.hostStream && (
++                            <Box className={classes.shareOptions}>
++                                <label>
++                                    Resolution
++                                    <select
++                                        value={settings.resolution ?? '1280x720'}
++                                        onChange={(event) =>
++                                            setSettings({...settings, resolution: event.target.value})
++                                        }
++                                    >
++                                        <option value="1920x1080">1080p (1920x1080)</option>
++                                        <option value="1280x720">720p (1280x720)</option>
++                                        <option value="854x480">480p (854x480)</option>
++                                        <option value="640x360">360p (640x360)</option>
++                                    </select>
++                                </label>
++                                <label>
++                                    Frame rate
++                                    <select
++                                        value={settings.framerate}
++                                        onChange={(event) =>
++                                            setSettings({...settings, framerate: Number(event.target.value)})
++                                        }
++                                    >
++                                        <option value={60}>60 FPS</option>
++                                        <option value={45}>45 FPS</option>
++                                        <option value={30}>30 FPS</option>
++                                    </select>
++                                </label>
++                                <label>
++                                    Audio
++                                    <select
++                                        value={settings.audioMode ?? 'app'}
++                                        onChange={(event) =>
++                                            setSettings({
++                                                ...settings,
++                                                audioMode: event.target.value as 'app' | 'system' | 'off',
++                                            })
++                                        }
++                                    >
++                                        <option value="app">Window/tab audio</option>
++                                        <option value="system">System audio</option>
++                                        <option value="off">No audio</option>
++                                    </select>
++                                </label>
++                            </Box>
++                        )}
++                        {state.hostStream ? (
+                             <IconButton
+-                                onClick={() => void handleFullscreen()}
+-                                disabled={!selectedStream}
++                                color="error"
++                                aria-label="Cancel Presentation"
++                                onClick={stopShare}
+                                 size="large"
+                             >
+-                                {fullscreen ? (
+-                                    <FullscreenExitIcon fontSize="large" />
+-                                ) : (
+-                                    <FullScreenIcon fontSize="large" />
+-                                )}
++                                <CancelPresentationIcon fontSize="large" />
+                             </IconButton>
+-                        </Tooltip>
+-
+-                        <Tooltip title="Settings" arrow>
+-                            <IconButton onClick={() => setOpen(true)} size="large">
+-                                <SettingsIcon fontSize="large" />
++                        ) : (
++                            <IconButton
++                                color="primary"
++                                data-partylan-native-share="true"
++                                aria-label="Start Presentation"
++                                onClick={share}
++                                size="large"
++                            >
++                                <PresentToAllIcon fontSize="large" />
+                             </IconButton>
+-                        </Tooltip>
+-                    </Box>
+-                </Paper>
+-            )}
++                        )}
++                        {(stream?.getAudioTracks().length ?? 0) > 0 && videoElement && (
++                            <AudioControl video={videoElement} />
++                        )}
++                    </Paper>
++                )}
++            </Box>
+ 
+             <div className={classes.bottomContainer}>
+                 {state.clientStreams
+@@ -502,6 +619,86 @@ const useStyles = makeStyles()(() => ({
+         transform: 'translateX(-50%)',
+         zIndex: 30,
+     },
++    sideRail: {
++        position: 'fixed',
++        top: '50%',
++        right: 16,
++        transform: 'translateY(-50%)',
++        zIndex: 40,
++        display: 'flex',
++        flexDirection: 'row-reverse',
++        alignItems: 'center',
++        gap: 12,
++        color: '#fbf1d4',
++    },
++    sideRailBar: {
++        display: 'flex',
++        flexDirection: 'column',
++        gap: 4,
++        padding: 8,
++        background: 'rgba(15, 12, 41, .92)',
++        border: '1px solid rgba(124, 58, 237, .45)',
++        borderRadius: 14,
++        backdropFilter: 'blur(12px)',
++    },
++    sideRailHandle: {
++        padding: 4,
++        background: 'rgba(15, 12, 41, .92)',
++        border: '1px solid rgba(124, 58, 237, .45)',
++        borderRadius: 12,
++        backdropFilter: 'blur(12px)',
++    },
++    sideDrawer: {
++        width: 'min(300px, calc(100vw - 86px))',
++        maxHeight: 'min(560px, calc(100vh - 32px))',
++        overflow: 'auto',
++        padding: 16,
++        background: 'rgba(15, 12, 41, .96)',
++        border: '1px solid rgba(124, 58, 237, .45)',
++        borderRadius: 14,
++        backdropFilter: 'blur(16px)',
++    },
++    sideDrawerHeader: {
++        display: 'flex',
++        alignItems: 'center',
++        justifyContent: 'space-between',
++        gap: 8,
++        paddingBottom: 8,
++        marginBottom: 12,
++        borderBottom: '1px solid rgba(148, 163, 184, .18)',
++    },
++    memberList: {
++        display: 'grid',
++        gap: 6,
++    },
++    memberRow: {
++        padding: '6px 8px',
++        border: '1px solid rgba(148, 163, 184, .14)',
++        borderRadius: 8,
++        background: 'rgba(255, 255, 255, .05)',
++    },
++    shareOptions: {
++        display: 'grid',
++        gap: 10,
++        marginBottom: 12,
++        '& label': {
++            display: 'grid',
++            gap: 4,
++            color: '#a5b4fc',
++            fontSize: 12,
++            fontWeight: 600,
++        },
++        '& select': {
++            width: '100%',
++            minHeight: 34,
++            padding: '5px 8px',
++            border: '1px solid rgba(124, 58, 237, .34)',
++            borderRadius: 8,
++            background: 'rgba(15, 12, 41, .76)',
++            color: '#e2e8f0',
++            fontSize: 12,
++        },
++    },
+     video: {
+         display: 'block',
+         margin: '0 auto',
+@@ -564,4 +761,12 @@ const useStyles = makeStyles()(() => ({
+ 
+         overflow: 'auto',
+     },
++    '@media (max-width: 600px)': {
++        sideRail: {
++            right: 8,
++        },
++        sideDrawer: {
++            width: 'min(280px, calc(100vw - 70px))',
++        },
++    },
+ }));
+diff --git a/ui/src/settings.ts b/ui/src/settings.ts
+index 2ba8d1b..0280ba2 100644
+--- a/ui/src/settings.ts
++++ b/ui/src/settings.ts
+@@ -38,6 +38,8 @@ export interface Settings {
+     displayMode: VideoDisplayMode;
+     preferCodec?: PreferredCodec;
+     framerate: number;
++    resolution?: string;
++    audioMode?: 'app' | 'system' | 'off';
+ }
+ export interface PreferredCodec {
+     mimeType: string;
+@@ -65,6 +67,11 @@ export const loadSettings = (): Settings => {
+         return {
+             name: settings.name?.toString(),
+             framerate: settings.framerate ?? defaults.framerate,
++            resolution: typeof settings.resolution === 'string' ? settings.resolution : '1280x720',
++            audioMode:
++                settings.audioMode === 'system' || settings.audioMode === 'off'
++                    ? settings.audioMode
++                    : 'app',
+             displayMode:
+                 Object.values(VideoDisplayMode).find((mode) => mode === settings.displayMode) ??
+                 defaults.displayMode,
+diff --git a/ui/src/useRoom.ts b/ui/src/useRoom.ts
+index 62bf95d..d925203 100644
+--- a/ui/src/useRoom.ts
++++ b/ui/src/useRoom.ts
+@@ -44,8 +44,20 @@ export interface UseRoom {
+     share: () => void;
+     setName: (name: string) => void;
+     stopShare: () => void;
++    leave: () => void;
+ }
+ 
++const shareResolutionConstraints: Record<string, {width: number; height: number}> = {
++    '1920x1080': {width: 1920, height: 1080},
++    '1280x720': {width: 1280, height: 720},
++    '854x480': {width: 854, height: 480},
++    '640x360': {width: 640, height: 360},
++};
++
++type PartyLANNativeShareWindow = Window & {
++    __PARTYLAN_NATIVE_UI_SHARE__?: boolean;
++};
++
+ const relayConfig: Partial<RTCConfiguration> =
+     window.location.search.indexOf('forceTurn=true') !== -1 ? {iceTransportPolicy: 'relay'} : {};
+ 
+@@ -222,6 +234,7 @@ export const useRoom = (config: UIConfig): UseRoom => {
+     const host = React.useRef(createPeerSessionRegistry());
+     const client = React.useRef(createPeerSessionRegistry());
+     const stream = React.useRef<MediaStream>(undefined);
++    const leaving = React.useRef(false);
+ 
+     const [state, setState] = React.useState<RoomState>(false);
+ 
+@@ -406,7 +419,9 @@ export const useRoom = (config: UIConfig): UseRoom => {
+                         resolve();
+                         first = false;
+                     }
+-                    enqueueSnackbar(event.reason, {variant: 'error', persist: true});
++                    if (!leaving.current) {
++                        enqueueSnackbar(event.reason, {variant: 'error', persist: true});
++                    }
+                     setState(false);
+                 };
+                 ws.onerror = (err) => {
+@@ -414,10 +429,13 @@ export const useRoom = (config: UIConfig): UseRoom => {
+                         resolve();
+                         first = false;
+                     }
+-                    enqueueSnackbar(err?.toString(), {variant: 'error', persist: true});
++                    if (!leaving.current) {
++                        enqueueSnackbar(err?.toString(), {variant: 'error', persist: true});
++                    }
+                     setState(false);
+                 };
+                 ws.onopen = () => {
++                    leaving.current = false;
+                     create.payload.username = loadSettings().name;
+                     send(create);
+                 };
+@@ -442,9 +460,20 @@ export const useRoom = (config: UIConfig): UseRoom => {
+             return;
+         }
+         try {
++            const shareSettings = loadSettings();
++            const resolution = shareResolutionConstraints[shareSettings.resolution ?? '1280x720'];
++            const video: MediaTrackConstraints = {
++                frameRate: {ideal: shareSettings.framerate, max: shareSettings.framerate},
++            };
++            if (resolution) {
++                video.width = {ideal: resolution.width};
++                video.height = {ideal: resolution.height};
++            }
++            const nativeShareWindow = window as PartyLANNativeShareWindow;
++            nativeShareWindow.__PARTYLAN_NATIVE_UI_SHARE__ = true;
+             stream.current = await navigator.mediaDevices.getDisplayMedia({
+-                video: {frameRate: loadSettings().framerate},
+-                audio: {
++                video,
++                audio: shareSettings.audioMode === 'off' ? false : {
+                     echoCancellation: false,
+                     autoGainControl: false,
+                     noiseSuppression: false,
+@@ -453,7 +482,9 @@ export const useRoom = (config: UIConfig): UseRoom => {
+                     googAutoGainControl: false,
+                 },
+             });
++            nativeShareWindow.__PARTYLAN_NATIVE_UI_SHARE__ = false;
+         } catch (e) {
++            (window as PartyLANNativeShareWindow).__PARTYLAN_NATIVE_UI_SHARE__ = false;
+             console.log('Could not getDisplayMedia', e);
+             enqueueSnackbar(`Could not start presentation. (getDisplayMedia error). ${e}`, {
+                 variant: 'error',
+@@ -484,6 +515,15 @@ export const useRoom = (config: UIConfig): UseRoom => {
+         conn.current?.send(JSON.stringify({type: 'name', payload: {username: name}}));
+     };
+ 
++    const leave = (): void => {
++        leaving.current = true;
++        void stopShare();
++        conn.current?.close(1000, 'left room');
++        conn.current = undefined;
++        setRoomID(undefined);
++        setState(false);
++    };
++
+     React.useEffect(() => {
+         if (roomID) {
+             const create = getFromURL('create') === 'true';
+@@ -509,5 +549,5 @@ export const useRoom = (config: UIConfig): UseRoom => {
+         // eslint-disable-next-line react-hooks/exhaustive-deps
+     }, []);
+ 
+-    return {state, room, share, stopShare, setName};
++    return {state, room, share, stopShare, setName, leave};
+ };

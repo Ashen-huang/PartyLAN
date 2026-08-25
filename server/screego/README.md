@@ -29,3 +29,22 @@ Production rollout and rollback steps are documented in `deploy.md`.
 
 `deploy/` contains the version-controlled nginx, register service, inject
 script, and shadow telemetry assets that are copied to the server.
+
+The native web UI is part of patch `0006-partylan-native-web-ui.patch`. It
+replaces the legacy bottom action bar in `ui/src/Room.tsx` with the PartyLAN
+side rail while keeping the media and room state contracts in `useRoom.ts`.
+Build the UI before the Go binary so `ui/serve.go` embeds the current assets:
+
+```powershell
+Push-Location tmp/screego-upstream/ui
+npm install --frozen-lockfile
+npm run build
+Pop-Location
+server/screego/verify-build.ps1
+```
+
+Deploy the resulting Linux binary with a new immutable image tag. The native
+UI image used on the Guangzhou canary is
+`gamecast-sfu:native-web-ui-v1-20260824`; the previous
+`gamecast-sfu:receiver-adaptive-v1-20260815` image remains available for
+rollback.

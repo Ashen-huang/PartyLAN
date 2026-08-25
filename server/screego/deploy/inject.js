@@ -570,6 +570,10 @@
     webHoverToolsRoot = null;
   }
 
+  function nativeWebUiActive() {
+    return !!(document && document.querySelector && document.querySelector('[data-partylan-native-tools]'));
+  }
+
   function setWebHoverShareHint(text, tone) {
     if (!webHoverToolsRoot) return;
     var hint = webHoverToolsRoot.querySelector('#gc-hover-share-hint');
@@ -692,6 +696,10 @@
   function ensureWebHoverTools(roomId) {
     if (!roomId) return null;
     if (!document || typeof document.createElement !== 'function' || !document.body) return null;
+    if (nativeWebUiActive()) {
+      destroyWebHoverTools();
+      return null;
+    }
     if (webHoverToolsRoot && sameRoomId(webHoverToolsRoomId, roomId)) return webHoverToolsRoot;
     destroyWebHoverTools();
     var root = document.createElement('div');
@@ -2825,23 +2833,40 @@
     if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) return;
     nativeGetDisplayMedia = navigator.mediaDevices.getDisplayMedia.bind(navigator.mediaDevices);
     navigator.mediaDevices.getDisplayMedia = function (constraints) {
-      if (currentRoomId() && !webShareLease) {
-        return Promise.reject(new Error('share_locked'));
-      }
-      var primedPromise = consumePrimedDisplayMediaRequest();
-      if (primedPromise) {
-        var primedSettings = extCfg();
-        return primedPromise.then(function (stream) {
-          return activateCapturedDisplayStream(stream, primedSettings);
+      var nativeUiShare = window.__PARTYLAN_NATIVE_UI_SHARE__ === true;
+      if (nativeUiShare) {
+        var nativeBuilt = buildDisplayMediaRequest(constraints);
+        return requestDisplayMediaWithCompatibilityFallback(nativeBuilt.constraints, nativeBuilt.settings).then(function (stream) {
+          return claimWebShare().then(function () {
+            try {
+              return activateCapturedDisplayStream(stream, nativeBuilt.settings);
+            } catch (activationError) {
+              stopDisplayStreamTracks(stream);
+              return Promise.reject(activationError);
+            }
+          });
         }).catch(function (error) {
           releaseWebShare(false);
           throw error;
         });
       }
+      var leasePromise = currentRoomId() && !webShareLease
+        ? Promise.reject(new Error('share_locked'))
+        : Promise.resolve(null);
+      if (currentRoomId() && !webShareLease) return leasePromise;
+      var primedPromise = consumePrimedDisplayMediaRequest();
+      return leasePromise.then(function () {
+        if (primedPromise) {
+          var primedSettings = extCfg();
+          return primedPromise.then(function (stream) {
+            return activateCapturedDisplayStream(stream, primedSettings);
+          });
+        }
 
-      var built = buildDisplayMediaRequest(constraints);
-      return requestDisplayMediaWithCompatibilityFallback(built.constraints, built.settings).then(function (stream) {
-        return activateCapturedDisplayStream(stream, built.settings);
+        var built = buildDisplayMediaRequest(constraints);
+        return requestDisplayMediaWithCompatibilityFallback(built.constraints, built.settings).then(function (stream) {
+          return activateCapturedDisplayStream(stream, built.settings);
+        });
       }).catch(function (error) {
         releaseWebShare(false);
         throw error;
@@ -3469,6 +3494,7 @@
     queryAllWithSelf(root, 'svg path').forEach(function (path) {
       if (path.getAttribute('d') !== PRESENT_TO_ALL_ICON_PATH) return;
       var btn = path.closest('button');
+      if (btn && btn.dataset && btn.dataset.partylanNativeShare === 'true') return;
       if (btn && buttons.indexOf(btn) < 0) buttons.push(btn);
     });
     return buttons;
@@ -3606,6 +3632,7 @@
 
   /* ── 隐藏 Screego 自带的帧率和用户名，并增强共享弹窗 ── */
   function hideScreegoSettings(root) {
+    if (nativeWebUiActive()) return;
     queryAllWithSelf(root, '.MuiDialogTitle-root').forEach(function (title) {
       if (title.textContent.trim() !== '设置' && title.textContent.trim() !== 'Settings') return;
       var dialog = title.closest('.MuiPaper-root');
@@ -4281,6 +4308,10 @@
     setInterval(function () {
       var inRoom = /[?&]room=/.test(location.search);
       var existing = document.getElementById(exitBtnId);
+      if (nativeWebUiActive()) {
+        if (existing) existing.remove();
+        return;
+      }
       if (inRoom && !existing) {
         var refBtn = document.querySelector('.MuiIconButton-root');
         if (!refBtn) return;
