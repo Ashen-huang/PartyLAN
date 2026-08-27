@@ -1,4 +1,4 @@
-# PartyLAN Launch Script
+# partylan Windows 兼容启动脚本
 
 Use `scripts/Start-PartyLAN.ps1` for both run and build.
 
@@ -10,7 +10,7 @@ Use `scripts/Start-PartyLAN.ps1` for both run and build.
 
 The default run mode is `gamecast-client`, so the app opens the native
 GameCast/Screego viewer shell and uses the configured GameCast server instead
-of the legacy PartyLAN P2P network.
+of the legacy partylan P2P network.
 
 When `gamecast-client` starts on Windows and a supported MinGW-w64 `gcc`
 toolchain is available, the launcher now auto-enables `-UseNativeMedia` so
@@ -21,7 +21,7 @@ To opt out explicitly for diagnostics, pass:
 .\scripts\Start-PartyLAN.ps1 -UseNativeMedia:$false
 ```
 
-To run the old Tailscale-backed PartyLAN path explicitly:
+To run the old Tailscale-backed partylan path explicitly:
 
 ```powershell
 .\scripts\Start-PartyLAN.ps1 -Mode tailscale-system
@@ -33,8 +33,8 @@ For same-LAN discovery without Tailscale:
 .\scripts\Start-PartyLAN.ps1 -Mode lan
 ```
 
-LAN mode uses UDP `9003` for PartyLAN discovery, TCP `9002` for room probes,
-and TCP `9000` for room control. Allow PartyLAN through Windows Firewall on
+LAN mode uses UDP `9003` for partylan discovery, TCP `9002` for room probes,
+and TCP `9000` for room control. Allow partylan through Windows Firewall on
 private networks when prompted.
 
 For packaged builds that should always launch with the current custom DERP
@@ -91,17 +91,17 @@ that includes the `partylan_tsnet` tag when checking the custom DERP path.
 - `-UseNativeCaptureExperiment` enables experimental `native capture + software encoder` (requires `-UseNativeMedia`).
 - `-UseNativeEncoderExperiment` enables experimental native encoder path with automatic fallback to software encoder (requires `-UseNativeMedia`).
 - When building with the above experimental flags, the switches are baked into the executable via `ldflags`, so packaged builds keep the same behavior without requiring runtime environment variables.
-- Native builds are verified after build: `build/bin/PartyLAN.exe` must contain `CGO_ENABLED=1` and `partylan_native_media` in embedded build metadata.
+- Native builds are verified after build: `build/bin/partylan.exe` must contain `CGO_ENABLED=1` and `partylan_native_media` in embedded build metadata.
 - `-Installer` adds the NSIS installer when `makensis` is installed.
 - `-Mode tailscale-system` builds/runs against the installed Tailscale client and is the default release path.
 - `-Mode networked` builds an executable that starts in embedded network mode by default.
-- `-DERPRegionID`, `-DERPRegionCode`, `-DERPHostName`, and `-DERPPort` declare the self-hosted DERP region PartyLAN expects to see in the active Tailscale DERP map.
+- `-DERPRegionID`, `-DERPRegionCode`, `-DERPHostName`, and `-DERPPort` declare the self-hosted DERP region partylan expects to see in the active Tailscale DERP map.
 - `-TSControlURL` preconfigures an embedded `tsnet` control-plane override for second-phase self-hosted control testing.
 - `-ICEServers`, `-TURNUsername`, and `-TURNCredential` inject WebRTC ICE / TURN settings for media relay diagnostics and fallback.
 
 ## Custom DERP diagnostics
 
-Self-hosted DERP is configured in the Tailscale tailnet policy `derpMap`. PartyLAN does not replace the Tailscale control plane; it verifies the effective DERP map reported to the client and logs peer path summaries.
+Self-hosted DERP is configured in the Tailscale tailnet policy `derpMap`. partylan does not replace the Tailscale control plane; it verifies the effective DERP map reported to the client and logs peer path summaries.
 
 ```powershell
 .\scripts\Start-PartyLAN.ps1 `
@@ -150,7 +150,7 @@ Check the log for `[media/ice]` lines, including:
 
 ## Output
 
-- `build/bin/PartyLAN.exe`
+- `build/bin/partylan.exe`
 
 ## Release bundle
 

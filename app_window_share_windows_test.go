@@ -35,7 +35,7 @@ func newWindowShareFixture(t *testing.T) *windowShareFixture {
 		user32 := windows.NewLazySystemDLL("user32.dll")
 		kernel32 := windows.NewLazySystemDLL("kernel32.dll")
 		className, _ := windows.UTF16PtrFromString("STATIC")
-		title, _ := windows.UTF16PtrFromString("PartyLAN minimized window share fixture")
+		title, _ := windows.UTF16PtrFromString("partylan minimized window share fixture")
 		module, _, _ := kernel32.NewProc("GetModuleHandleW").Call(0)
 		threadID, _, _ := kernel32.NewProc("GetCurrentThreadId").Call()
 		fixture.thread = uint32(threadID)

@@ -3902,7 +3902,7 @@ func (a *App) resolveGameCastAudioCaptureTarget(_ GameCastHostShareRequest, sess
 	case string(sharecatalog.SourceKindDisplay):
 		return audioCaptureTarget{
 			PID:  uint32(os.Getpid()),
-			Name: "PartyLAN process tree",
+			Name: "partylan process tree",
 			Mode: windowsaudio.CaptureExcludeProcessTree,
 		}, true, "exclude-process"
 	case string(sharecatalog.SourceKindWindow):
@@ -5238,7 +5238,7 @@ func (a *App) gameCastUserLabel() string {
 	if name := a.configuredDisplayName(); name != "" {
 		return name
 	}
-	return "PartyLAN"
+	return "partylan"
 }
 
 func gameCastSessionStateFromConfig(cfg gamecast.ServerConfig) GameCastSessionState {

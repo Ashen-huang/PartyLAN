@@ -197,7 +197,7 @@ test('sustained pressure downshifts within six seconds', () => {
 });
 
 test('browser congestion-control baseline is scoped to the test room', () => {
-  assert.equal(POLICY_VERSION, 'adaptive-per-peer-v6');
+  assert.equal(POLICY_VERSION, 'adaptive-per-peer-v7');
   assert.equal(resolveAdaptiveMode('test', '?adaptive=baseline'), 'browser-bwe-baseline-v1');
   assert.equal(resolveAdaptiveMode('other', '?adaptive=baseline'), POLICY_VERSION);
   assert.equal(resolveAdaptiveMode('test', '?adaptive=custom'), POLICY_VERSION);
@@ -395,9 +395,15 @@ test('sender deltas derive loss from packets sent when remote received is absent
     ),
     {valid: false, invalidReason: 'counter-reset'},
   );
+  const throttled = computeSenderDeltas(
+    {bytesSent: 8500000, packetsSent: 2200, packetsLost: 20, now: 62000},
+    {bytesSent: 1000000, packetsSent: 1000, packetsLost: 10, now: 2000},
+  );
+  assert.equal(throttled.valid, true);
+  assert.equal(throttled.outboundKbps, 1000);
   assert.deepEqual(
     computeSenderDeltas(
-      {bytesSent: 1500000, packetsSent: 1100, packetsLost: 17, now: 14000},
+      {bytesSent: 8500000, packetsSent: 2200, packetsLost: 20, now: 73001},
       {bytesSent: 1000000, packetsSent: 1000, packetsLost: 10, now: 2000},
     ),
     {valid: false, invalidReason: 'sample-gap'},
@@ -580,6 +586,113 @@ test('sender CPU collapse is not receiver impairment and only downshifts one lev
   );
   assert.deepEqual(result.decision, {type: 'downshift-cpu', fromLevel: 1, toLevel: 2});
   assert.equal(result.state.level, 2);
+});
+
+test('missing receiver feedback still permits explicit sender CPU downshift', () => {
+  const result = evaluateMany(
+    createAdaptiveState(0),
+    [2000, 4000].map((now) => good(now, {
+      receiverBound: false,
+      senderCapturedFps: 30,
+      senderEncodedFps: 30,
+      senderSentFps: 30,
+      qualityLimitationReason: 'cpu',
+    })),
+  );
+  assert.deepEqual(result.decision, {type: 'downshift-cpu', fromLevel: 0, toLevel: 1});
+  assert.equal(result.state.status, 'degraded-cpu');
+  assert.equal(result.state.receiverStatus, 'unavailable');
+  assert.equal(result.state.lastDownshiftReceiverDriven, false);
+  assert.equal(result.state.fastDownshiftReadyAt, 0);
+});
+
+test('missing receiver feedback permits confirmed capture-to-sender collapse only', () => {
+  const collapsed = evaluateMany(
+    createAdaptiveState(0),
+    [2000, 4000].map((now) => good(now, {
+      receiverBound: false,
+      senderCapturedFps: 30,
+      senderEncodedFps: 3,
+      senderSentFps: 3,
+      qualityLimitationReason: 'none',
+    })),
+  );
+  assert.deepEqual(collapsed.decision, {type: 'downshift-cpu', fromLevel: 0, toLevel: 1});
+  assert.equal(collapsed.state.pressure, 'cpu');
+
+  const staticSource = evaluateMany(
+    createAdaptiveState(0),
+    [2000, 4000, 6000].map((now) => good(now, {
+      receiverBound: false,
+      senderCapturedFps: 1,
+      senderEncodedFps: 1,
+      senderSentFps: 1,
+      outboundKbps: 40,
+      qualityLimitationReason: 'none',
+    })),
+  );
+  assert.equal(staticSource.decision, null);
+  assert.equal(staticSource.state.level, 0);
+  assert.equal(staticSource.state.status, 'sender-observing');
+
+  const bandwidthLabelOnly = evaluateMany(
+    createAdaptiveState(0),
+    [2000, 4000, 6000].map((now) => good(now, {
+      receiverBound: false,
+      senderCapturedFps: 30,
+      senderEncodedFps: 30,
+      senderSentFps: 30,
+      outboundKbps: 200,
+      availableOutgoingBitrate: 200000,
+      qualityLimitationReason: 'bandwidth',
+    })),
+  );
+  assert.equal(bandwidthLabelOnly.decision, null);
+  assert.equal(bandwidthLabelOnly.state.level, 0);
+  assert.equal(bandwidthLabelOnly.state.pressure, 'unavailable');
+});
+
+test('sender-only fallback never enters receiver-driven fast downshift', () => {
+  const state = {
+    ...createAdaptiveState(0),
+    level: 1,
+    lastDownshiftReceiverDriven: true,
+    fastDownshiftReadyAt: 0,
+  };
+  const result = evaluateMany(
+    state,
+    [6000, 8000].map((now) => good(now, {
+      receiverBound: false,
+      senderCapturedFps: 60,
+      senderEncodedFps: 3,
+      senderSentFps: 3,
+      qualityLimitationReason: 'cpu',
+    })),
+  );
+  assert.deepEqual(result.decision, {type: 'downshift-cpu', fromLevel: 1, toLevel: 2});
+  assert.equal(result.state.lastDownshiftReceiverDriven, false);
+});
+
+test('receiver and sender-only evidence require separate confirmation windows', () => {
+  let result = evaluateAdaptiveSample(createAdaptiveState(0), receiverBad(2000));
+  result = evaluateAdaptiveSample(result.state, good(4000, {
+    receiverBound: false,
+    senderCapturedFps: 30,
+    senderEncodedFps: 3,
+    senderSentFps: 3,
+    qualityLimitationReason: 'cpu',
+  }));
+  assert.equal(result.decision, null);
+  assert.equal(result.state.badCount, 1);
+
+  result = evaluateAdaptiveSample(result.state, good(6000, {
+    receiverBound: false,
+    senderCapturedFps: 30,
+    senderEncodedFps: 3,
+    senderSentFps: 3,
+    qualityLimitationReason: 'cpu',
+  }));
+  assert.deepEqual(result.decision, {type: 'downshift-cpu', fromLevel: 0, toLevel: 1});
 });
 
 test('a collapsed sender is CPU-limited only when the receiver follows the sent frames', () => {

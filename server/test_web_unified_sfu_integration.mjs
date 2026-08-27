@@ -10,6 +10,7 @@ const injectPath = path.join(serverDir, 'screego', 'deploy', 'inject.js');
 const injectSource = fs.readFileSync(injectPath, 'utf8').replace(/\r\n/g, '\n');
 const sfuClientSource = fs.readFileSync(path.join(serverDir, 'screego', 'deploy', 'sfu-client.js'), 'utf8');
 const nginxSource = fs.readFileSync(path.join(serverDir, 'screego', 'deploy', 'nginx-screego.conf'), 'utf8');
+const composeSource = fs.readFileSync(path.join(serverDir, 'screego', 'deploy', 'docker-compose.yml'), 'utf8');
 
 class FakeElement {
   constructor(tagName = 'div') {
@@ -77,10 +78,11 @@ class FakeElement {
   }
 }
 
-function createDocument() {
+function createDocument({ nativeUi = false } = {}) {
   let anchor = new FakeElement('div');
   const legacyRoster = new FakeElement('div');
   const body = new FakeElement('body');
+  const nativeTools = nativeUi ? new FakeElement('div') : null;
 
   return {
     body,
@@ -89,6 +91,10 @@ function createDocument() {
     },
     getElementById(id) {
       return id === 'partylan-presence-roster' ? anchor : null;
+    },
+    querySelector(selector) {
+      if (selector === '[data-partylan-native-tools]') return nativeTools;
+      return null;
     },
     querySelectorAll(selector) {
       if (selector === '[data-gc-presence-member="1"]') {
@@ -117,7 +123,7 @@ function jsonResponse(data, ok = true) {
   };
 }
 
-function loadHarness(fetchImpl = async () => jsonResponse({ ok: false })) {
+function loadHarness(fetchImpl = async () => jsonResponse({ ok: false }), documentOptions) {
   const marker = '  init();\n})();';
   assert.ok(injectSource.includes(marker), 'inject script test marker is missing');
   const instrumented = injectSource.replace(
@@ -127,9 +133,9 @@ function loadHarness(fetchImpl = async () => jsonResponse({ ok: false })) {
       '    setAuth: function (user) { currentUser = user; lastKnownAuthUser = user; lastKnownLoggedIn = true; },',
       '    setRoomState: function (state) { lastRoomState = state; },',
       '    setPresenceMembers: function (participants) { webPresenceMembers = mergeWebPresence(participants); },',
+      '    getPresenceMembers: function () { return webPresenceMembers.slice(); },',
       '    currentSfuMode: currentSfuMode,',
       '    shouldDropNativePeerMessage: shouldDropNativePeerMessage,',
-      '    renderWebPresenceMembers: renderWebPresenceMembers,',
       '    ensureWebPresence: ensureWebPresence,',
       '    leaveWebPresence: leaveWebPresence,',
       '    fetchRoomState: fetchRoomState,',
@@ -138,8 +144,7 @@ function loadHarness(fetchImpl = async () => jsonResponse({ ok: false })) {
       '    heartbeatWebShare: heartbeatWebShare,',
       '    releaseWebShare: releaseWebShare,',
       '    requestDisplayMediaWithCompatibilityFallback: requestDisplayMediaWithCompatibilityFallback,',
-      '    buildCompatibilityDisplayMediaRequest: buildCompatibilityDisplayMediaRequest,',
-      '    finishShareSetupCapture: finishShareSetupCapture',
+      '    buildCompatibilityDisplayMediaRequest: buildCompatibilityDisplayMediaRequest',
       '  };',
       '})();',
     ].join('\n'),
@@ -155,7 +160,7 @@ function loadHarness(fetchImpl = async () => jsonResponse({ ok: false })) {
 
   const storage = new Map([['gcWebParticipantId', 'web-self']]);
   const intervals = [];
-  const document = createDocument();
+  const document = createDocument(documentOptions);
   const sfuCalls = [];
   const GC_SFU = {
     connect(room, role) {
@@ -289,7 +294,7 @@ test('explicit unified room contract immediately suppresses Screego P2P messages
   assert.equal(harness.api.shouldDropNativePeerMessage({ data: '{"type":"hostsession"}' }), false);
 });
 
-test('web Presence advertises the unified contract and owns the stable complete roster', async () => {
+test('web Presence advertises the unified contract and keeps a stable complete roster in runtime state', async () => {
   const requests = [];
   const room = {
     room: 'room-a', active: true, mediaMode: 'sfu', mediaProtocolVersion: 1,
@@ -331,20 +336,10 @@ test('web Presence advertises the unified contract and owns the stable complete 
   assert.ok(harness.intervals.some((timer) => timer.delay === 5000), 'Presence heartbeat must run every 5 seconds');
   assert.ok(harness.intervals.some((timer) => timer.delay === 3000), 'Presence roster must refresh every 3 seconds');
 
-  assert.equal(harness.document.anchor.children.length, 2);
-  const rosterText = harness.document.anchor.textContent;
-  assert.match(rosterText, /Web User/);
-  assert.match(rosterText, /网页端/);
-  assert.match(rosterText, /当前/);
-  assert.match(rosterText, /Desktop User/);
-  assert.match(rosterText, /客户端/);
-  assert.match(rosterText, /房主/);
-  assert.match(rosterText, /共享中/);
-  assert.equal(harness.document.legacyRoster.style.display, 'none');
-
-  harness.document.replaceAnchor();
-  harness.api.renderWebPresenceMembers();
-  assert.equal(harness.document.anchor.children.length, 2, 'React redraw must not lose the Presence roster');
+  const members = harness.api.getPresenceMembers();
+  assert.equal(members.length, 2);
+  assert.equal(members.map((member) => member.participantId).join(','), 'web-self,desktop');
+  assert.equal(members.find((member) => member.participantId === 'desktop').sharing, true);
 });
 
 test('web Presence activates unified mode without a room query and clears it on leave', async () => {
@@ -489,7 +484,7 @@ test('web host claim, readiness and normal stop follow the four-phase lease cont
 
   const stop = injectSource.slice(
     injectSource.indexOf('function stopWebShare('),
-    injectSource.indexOf('function syncShareButtonAvailability('),
+    injectSource.indexOf('function notifyDisplayStreamEnded('),
   );
   const stopping = stop.indexOf("heartbeatWebShare('stopping')");
   const close = stop.indexOf('sfuDisconnect()');
@@ -500,7 +495,7 @@ test('web host claim, readiness and normal stop follow the four-phase lease cont
 test('display capture has a compatibility request and retries only recoverable picker errors', () => {
   const capture = injectSource.slice(
     injectSource.indexOf('function buildDisplayMediaRequest('),
-    injectSource.indexOf('function showWebAudioCaptureNotice('),
+    injectSource.indexOf('function activateCapturedDisplayStream('),
   );
   assert.match(capture, /function buildCompatibilityDisplayMediaRequest\(/);
   assert.match(capture, /name === 'TypeError'[\s\S]{0,180}name === 'OverconstrainedError'[\s\S]{0,180}name === 'NotReadableError'/);
@@ -573,60 +568,19 @@ test('display capture fallback also catches a synchronous browser TypeError', as
   assert.equal(attempts, 2);
 });
 
-test('share setup waits for the capture promise before clicking the current start button', () => {
-  const setup = injectSource.slice(
-    injectSource.indexOf('function createShareSetupModal('),
-    injectSource.indexOf('function collectShareStartButtons('),
-  );
-  assert.match(setup, /finishShareSetupCapture\(capturePromise, findShareStartButton/);
-  assert.doesNotMatch(
-    setup,
-    /primeDisplayMediaRequestForShare\(\);[\s\S]{0,260}closeShareSetupModal\(true\);[\s\S]{0,120}btn\.click\(\)/,
-  );
-});
-
-test('share setup completion does not click until capture resolves', async () => {
-  const harness = loadHarness();
-  let resolveCapture;
-  const capturePromise = new Promise((resolve) => { resolveCapture = resolve; });
-  const events = [];
-  const button = { isConnected: true };
-
-  const completion = harness.api.finishShareSetupCapture(
-    capturePromise,
-    () => button,
-    (currentButton) => {
-      events.push('ready');
-      currentButton.clicked = true;
-    },
-    () => events.push('error'),
-  );
-  assert.deepEqual(events, []);
-  assert.equal(button.clicked, undefined);
-  resolveCapture({ id: 'stream' });
-  await completion;
-  assert.deepEqual(events, ['ready']);
-  assert.equal(button.clicked, true);
-});
-
-test('web hover tools stay outside the viewing layout and preserve diagnostics', () => {
-  assert.match(injectSource, /root\.id = 'gc-hover-tools'/);
-  assert.match(injectSource, /nd\.id === 'gc-hover-tools'/);
-  assert.match(injectSource, /id=\"gc-web-presence-roster\"/);
-  assert.match(injectSource, /id=\"gc-hover-share-start\"/);
-  assert.match(injectSource, /function syncWebHoverToolsVisibility\(\)/);
-  assert.match(injectSource, /function destroyWebHoverTools\(\)/);
-  assert.match(injectSource, /position:fixed; inset:0; z-index:9990/);
-  assert.match(injectSource, /statsOverlayId = 'gc-stats-overlay'/);
-  assert.match(injectSource, /matchMedia\('\(hover: none\), \(pointer: coarse\)'\)/);
-  assert.match(injectSource, /justify-content:flex-end;padding:18px 24px/);
-});
-
-test('native PartyLAN UI owns the action rail without legacy injection interception', () => {
-  assert.match(injectSource, /function nativeWebUiActive\(\)/);
-  assert.match(injectSource, /document\.querySelector\('\[data-partylan-native-tools\]'\)/);
-  assert.match(injectSource, /btn\.dataset\.partylanNativeShare === 'true'/);
-  assert.match(injectSource, /if \(nativeWebUiActive\(\)\) return;/);
+test('legacy UI injection is absent while runtime media hooks remain', () => {
+  assert.doesNotMatch(injectSource, /MutationObserver|function startObserver\(/);
+  assert.doesNotMatch(injectSource, /gc-hover-tools|gc-web-presence-roster|gc-hover-share-start/);
+  assert.doesNotMatch(injectSource, /gc-theme|gc-share-quick-settings|gc-quality-injected|enh-hist-arrow|reg-modal/);
+  assert.doesNotMatch(injectSource, /interceptShareButtonClicks|interceptShareHotkey|createShareSetupModal/);
+  assert.match(injectSource, /function patchGDM\(/);
+  assert.match(injectSource, /function patchRTC\(/);
+  assert.match(injectSource, /function patchWebSocket\(/);
+  assert.match(injectSource, /function startRuntime\(/);
+  assert.match(injectSource, /requestDisplayMediaWithCompatibilityFallback/);
+  assert.match(injectSource, /partylan:connection-stats/);
+  assert.match(injectSource, /function publishConnectionStats\(/);
+  assert.doesNotMatch(injectSource, /gc-stats-overlay|statsOverlayId|statsCollapsed/);
 });
 
 test('native share keeps the browser picker inside the user activation window', () => {
@@ -638,10 +592,16 @@ test('native share keeps the browser picker inside the user activation window', 
 test('versioned assets load inject before the SFU client without exposing sensitive material', () => {
   const replacement = nginxSource.match(/sub_filter '<\/head>' '([^']+)<\/head>'/);
   assert.ok(replacement);
-  assert.ok(replacement[1].indexOf('/inject.js?v=6.33') >= 0);
+  assert.ok(replacement[1].indexOf('/inject.js?v=6.38') >= 0);
   assert.ok(replacement[1].indexOf('/sfu-client.js?v=1.9') >= 0);
   assert.ok(replacement[1].indexOf('/inject.js') < replacement[1].indexOf('/sfu-client.js'));
 
   const lowered = injectSource.toLowerCase();
   assert.doesNotMatch(lowered, /console\.(?:log|warn|error)\([^\n]*(?:authorization|token|sdp|candidate)/);
+});
+
+test('web deployment keeps device login sessions and disables owner-leave closure', () => {
+  assert.match(composeSource, /SCREEGO_SESSION_TIMEOUT_SECONDS:\s*"2592000"/);
+  assert.match(composeSource, /SCREEGO_CLOSE_ROOM_WHEN_OWNER_LEAVES:\s*"false"/);
+  assert.match(composeSource, /gamecast-sfu:native-web-ui-v14-20260827/);
 });

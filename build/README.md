@@ -1,10 +1,10 @@
 # Build Directory
 
-PartyLAN build outputs are written here.
+partylan 构建产物写入此目录。
 
 ## Output
 
-- `bin/PartyLAN.exe` - packaged Windows app produced by `wails build`
+- `bin/partylan.exe` - 由 `wails build` 生成的 Windows 兼容客户端
 
 ## Windows Assets
 

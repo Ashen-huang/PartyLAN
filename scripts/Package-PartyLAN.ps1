@@ -28,14 +28,14 @@ if ($versionText -match 'Version\s*=\s*"([^"]+)"') {
 }
 
 $releaseRoot = Join-Path $repoRoot 'release'
-$bundleDir = Join-Path $releaseRoot "PartyLAN-v$version-win64"
-$zipPath = Join-Path $releaseRoot "PartyLAN-v$version-win64.zip"
-$installerReleasePath = Join-Path $releaseRoot "PartyLAN-v$version-win64-installer.exe"
+$bundleDir = Join-Path $releaseRoot "partylan-v$version-win64"
+$zipPath = Join-Path $releaseRoot "partylan-v$version-win64.zip"
+$installerReleasePath = Join-Path $releaseRoot "partylan-v$version-win64-installer.exe"
 $stageRoot = Join-Path $releaseRoot '.stage'
 $buildBin = Join-Path $repoRoot 'build\bin'
 $useStaging = $false
-$releaseInfoPath = Join-Path $releaseRoot "PartyLAN-v$version-win64-RELEASE-INFO.txt"
-$sumsReleasePath = Join-Path $releaseRoot "PartyLAN-v$version-win64-SHA256SUMS.txt"
+$releaseInfoPath = Join-Path $releaseRoot "partylan-v$version-win64-RELEASE-INFO.txt"
+$sumsReleasePath = Join-Path $releaseRoot "partylan-v$version-win64-SHA256SUMS.txt"
 $opusRuntimePath = Join-Path $repoRoot 'third_party\opus\win64\opus.dll'
 $opusLicensePath = Join-Path $repoRoot 'third_party\opus\win64\COPYING.txt'
 $opusSourcePath = Join-Path $repoRoot 'third_party\opus\win64\SOURCE.txt'
@@ -93,7 +93,7 @@ Get-ChildItem -Path $buildBin -Filter '*installer.exe' -ErrorAction SilentlyCont
   -Installer:$nsisAvailable
 
 $bundleOutputDir = if ($useStaging -or -not (Test-Path $bundleDir)) {
-  $stagingDir = Join-Path $stageRoot ("PartyLAN-v{0}-win64-{1}" -f $version, ([guid]::NewGuid().ToString('N')))
+  $stagingDir = Join-Path $stageRoot ("partylan-v{0}-win64-{1}" -f $version, ([guid]::NewGuid().ToString('N')))
   New-Item -ItemType Directory -Path $stagingDir -Force | Out-Null
   $stagingDir
 } else {
@@ -101,7 +101,7 @@ $bundleOutputDir = if ($useStaging -or -not (Test-Path $bundleDir)) {
 }
 
 New-Item -ItemType Directory -Path $bundleOutputDir -Force | Out-Null
-Copy-Item -Force (Join-Path $repoRoot 'build\bin\PartyLAN.exe') $bundleOutputDir
+Copy-Item -Force (Join-Path $repoRoot 'build\bin\partylan.exe') $bundleOutputDir
 Copy-Item -Force (Join-Path $repoRoot 'README.md') $bundleOutputDir
 Copy-Item -Force (Join-Path $repoRoot 'scripts\Start-PartyLAN.md') $bundleOutputDir
 Copy-Item -Force (Join-Path $repoRoot 'scripts\Start-PartyLAN-DERP.ps1') $bundleOutputDir
@@ -121,24 +121,24 @@ if (Test-Path $opusRuntimePath) {
   Write-Warning "Opus runtime not found at $opusRuntimePath; package will keep shared app audio optional/video-only."
 }
 
-$exeHash = (Get-FileHash -Algorithm SHA256 -Path (Join-Path $bundleOutputDir 'PartyLAN.exe')).Hash
+$exeHash = (Get-FileHash -Algorithm SHA256 -Path (Join-Path $bundleOutputDir 'partylan.exe')).Hash
 $derpScriptHash = (Get-FileHash -Algorithm SHA256 -Path (Join-Path $bundleOutputDir 'Start-PartyLAN-DERP.ps1')).Hash
 $smokeScriptHash = (Get-FileHash -Algorithm SHA256 -Path (Join-Path $bundleOutputDir 'Start-PartyLAN-SmokeTest.ps1')).Hash
 $opusHash = if ($opusBundled) { (Get-FileHash -Algorithm SHA256 -Path (Join-Path $bundleOutputDir 'opus.dll')).Hash } else { $null }
 $opusInfo = if ($opusBundled) {
   "Bundled: opus.dll (libopus 1.6.1)"
 } else {
-  "Not bundled: shared app audio requires opus.dll beside PartyLAN.exe or on PATH."
+  "Not bundled: shared app audio requires opus.dll beside partylan.exe or on PATH."
 }
 
 @"
-PartyLAN Release Information
+partylan Release Information
 Version: $version
 BuiltAt: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')
 DefaultMode: $Mode
 
 Primary launchers:
-- .\PartyLAN.exe
+- .\partylan.exe
 - .\Start-PartyLAN-DERP.ps1
 - .\Start-PartyLAN-SmokeTest.ps1
 
@@ -152,7 +152,7 @@ Opus runtime:
 - $opusInfo
 
 SHA256:
-- PartyLAN.exe: $exeHash
+- partylan.exe: $exeHash
 - Start-PartyLAN-DERP.ps1: $derpScriptHash
 - Start-PartyLAN-SmokeTest.ps1: $smokeScriptHash
 $(
@@ -165,13 +165,13 @@ if ($opusHash) {
 if ($nsisAvailable) {
   $installer = Get-ChildItem -Path $buildBin -Filter '*installer.exe' | Select-Object -First 1
   if ($installer) {
-    Copy-Item -Force $installer.FullName (Join-Path $bundleOutputDir 'PartyLAN-installer.exe')
+    Copy-Item -Force $installer.FullName (Join-Path $bundleOutputDir 'partylan-installer.exe')
     Copy-Item -Force $installer.FullName $installerReleasePath
   }
 }
 
 @(
-  "$exeHash  PartyLAN.exe"
+  "$exeHash  partylan.exe"
   "$derpScriptHash  Start-PartyLAN-DERP.ps1"
   "$smokeScriptHash  Start-PartyLAN-SmokeTest.ps1"
   if ($opusBundled) {
@@ -188,9 +188,9 @@ if ($nsisAvailable) {
   }
   Get-FileHash -Algorithm SHA256 -Path (Join-Path $bundleOutputDir 'RELEASE-INFO.txt') |
     ForEach-Object { "$($_.Hash)  RELEASE-INFO.txt" }
-  if (Test-Path (Join-Path $bundleOutputDir 'PartyLAN-installer.exe')) {
-    Get-FileHash -Algorithm SHA256 -Path (Join-Path $bundleOutputDir 'PartyLAN-installer.exe') |
-      ForEach-Object { "$($_.Hash)  PartyLAN-installer.exe" }
+  if (Test-Path (Join-Path $bundleOutputDir 'partylan-installer.exe')) {
+    Get-FileHash -Algorithm SHA256 -Path (Join-Path $bundleOutputDir 'partylan-installer.exe') |
+      ForEach-Object { "$($_.Hash)  partylan-installer.exe" }
   }
 ) | Where-Object { $_ } | Set-Content -Path (Join-Path $bundleOutputDir 'SHA256SUMS.txt') -Encoding ASCII
 

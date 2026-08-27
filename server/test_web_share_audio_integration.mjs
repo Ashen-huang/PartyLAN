@@ -58,11 +58,10 @@ test('room state and share heartbeat report the effective audio mode', () => {
   assert.match(inject, /activeCaptureAudioMode\s*=\s*'off'/);
 });
 
-test('video-only fallback produces one non-blocking capture result notice', () => {
-  assert.match(inject, /function showWebAudioCaptureNotice\(reason\)/);
-  assert.match(inject, /未获取到所选来源音频，本次仅共享画面。/);
-  assert.match(inject, /所选来源与音频模式不匹配，本次仅共享画面。/);
-  assert.match(inject, /if \(audioResult\.shouldNotify\) showWebAudioCaptureNotice\(audioResult\.noticeReason\)/);
+test('video-only fallback remains policy metadata without legacy injected UI', () => {
+  assert.match(sourcePolicy, /shouldNotify:\s*shouldNotify/);
+  assert.match(sourcePolicy, /noticeReason:\s*noticeReason/);
+  assert.doesNotMatch(inject, /showWebAudioCaptureNotice/);
 });
 
 test('audio mode labels describe window, tab and full-screen scope', () => {
@@ -73,5 +72,5 @@ test('audio mode labels describe window, tab and full-screen scope', () => {
 
 test('changed audio assets use new cache versions', () => {
   assert.match(nginx, /web-share-audio\.js\?v=2/);
-  assert.match(nginx, /inject\.js\?v=6\.33/);
+  assert.match(nginx, /inject\.js\?v=6\.38/);
 });

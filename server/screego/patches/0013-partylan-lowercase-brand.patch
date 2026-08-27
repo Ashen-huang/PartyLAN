@@ -1,0 +1,108 @@
+diff --git a/ui/index.html b/ui/index.html
+index 60f93b6..47e1641 100644
+--- a/ui/index.html
++++ b/ui/index.html
+@@ -6,20 +6,20 @@
+     <meta name="viewport" content="width=device-width, initial-scale=1" />
+     <meta name="theme-color" content="#e9f7fb" />
+     <meta property="og:type" content="website" />
+-    <meta property="og:title" content="PartyLAN" />
+-    <meta property="og:description" content="PartyLAN 局域网协作与屏幕共享" />
++    <meta property="og:title" content="partylan" />
++    <meta property="og:description" content="partylan 局域网协作与屏幕共享" />
+     <meta property="og:image" content="./appicon.png" />
+     <meta property="og:image:width" content="400" />
+     <meta property="og:image:height" content="300" />
+     <meta
+       name="description"
+-      content="PartyLAN 局域网协作与屏幕共享"
++      content="partylan 局域网协作与屏幕共享"
+     />
+     <link rel="apple-touch-icon" href="./appicon.png" />
+-    <title>PartyLAN</title>
++    <title>partylan</title>
+   </head>
+   <body>
+-    <noscript>PartyLAN 需要启用 JavaScript 才能运行。</noscript>
++    <noscript>partylan 需要启用 JavaScript 才能运行。</noscript>
+     <div id="root"></div>
+     <script type="module" src="/src/index.tsx"></script>
+   </body>
+diff --git a/ui/src/LoginForm.tsx b/ui/src/LoginForm.tsx
+index 4887da4..fbf07b4 100644
+--- a/ui/src/LoginForm.tsx
++++ b/ui/src/LoginForm.tsx
+@@ -30,7 +30,7 @@ export const LoginForm = ({config: {login}, hide}: {config: UseConfig; hide?: ()
+             <FormControl fullWidth>
+                 <form onSubmit={submit}>
+                     <div style={{display: 'flex', alignItems: 'center'}}>
+-                        <Typography style={{flex: 1}}>登录 PartyLAN</Typography>
++                        <Typography style={{flex: 1}}>登录 partylan</Typography>
+                         {hide ? (
+                             <Button variant="outlined" size="small" onClick={hide}>
+                                 返回
+diff --git a/ui/src/Room.native-ui.test.mjs b/ui/src/Room.native-ui.test.mjs
+index 5c462d0..6fd926b 100644
+--- a/ui/src/Room.native-ui.test.mjs
++++ b/ui/src/Room.native-ui.test.mjs
+@@ -12,7 +12,7 @@ const serveSource = await readFile(new URL('../serve.go', import.meta.url), 'utf
+ const loginSource = await readFile(new URL('./LoginForm.tsx', import.meta.url), 'utf8');
+ const settingSource = await readFile(new URL('./SettingDialog.tsx', import.meta.url), 'utf8');
+ 
+-test('Room renders the native PartyLAN side rail and stable action hooks', () => {
++test('Room renders the native partylan side rail and stable action hooks', () => {
+     assert.match(roomSource, /data-partylan-native-tools/);
+     assert.match(roomSource, /data-partylan-native-share="true"/);
+     assert.match(roomSource, /id="partylan-presence-roster"/);
+@@ -67,18 +67,18 @@ test('desktop room tools follow player-style mouse movement visibility', () => {
+     assert.match(roomSource, /pointerEvents: 'none'/);
+ });
+ 
+-test('native share keeps the PartyLAN media control hook and room leave hook', () => {
++test('native share keeps the partylan media control hook and room leave hook', () => {
+     assert.match(useRoomSource, /__PARTYLAN_NATIVE_UI_SHARE__/);
+     assert.match(useRoomSource, /const leave = \(\): void/);
+     assert.match(useRoomSource, /return \{state, room, share, stopShare, setName, leave\}/);
+ });
+ 
+-test('web theme and entry screens use the PartyLAN light theme and Chinese copy', () => {
++test('web theme and entry screens use the partylan light theme and Chinese copy', () => {
+     assert.match(indexSource, /mode: 'light'/);
+     assert.match(indexSource, /MuiCssBaseline/);
+     assert.match(indexSource, /#e9f7fb/);
+     assert.match(htmlSource, /lang="zh-CN"/);
+-    assert.match(htmlSource, /<title>PartyLAN<\/title>/);
++    assert.match(htmlSource, /<title>partylan<\/title>/);
+     assert.match(htmlSource, /rel="icon" href="\.\/appicon\.png"/);
+     assert.match(htmlSource, /property="og:image" content="\.\/appicon\.png"/);
+     assert.match(htmlSource, /rel="apple-touch-icon" href="\.\/appicon\.png"/);
+@@ -87,6 +87,7 @@ test('web theme and entry screens use the PartyLAN light theme and Chinese copy'
+     }
+     assert.match(manageSource, /创建我的房间/);
+     assert.match(manageSource, /src="\.\/appicon\.png"/);
++    assert.match(manageSource, /alt="partylan"/);
+     assert.match(manageSource, /用户名显示：/);
+     assert.match(manageSource, /aria-label="用户名显示"/);
+     assert.match(manageSource, /useSettings/);
+@@ -113,7 +114,7 @@ test('web theme and entry screens use the PartyLAN light theme and Chinese copy'
+         manageSource,
+         /Create or Join a Room|Close Room after you leave|Nat Traversal/
+     );
+-    assert.match(loginSource, /登录 PartyLAN/);
++    assert.match(loginSource, /登录 partylan/);
+     assert.match(loginSource, /用户名/);
+     assert.match(loginSource, /密码/);
+     assert.match(settingSource, /<DialogTitle>设置<\/DialogTitle>/);
+diff --git a/ui/src/RoomManage.tsx b/ui/src/RoomManage.tsx
+index d85bcc6..45845a3 100644
+--- a/ui/src/RoomManage.tsx
++++ b/ui/src/RoomManage.tsx
+@@ -434,7 +434,7 @@ export const RoomManage = ({room, config}: {room: FCreateRoom; config: UseConfig
+                 <img
+                     src="./appicon.png"
+                     style={{width: 'min(180px, 48vw)', display: 'block'}}
+-                    alt="PartyLAN"
++                    alt="partylan"
+                 />
+             </Box>
+             {loginVisible ? (

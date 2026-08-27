@@ -65,14 +65,16 @@ test('monitor samples every connected video sender independently', () => {
   assert.match(inject, /evaluateAdaptiveSample\(adaptiveState, adaptiveSample\)/);
 });
 
-test('hidden share pages freeze adaptive sampling until fresh feedback returns', () => {
+test('hidden share pages keep receiver polling and sender sampling active', () => {
   const sampler = inject.slice(
     inject.indexOf('function pauseAdaptiveStreamingEvidence()'),
     inject.indexOf('function startAdaptiveStreamingMonitor()'),
   );
-  assert.match(sampler, /document\.visibilityState\s*===\s*'hidden'/);
-  assert.match(sampler, /pauseAdaptiveState/);
-  assert.match(sampler, /return/);
+  assert.doesNotMatch(sampler, /document\.visibilityState\s*===\s*'hidden'/);
+  const refreshIndex = sampler.indexOf('refreshAdaptiveQualitySnapshot()');
+  const sampleIndex = sampler.indexOf('descriptors.forEach(sampleAdaptiveStreamingPeer)');
+  assert.ok(refreshIndex >= 0, 'receiver quality snapshots must keep refreshing');
+  assert.ok(sampleIndex > refreshIndex, 'sender stats must be sampled after the snapshot refresh');
 });
 
 test('native peer sessions bind receiver reports to the exact sender connection', () => {
@@ -101,6 +103,8 @@ test('adaptive decisions are reported as edge events with profile metadata', () 
   assert.match(inject, /adaptiveScale:\s*adaptiveProfile\.scaleResolutionDownBy/);
   assert.match(inject, /adaptiveNominalBitrate:\s*adaptiveProfile\.nominalBitrate/);
   assert.match(inject, /adaptiveDegradeFloorBitrate:\s*adaptiveProfile\.degradeFloorBitrate/);
+  assert.match(inject, /adaptiveConfiguredFps:\s*extCfg\(\)\.fps/);
+  assert.match(inject, /visible:\s*document\.visibilityState\s*!==\s*'hidden'/);
 });
 
 test('relay load diagnostics use the active adaptive ceiling instead of the configured target', () => {

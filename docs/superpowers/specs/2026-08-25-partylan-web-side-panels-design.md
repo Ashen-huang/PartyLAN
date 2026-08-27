@@ -37,7 +37,7 @@
 
 ## 主题与可访问性
 
-面板复用客户端当前视觉令牌：深色紫蓝半透明背景、紫色边框、青色交互强调、浅色正文和红色退出/停止状态。保持 8px 以内的控件圆角，并为按钮提供明确的 hover、focus-visible、disabled 状态。
+面板复用客户端当前视觉令牌：浅青色背景、青蓝色边框、青绿色交互强调、深色正文和红色退出/停止状态。保持 8px 以内的控件圆角，并为按钮提供明确的 hover、focus-visible、disabled 状态。
 
 所有图标按钮保留可读的 `aria-label` 和 Tooltip。桌面悬停区域同时支持 `:focus-within`；移动端不依赖 hover。尊重 `prefers-reduced-motion`，关闭抽屉过渡但不影响显示状态。
 

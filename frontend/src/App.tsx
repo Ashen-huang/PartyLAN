@@ -1777,7 +1777,7 @@ export default function App() {
 
   const handleCreateRoom = () =>
     withBusy(async () => {
-      await CreateRoom('PartyLAN Room', '');
+      await CreateRoom('partylan 房间', '');
     });
 
   const handleJoinRoom = (targetNodeId: string) =>
@@ -2601,7 +2601,7 @@ export default function App() {
   return (
     <div className={`app ${scene}`}>
       <div className="title-bar">
-        <span className="title-bar-text">PartyLAN</span>
+        <span className="title-bar-text">partylan</span>
         <div className="title-bar-buttons">
           <button className="title-btn" title={t('app.settings')} aria-label={t('app.settings')} onClick={handleOpenSettings}>
             ⚙

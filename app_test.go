@@ -1530,7 +1530,7 @@ func TestResolveGameCastWindowAudioDisablesUnknownAndPartyLANProcesses(t *testin
 			return sharecatalog.WindowProcess{}, errors.New("window unavailable")
 		},
 		"partylan": func(uintptr) (sharecatalog.WindowProcess, error) {
-			return sharecatalog.WindowProcess{ProcessID: uint32(os.Getpid()), ProcessName: "PartyLAN.exe"}, nil
+			return sharecatalog.WindowProcess{ProcessID: uint32(os.Getpid()), ProcessName: "partylan.exe"}, nil
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -2007,7 +2007,7 @@ func TestSelectableAudioProcessNameFiltersSystemAndVoiceApps(t *testing.T) {
 	blocked := []string{
 		"svchost.exe",
 		"RuntimeBroker.exe",
-		"PartyLAN.exe",
+		"partylan.exe",
 		"ts3client_win64.exe",
 		"TeamSpeak3.exe",
 		"Discord.exe",
@@ -2082,7 +2082,7 @@ func TestNormalizeAudioShareSelectionKeepsFirstSelectableCanonicalSource(t *test
 
 func TestNormalizeAudioShareSelectionClearsWhenNoSelectableSource(t *testing.T) {
 	got := normalizeAudioShareSelection([]string{
-		"PartyLAN.exe",
+		"partylan.exe",
 		"svchost.exe",
 		" ",
 	})

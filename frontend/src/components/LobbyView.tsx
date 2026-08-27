@@ -78,7 +78,7 @@ export default function LobbyView({
   return (
     <main className="lobby-view">
       <header className="lobby-heading">
-        <h1>PartyLAN</h1>
+        <h1>partylan</h1>
         <p>{t('lobby.subtitle')}</p>
       </header>
 

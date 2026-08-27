@@ -5,7 +5,7 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
-  var POLICY_VERSION = 'adaptive-per-peer-v6';
+  var POLICY_VERSION = 'adaptive-per-peer-v7';
   var BASELINE_POLICY_VERSION = 'browser-bwe-baseline-v1';
   var OBSERVATION_MS = 4000;
   var WINDOW_SIZE = 3;
@@ -26,6 +26,7 @@
   var DEFAULT_MAX_LEVEL = 6;
   var NOMINAL_BITRATE_RATIO = 0.75;
   var DEGRADE_FLOOR_RATIO = 0.65;
+  var MAX_SAMPLE_GAP_SECONDS = 70;
 
   function resolveAdaptiveMode(roomId, search) {
     if (String(roomId || '').toLowerCase() !== 'test') return POLICY_VERSION;
@@ -46,6 +47,7 @@
       level: 0,
       status: 'observing',
       window: [],
+      windowPressure: '',
       badCount: 0,
       pairId: '',
       generation: 0,
@@ -81,6 +83,7 @@
       connectedAt: sample.now,
       status: 'observing',
       window: [],
+      windowPressure: '',
       badCount: 0,
       pairId: sample.pairId || '',
       generation: sample.generation || 0,
@@ -116,6 +119,7 @@
         ? 'probing'
         : 'feedback-paused',
       window: [],
+      windowPressure: '',
       badCount: 0,
       stableSince: null,
       receiverJitterEwma: 0,
@@ -150,6 +154,9 @@
     );
     var bound = sample.receiverBound === true && ageMs !== null &&
       ageMs >= 0 && ageMs <= RECEIVER_REPORT_MAX_AGE_MS && decodedFps !== null;
+    var sourceActive = sourceFps >= RECEIVER_ACTIVE_FPS;
+    var senderDeliveryCollapsed = sourceActive &&
+      senderFps < Math.max(RECEIVER_ACTIVE_FPS, sourceFps * RECEIVER_DECODE_RATIO);
     if (!bound) {
       return {
         bound: false,
@@ -158,12 +165,12 @@
         reason: 'receiver-unavailable',
         senderFps: senderFps,
         sourceFps: sourceFps,
+        senderCollapsed: senderDeliveryCollapsed,
         decodedFps: decodedFps || 0,
         incomingKbps: incomingKbps || 0
       };
     }
 
-    var sourceActive = sourceFps >= RECEIVER_ACTIVE_FPS;
     var senderActive = senderFps >= RECEIVER_ACTIVE_FPS;
     var decodeRatio = senderFps > 0 ? decodedFps / senderFps : 1;
     var receiverLoss = Math.max(0, finiteNumber(sample.receiverLossPercent) || 0);
@@ -175,8 +182,6 @@
     var outboundKbps = Math.max(0, finiteNumber(sample.outboundKbps) || 0);
     var throughputGap = senderActive && outboundKbps > 0 && incomingKbps !== null &&
       incomingKbps < outboundKbps * 0.5;
-    var senderDeliveryCollapsed = sourceActive &&
-      senderFps < Math.max(RECEIVER_ACTIVE_FPS, sourceFps * RECEIVER_DECODE_RATIO);
     var decodeImpaired = senderActive && (
       decodedFps < RECEIVER_ACTIVE_FPS || decodeRatio < RECEIVER_DECODE_RATIO
     );
@@ -207,14 +212,23 @@
     };
   }
 
+  function hasSenderCpuPressure(sample, receiver) {
+    return receiver.sourceFps >= RECEIVER_ACTIVE_FPS && (
+      String(sample.qualityLimitationReason || '').toLowerCase() === 'cpu' ||
+      receiver.senderCollapsed
+    );
+  }
+
   function classifyPressure(sample, receiver) {
-    if (!sample.valid || !receiver.bound) return 'unavailable';
+    if (!sample.valid) return 'unavailable';
+    if (!receiver.bound) {
+      return hasSenderCpuPressure(sample, receiver) ? 'cpu' : 'unavailable';
+    }
     if (receiver.impaired || sample.receiverImpaired === true) return 'network';
     if (!receiver.healthy) return 'unavailable';
     if (
       receiver.receiverFollowsSender && (
-        String(sample.qualityLimitationReason || '').toLowerCase() === 'cpu' ||
-        receiver.senderCollapsed
+        hasSenderCpuPressure(sample, receiver)
       )
     ) return 'cpu';
     return 'healthy';
@@ -223,11 +237,10 @@
   function isBadSample(sample) {
     if (!sample.valid) return false;
     var receiver = assessReceiver(sample);
-    if (receiver.bound) {
-      var pressure = classifyPressure(sample, receiver);
+    var pressure = classifyPressure(sample, receiver);
+    if (receiver.bound || sample.receiverBound === false || sample.receiverBound === true) {
       return pressure === 'cpu' || pressure === 'network';
     }
-    if (sample.receiverBound === false) return false;
     var nominalKbps = Number(sample.nominalKbps) || Number(sample.profileKbps) || 0;
     var degradeFloorKbps = Number(sample.degradeFloorKbps) || nominalKbps * DEGRADE_FLOOR_RATIO;
     var lowThroughput =
@@ -332,6 +345,7 @@
     state.level = rollbackLevel;
     state.status = 'probe-rollback';
     state.window = [];
+    state.windowPressure = '';
     state.badCount = 0;
     state.stableSince = null;
     state.probeFailureCount = Math.min(3, (state.probeFailureCount || 0) + 1);
@@ -362,7 +376,8 @@
       probeBaselineIncomingKbps: 0,
       probeReceiverRequired: false,
       probePressure: '',
-      probeFailureCount: 0
+      probeFailureCount: 0,
+      windowPressure: ''
     }, current, {lastDecision: null});
     if (!state.pairId && sample.pairId) {
       state.pairId = sample.pairId;
@@ -392,15 +407,14 @@
       : '';
     var receiverFresh = !receiverReportId || receiverReportId !== state.lastReceiverReportId;
     if (receiverReportId && receiverFresh) state.lastReceiverReportId = receiverReportId;
-    state.receiverStatus = pressure === 'network'
-      ? 'impaired'
-      : (pressure === 'cpu' || pressure === 'healthy' ? 'healthy' : 'unavailable');
+    state.receiverStatus = !receiver.bound
+      ? 'unavailable'
+      : (pressure === 'network'
+        ? 'impaired'
+        : (pressure === 'cpu' || pressure === 'healthy' ? 'healthy' : 'unavailable'));
     state.receiverReason = receiver.reason;
     state.pressure = pressure;
-    if (
-      !sample.valid || sample.receiverBound === false ||
-      (sample.receiverBound === true && !receiver.bound)
-    ) {
+    if (!sample.valid) {
       return {state: pauseAdaptiveState(state), decision: null};
     }
 
@@ -430,6 +444,7 @@
         };
         state.status = state.level === 0 ? 'normal' : 'recovering';
         state.window = [];
+        state.windowPressure = '';
         state.badCount = 0;
         state.stableSince = null;
         state.cooldownUntil = sample.now + RECOVERY_STABLE_MS;
@@ -443,6 +458,17 @@
         return {state: state, decision: commitDecision};
       }
       state.status = 'probing';
+      return {state: state, decision: null};
+    }
+
+    var receiverExplicitlyUnavailable = sample.receiverBound === false ||
+      (sample.receiverBound === true && !receiver.bound);
+    if (receiverExplicitlyUnavailable && pressure !== 'cpu') {
+      state.status = 'sender-observing';
+      state.window = [];
+      state.windowPressure = '';
+      state.badCount = 0;
+      state.stableSince = null;
       return {state: state, decision: null};
     }
 
@@ -464,6 +490,7 @@
         state.level = fastLevel;
         state.status = fastLevel >= state.maxLevel ? 'floor-protected' : 'degraded-fast';
         state.window = [];
+        state.windowPressure = '';
         state.badCount = 0;
         state.stableSince = null;
         state.cooldownUntil = sample.now + DOWNSHIFT_COOLDOWN_MS;
@@ -506,6 +533,7 @@
         state.level = probedLevel;
         state.status = 'probing';
         state.window = [];
+        state.windowPressure = '';
         state.badCount = 0;
         state.stableSince = null;
         state.lastDecision = recoveryDecision;
@@ -523,6 +551,17 @@
     var downshiftBad = pressure === 'cpu'
       ? bad
       : cascadeAllowsDownshift(state, sample, bad);
+    var evidencePressure = pressure === 'cpu' || pressure === 'network'
+      ? pressure
+      : (downshiftBad ? 'legacy' : '');
+    if (
+      downshiftBad && state.windowPressure &&
+      state.windowPressure !== evidencePressure
+    ) {
+      state.window = [];
+      state.badCount = 0;
+    }
+    if (downshiftBad) state.windowPressure = evidencePressure;
     state.window = state.window.concat([downshiftBad]).slice(-WINDOW_SIZE);
     state.badCount = state.window.filter(Boolean).length;
     if (sample.now - state.connectedAt < OBSERVATION_MS) {
@@ -547,6 +586,7 @@
       state.level = nextLevel;
       state.status = pressure === 'cpu' ? 'degraded-cpu' : 'degraded-confirmed';
       state.window = [];
+      state.windowPressure = '';
       state.badCount = 0;
       state.stableSince = null;
       state.cooldownUntil = sample.now + DOWNSHIFT_COOLDOWN_MS;
@@ -645,7 +685,9 @@
     var bytesSentDelta = Number(current.bytesSent) - Number(previous.bytesSent);
     var packetsSentDelta = Number(current.packetsSent) - Number(previous.packetsSent);
     var packetsLostDelta = Number(current.packetsLost) - Number(previous.packetsLost);
-    if (elapsedSeconds > 10) return {valid: false, invalidReason: 'sample-gap'};
+    if (elapsedSeconds > MAX_SAMPLE_GAP_SECONDS) {
+      return {valid: false, invalidReason: 'sample-gap'};
+    }
     if (
       !(elapsedSeconds > 0) ||
       bytesSentDelta < 0 ||

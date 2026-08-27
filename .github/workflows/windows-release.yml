@@ -89,19 +89,19 @@ jobs:
       - name: Upload release bundle
         uses: actions/upload-artifact@v4
         with:
-          name: PartyLAN-release
+          name: partylan-release
           path: |
-            release/PartyLAN-*.zip
-            release/PartyLAN-*-installer.exe
-            release/PartyLAN-*-SHA256SUMS.txt
+            release/partylan-*.zip
+            release/partylan-*-installer.exe
+            release/partylan-*-SHA256SUMS.txt
 
       - name: Publish GitHub release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: PartyLAN ${{ github.ref_name }}
+          name: partylan ${{ github.ref_name }}
           files: |
-            release/PartyLAN-*.zip
-            release/PartyLAN-*-installer.exe
-            release/PartyLAN-*-SHA256SUMS.txt
+            release/partylan-*.zip
+            release/partylan-*-installer.exe
+            release/partylan-*-SHA256SUMS.txt

@@ -261,7 +261,7 @@ switch ($Action) {
     $tagList = @()
     if ($enableTsnet) { $tagList += 'partylan_tsnet' }
     if ($UseNativeMedia) { $tagList += 'partylan_native_media' }
-    Write-Host "Starting PartyLAN dev in mode '$Mode'..."
+    Write-Host "Starting partylan dev in mode '$Mode'..."
     if ($tagList.Count -gt 0) {
       & $wails.Source dev -tags ($tagList -join ' ') -ldflags $ldflagsValue
     } else {
@@ -275,7 +275,7 @@ switch ($Action) {
     $tagList = @()
     if ($enableTsnet) { $tagList += 'partylan_tsnet' }
     if ($UseNativeMedia) { $tagList += 'partylan_native_media' }
-    Write-Host "Building PartyLAN in mode '$Mode'..."
+    Write-Host "Building partylan in mode '$Mode'..."
     $buildArgs = @('build')
     if ($tagList.Count -gt 0) {
       $buildArgs += '-tags'
@@ -292,8 +292,8 @@ switch ($Action) {
     }
 
     if ($UseNativeMedia) {
-      Assert-NativeBuildMetadata -BinaryPath (Join-Path $repoRoot 'build\bin\PartyLAN.exe')
-      Write-Host "Native media build metadata verified in build\\bin\\PartyLAN.exe"
+      Assert-NativeBuildMetadata -BinaryPath (Join-Path $repoRoot 'build\bin\partylan.exe')
+      Write-Host "Native media build metadata verified in build\\bin\\partylan.exe"
 
       if (Test-Path $opusRuntimePath) {
         Copy-Item -Force $opusRuntimePath (Join-Path $repoRoot 'build\bin\opus.dll')

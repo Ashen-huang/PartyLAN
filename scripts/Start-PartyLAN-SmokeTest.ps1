@@ -16,8 +16,8 @@ Set-StrictMode -Version Latest
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent $scriptRoot
-$candidateRelease = Join-Path $scriptRoot 'PartyLAN.exe'
-$candidateBuild = Join-Path $repoRoot 'build\bin\PartyLAN.exe'
+$candidateRelease = Join-Path $scriptRoot 'partylan.exe'
+$candidateBuild = Join-Path $repoRoot 'build\bin\partylan.exe'
 
 if (-not $BinaryPath) {
   if (Test-Path $candidateRelease) {
@@ -25,7 +25,7 @@ if (-not $BinaryPath) {
   } elseif (Test-Path $candidateBuild) {
     $BinaryPath = $candidateBuild
   } else {
-    throw "PartyLAN.exe not found beside the script or in build\\bin."
+    throw "partylan.exe not found beside the script or in build\\bin."
   }
 }
 

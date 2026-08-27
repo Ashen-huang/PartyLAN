@@ -1,9 +1,9 @@
 diff --git a/ui/src/Room.native-ui.test.mjs b/ui/src/Room.native-ui.test.mjs
 new file mode 100644
-index 0000000..d891e08
+index 0000000..773998d
 --- /dev/null
 +++ b/ui/src/Room.native-ui.test.mjs
-@@ -0,0 +1,24 @@
+@@ -0,0 +1,45 @@
 +import assert from 'node:assert/strict';
 +import {readFile} from 'node:fs/promises';
 +import test from 'node:test';
@@ -15,12 +15,33 @@ index 0000000..d891e08
 +    assert.match(roomSource, /data-partylan-native-tools/);
 +    assert.match(roomSource, /data-partylan-native-share="true"/);
 +    assert.match(roomSource, /id="partylan-presence-roster"/);
-+    assert.match(roomSource, /aria-label="Leave Room"/);
++    assert.match(roomSource, /data-partylan-side="left"/);
++    assert.match(roomSource, /data-partylan-side="right"/);
++    assert.match(roomSource, /className=\{classes\.fullscreenControl\}/);
++    assert.match(roomSource, /aria-label="退出房间"/);
++    assert.match(roomSource, /aria-label="设置"/);
++    assert.match(roomSource, /<Typography variant="h6">共享<\/Typography>/);
++    assert.match(roomSource, /准备共享屏幕/);
++    assert.match(roomSource, /正在共享屏幕/);
++    assert.match(roomSource, /分辨率/);
++    assert.match(roomSource, /帧率/);
++    assert.match(roomSource, /窗口\/标签页音频/);
++    assert.match(roomSource, /系统音频/);
++    assert.match(roomSource, /无音频/);
++    assert.match(roomSource, /开始共享/);
++    assert.match(roomSource, /停止共享/);
++    assert.match(roomSource, /暂无共享画面/);
++    assert.match(roomSource, /result\.push\('你'\)/);
++    assert.match(roomSource, /result\.push\('房主'\)/);
++    assert.match(roomSource, /result\.push\('共享中'\)/);
 +});
 +
 +test('Room no longer renders the legacy bottom control toolbar', () => {
 +    assert.doesNotMatch(roomSource, /className=\{classes\.control\}/);
-+    assert.match(roomSource, /className=\{classes\.sideRailBar\}/);
++    assert.doesNotMatch(roomSource, /classes\.sideRailBar/);
++    assert.match(roomSource, /data-partylan-side-content="left"/);
++    assert.match(roomSource, /data-partylan-side-content="right"/);
++    assert.match(roomSource, /@media \(max-width: 700px\), \(hover: none\), \(pointer: coarse\)/);
 +});
 +
 +test('native share keeps the PartyLAN media control hook and room leave hook', () => {
@@ -29,20 +50,36 @@ index 0000000..d891e08
 +    assert.match(useRoomSource, /return \{state, room, share, stopShare, setName, leave\}/);
 +});
 diff --git a/ui/src/Room.tsx b/ui/src/Room.tsx
-index b2ce09b..b9dfeaf 100644
+index b2ce09b..e04f189 100644
 --- a/ui/src/Room.tsx
 +++ b/ui/src/Room.tsx
-@@ -8,6 +8,9 @@ import PeopleIcon from '@mui/icons-material/People';
+@@ -8,6 +8,8 @@ import PeopleIcon from '@mui/icons-material/People';
  import VolumeMuteIcon from '@mui/icons-material/VolumeOff';
  import VolumeIcon from '@mui/icons-material/VolumeUp';
  import SettingsIcon from '@mui/icons-material/Settings';
 +import CloseIcon from '@mui/icons-material/Close';
 +import LogoutIcon from '@mui/icons-material/Logout';
-+import MenuIcon from '@mui/icons-material/Menu';
  import {useHotkeys} from 'react-hotkeys-hook';
  import {Video} from './Video';
  import {makeStyles} from 'tss-react/mui';
-@@ -89,11 +92,13 @@ export const Room = ({
+@@ -22,13 +24,13 @@ const HostStream: unique symbol = Symbol('mystream');
+ const flags = (user: RoomUser) => {
+     const result: string[] = [];
+     if (user.you) {
+-        result.push('You');
++        result.push('你');
+     }
+     if (user.owner) {
+-        result.push('Owner');
++        result.push('房主');
+     }
+     if (user.streaming) {
+-        result.push('Streaming');
++        result.push('共享中');
+     }
+     if (!result.length) {
+         return '';
+@@ -89,11 +91,13 @@ export const Room = ({
      share,
      stopShare,
      setName,
@@ -56,24 +93,30 @@ index b2ce09b..b9dfeaf 100644
  }) => {
      const {classes} = useStyles();
      const [open, setOpen] = React.useState(false);
-@@ -104,6 +109,8 @@ export const Room = ({
+@@ -104,6 +108,7 @@ export const Room = ({
      const [selectedStream, setSelectedStream] = React.useState<string | typeof HostStream>();
      const [videoElement, setVideoElement] = React.useState<FullScreenHTMLVideoElement | null>(null);
      const [fullscreen, setFullscreen] = React.useState(false);
 +    const [activePanel, setActivePanel] = React.useState<'share' | 'members' | null>(null);
-+    const [railHovered, setRailHovered] = React.useState(false);
  
      useShowOnMouseMovement(setShowControl);
  
-@@ -188,6 +195,7 @@ export const Room = ({
+@@ -188,8 +193,8 @@ export const Room = ({
      );
  
      const controlVisible = showControl || open || hoverControl;
-+    const sidePanelOpen = railHovered || activePanel !== null;
- 
+-
      useHotkeys('s', () => (state.hostStream ? stopShare() : share()), [state.hostStream]);
++    useHotkeys('escape', () => setActivePanel(null), [activePanel]);
      useHotkeys(
-@@ -294,69 +302,178 @@ export const Room = ({
+         'f',
+         () => {
+@@ -290,73 +295,180 @@ export const Room = ({
+                         transform: 'translate(-50%, -50%)',
+                     }}
+                 >
+-                    no stream available
++                    暂无共享画面
                  </Typography>
              )}
  
@@ -87,14 +130,158 @@ index b2ce09b..b9dfeaf 100644
 -                            <Tooltip title="Cancel Presentation" arrow>
 -                                <IconButton onClick={stopShare} size="large">
 -                                    <CancelPresentationIcon fontSize="large" />
--                                </IconButton>
--                            </Tooltip>
++            <Box className={classes.sideRail} data-partylan-native-tools>
++                <Box
++                    className={`${classes.sidePanel} ${classes.sidePanelLeft}`}
++                    data-partylan-side="left"
++                    data-panel-active={activePanel === 'members' ? 'true' : 'false'}
++                >
++                    <Paper
++                        id="partylan-members-panel"
++                        component="aside"
++                        aria-label="成员列表"
++                        className={`${classes.sideDrawer} ${classes.sidePanelContentLeft}`}
++                        data-partylan-side-content="left"
++                        elevation={10}
++                    >
++                        <Box className={classes.sideDrawerHeader}>
++                            <Typography variant="h6">成员列表</Typography>
++                            <IconButton aria-label="关闭成员列表" onClick={() => setActivePanel(null)} size="small">
++                                <CloseIcon />
++                            </IconButton>
++                        </Box>
++                        <Box id="partylan-presence-roster" className={classes.memberList} />
++                        <Box data-partylan-legacy-roster className={classes.memberList}>
++                            {state.users.map((user) => (
++                                <Typography key={user.id} variant="body2" className={classes.memberRow}>
++                                    {user.name} {flags(user)}
++                                </Typography>
++                            ))}
++                        </Box>
++                    </Paper>
++                    <Paper className={`${classes.sideRailHandle} ${classes.sidePanelPeekLeft}`} elevation={10}>
++                        <Tooltip title="成员列表" placement="right" arrow>
++                            <IconButton
++                                aria-label="打开成员列表"
++                                aria-controls="partylan-members-panel"
++                                aria-expanded={activePanel === 'members'}
++                                onClick={() => setActivePanel(activePanel === 'members' ? null : 'members')}
++                                size="large"
++                            >
++                                <Badge badgeContent={state.users.length} color="primary">
++                                    <PeopleIcon fontSize="large" />
++                                </Badge>
++                            </IconButton>
++                        </Tooltip>
++                    </Paper>
++                </Box>
++
++                <Paper className={classes.fullscreenControl} elevation={10}>
++                    <Tooltip title={fullscreen ? '退出全屏' : '全屏'} placement="top" arrow>
++                        <IconButton
++                            aria-label={fullscreen ? '退出全屏' : '全屏'}
++                            onClick={() => void handleFullscreen()}
++                            disabled={!selectedStream}
++                            size="large"
++                        >
++                            {fullscreen ? <FullscreenExitIcon fontSize="large" /> : <FullScreenIcon fontSize="large" />}
++                        </IconButton>
++                    </Tooltip>
++                </Paper>
++
++                <Box
++                    className={`${classes.sidePanel} ${classes.sidePanelRight}`}
++                    data-partylan-side="right"
++                    data-panel-active={activePanel === 'share' ? 'true' : 'false'}
++                >
++                    <Paper
++                        id="partylan-share-panel"
++                        component="aside"
++                        aria-label="共享设置"
++                        className={`${classes.sideDrawer} ${classes.sidePanelContentRight}`}
++                        data-partylan-side-content="right"
++                        elevation={10}
++                    >
++                        <Box className={classes.sideDrawerHeader}>
++                            <Typography variant="h6">共享</Typography>
++                            <IconButton aria-label="关闭共享面板" onClick={() => setActivePanel(null)} size="small">
++                                <CloseIcon />
++                            </IconButton>
++                        </Box>
++                        <Typography variant="body2" color="text.secondary" sx={{mb: 1.5}}>
++                            {state.hostStream ? '正在共享屏幕' : '准备共享屏幕'}
++                        </Typography>
++                        {!state.hostStream && (
++                            <Box className={classes.shareOptions}>
++                                <label>
++                                    分辨率
++                                    <select
++                                        value={settings.resolution ?? '1280x720'}
++                                        onChange={(event) => setSettings({...settings, resolution: event.target.value})}
++                                    >
++                                        <option value="1920x1080">1080p (1920x1080)</option>
++                                        <option value="1280x720">720p (1280x720)</option>
++                                        <option value="854x480">480p (854x480)</option>
++                                        <option value="640x360">360p (640x360)</option>
++                                    </select>
++                                </label>
++                                <label>
++                                    帧率
++                                    <select
++                                        value={settings.framerate}
++                                        onChange={(event) => setSettings({...settings, framerate: Number(event.target.value)})}
++                                    >
++                                        <option value={60}>60 FPS</option>
++                                        <option value={45}>45 FPS</option>
++                                        <option value={30}>30 FPS</option>
++                                    </select>
++                                </label>
++                                <label>
++                                    音频
++                                    <select
++                                        value={settings.audioMode ?? 'app'}
++                                        onChange={(event) => setSettings({...settings, audioMode: event.target.value as 'app' | 'system' | 'off'})}
++                                    >
++                                        <option value="app">窗口/标签页音频</option>
++                                        <option value="system">系统音频</option>
++                                        <option value="off">无音频</option>
++                                    </select>
++                                </label>
++                            </Box>
++                        )}
++                        <Box className={classes.shareActionRow}>
++                            {state.hostStream ? (
++                                <Tooltip title="停止共享" placement="top" arrow>
++                                    <IconButton color="error" aria-label="停止共享" onClick={stopShare} size="large">
++                                        <CancelPresentationIcon fontSize="large" />
++                                    </IconButton>
++                                </Tooltip>
++                            ) : (
++                                <Tooltip title="开始共享" placement="top" arrow>
++                                    <IconButton color="primary" data-partylan-native-share="true" aria-label="开始共享" onClick={share} size="large">
++                                        <PresentToAllIcon fontSize="large" />
++                                    </IconButton>
++                                </Tooltip>
++                            )}
++                            {(stream?.getAudioTracks().length ?? 0) > 0 && videoElement && (
++                                <AudioControl video={videoElement} />
++                            )}
++                        </Box>
++                        <Box className={classes.shareFooter}>
++                            <Tooltip title="设置" placement="top" arrow>
++                                <IconButton aria-label="设置" onClick={() => setOpen(true)} size="large">
++                                    <SettingsIcon fontSize="large" />
+                                 </IconButton>
+                             </Tooltip>
 -                        ) : (
 -                            <Tooltip title="Start Presentation" arrow>
 -                                <IconButton onClick={share} size="large">
 -                                    <PresentToAllIcon fontSize="large" />
--                                </IconButton>
--                            </Tooltip>
++                            <Tooltip title="退出房间" placement="top" arrow>
++                                <IconButton aria-label="退出房间" onClick={leave} size="large">
++                                    <LogoutIcon fontSize="large" />
+                                 </IconButton>
+                             </Tooltip>
 -                        )}
 -
 -                        <Tooltip
@@ -111,162 +298,30 @@ index b2ce09b..b9dfeaf 100644
 -                                        ))}
 -                                    </div>
 -                                </div>
-+            <Box
-+                className={classes.sideRail}
-+                data-partylan-native-tools
-+                onMouseEnter={() => setRailHovered(true)}
-+                onMouseLeave={() => setRailHovered(false)}
-+            >
-+                {!sidePanelOpen && (
-+                    <Paper className={classes.sideRailHandle} elevation={10}>
-+                        <IconButton
-+                            aria-label="Open Room Tools"
-+                            onFocus={() => setRailHovered(true)}
-+                            size="large"
-+                        >
-+                            <MenuIcon fontSize="large" />
-+                        </IconButton>
-+                    </Paper>
-+                )}
-+                {sidePanelOpen && <Paper className={classes.sideRailBar} elevation={10}>
-+                    <Tooltip title={state.hostStream ? 'Cancel Presentation' : 'Start Presentation'} placement="left" arrow>
-+                        <IconButton
-+                            data-partylan-native-share="true"
-+                            aria-label={state.hostStream ? 'Cancel Presentation' : 'Start Presentation'}
-+                            onClick={
-+                                state.hostStream
-+                                    ? stopShare
-+                                    : () => setActivePanel(activePanel === 'share' ? null : 'share')
-                             }
+-                            }
 -                            arrow
-+                            size="large"
-+                        >
-+                            {state.hostStream ? (
-+                                <CancelPresentationIcon fontSize="large" />
-+                            ) : (
-+                                <PresentToAllIcon fontSize="large" />
-+                            )}
-+                        </IconButton>
-+                    </Tooltip>
-+                    <Tooltip title="Member List" placement="left" arrow>
-+                        <IconButton
-+                            aria-label="Member List"
-+                            onClick={() => setActivePanel(activePanel === 'members' ? null : 'members')}
-+                            size="large"
-                         >
-                             <Badge badgeContent={state.users.length} color="primary">
-                                 <PeopleIcon fontSize="large" />
-                             </Badge>
+-                        >
+-                            <Badge badgeContent={state.users.length} color="primary">
+-                                <PeopleIcon fontSize="large" />
+-                            </Badge>
 -                        </Tooltip>
 -                        <Tooltip title={fullscreen ? 'Exit Fullscreen' : 'Fullscreen'} arrow>
-+                        </IconButton>
-+                    </Tooltip>
-+                    <Tooltip title={fullscreen ? 'Exit Fullscreen' : 'Fullscreen'} placement="left" arrow>
-+                        <IconButton
-+                            aria-label={fullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
-+                            onClick={() => void handleFullscreen()}
-+                            disabled={!selectedStream}
-+                            size="large"
-+                        >
-+                            {fullscreen ? <FullscreenExitIcon fontSize="large" /> : <FullScreenIcon fontSize="large" />}
-+                        </IconButton>
-+                    </Tooltip>
-+                    <Tooltip title="Settings" placement="left" arrow>
-+                        <IconButton aria-label="Settings" onClick={() => setOpen(true)} size="large">
-+                            <SettingsIcon fontSize="large" />
-+                        </IconButton>
-+                    </Tooltip>
-+                    <Tooltip title="Leave Room" placement="left" arrow>
-+                        <IconButton aria-label="Leave Room" onClick={leave} size="large">
-+                            <LogoutIcon fontSize="large" />
-+                        </IconButton>
-+                    </Tooltip>
-+                </Paper>}
-+
-+                {sidePanelOpen && activePanel === 'members' && (
-+                    <Paper className={classes.sideDrawer} elevation={10}>
-+                        <Box className={classes.sideDrawerHeader}>
-+                            <Typography variant="h6">Member List</Typography>
-+                            <IconButton aria-label="Close Member List" onClick={() => setActivePanel(null)} size="small">
-+                                <CloseIcon />
-+                            </IconButton>
-+                        </Box>
-+                        <Box id="partylan-presence-roster" className={classes.memberList} />
-+                        <Box data-partylan-legacy-roster className={classes.memberList}>
-+                            {state.users.map((user) => (
-+                                <Typography key={user.id} variant="body2" className={classes.memberRow}>
-+                                    {user.name} {flags(user)}
-+                                </Typography>
-+                            ))}
 +                        </Box>
 +                    </Paper>
-+                )}
-+
-+                {sidePanelOpen && activePanel === 'share' && (
-+                    <Paper className={classes.sideDrawer} elevation={10}>
-+                        <Box className={classes.sideDrawerHeader}>
-+                            <Typography variant="h6">Share</Typography>
-+                            <IconButton aria-label="Close Share Panel" onClick={() => setActivePanel(null)} size="small">
-+                                <CloseIcon />
-+                            </IconButton>
-+                        </Box>
-+                        <Typography variant="body2" color="text.secondary" sx={{mb: 1.5}}>
-+                            {state.hostStream ? 'You are sharing' : 'Ready to share your screen'}
-+                        </Typography>
-+                        {!state.hostStream && (
-+                            <Box className={classes.shareOptions}>
-+                                <label>
-+                                    Resolution
-+                                    <select
-+                                        value={settings.resolution ?? '1280x720'}
-+                                        onChange={(event) =>
-+                                            setSettings({...settings, resolution: event.target.value})
-+                                        }
-+                                    >
-+                                        <option value="1920x1080">1080p (1920x1080)</option>
-+                                        <option value="1280x720">720p (1280x720)</option>
-+                                        <option value="854x480">480p (854x480)</option>
-+                                        <option value="640x360">360p (640x360)</option>
-+                                    </select>
-+                                </label>
-+                                <label>
-+                                    Frame rate
-+                                    <select
-+                                        value={settings.framerate}
-+                                        onChange={(event) =>
-+                                            setSettings({...settings, framerate: Number(event.target.value)})
-+                                        }
-+                                    >
-+                                        <option value={60}>60 FPS</option>
-+                                        <option value={45}>45 FPS</option>
-+                                        <option value={30}>30 FPS</option>
-+                                    </select>
-+                                </label>
-+                                <label>
-+                                    Audio
-+                                    <select
-+                                        value={settings.audioMode ?? 'app'}
-+                                        onChange={(event) =>
-+                                            setSettings({
-+                                                ...settings,
-+                                                audioMode: event.target.value as 'app' | 'system' | 'off',
-+                                            })
-+                                        }
-+                                    >
-+                                        <option value="app">Window/tab audio</option>
-+                                        <option value="system">System audio</option>
-+                                        <option value="off">No audio</option>
-+                                    </select>
-+                                </label>
-+                            </Box>
-+                        )}
-+                        {state.hostStream ? (
++                    <Paper className={`${classes.sideRailHandle} ${classes.sidePanelPeekRight}`} elevation={10}>
++                        <Tooltip title={state.hostStream ? '停止共享' : '共享'} placement="left" arrow>
                              <IconButton
 -                                onClick={() => void handleFullscreen()}
 -                                disabled={!selectedStream}
-+                                color="error"
-+                                aria-label="Cancel Presentation"
-+                                onClick={stopShare}
++                                data-partylan-native-share="true"
++                                aria-label={state.hostStream ? '停止共享' : '打开共享面板'}
++                                aria-controls="partylan-share-panel"
++                                aria-expanded={Boolean(state.hostStream) || activePanel === 'share'}
++                                onClick={
++                                    state.hostStream
++                                        ? stopShare
++                                        : () => setActivePanel(activePanel === 'share' ? null : 'share')
++                                }
                                  size="large"
                              >
 -                                {fullscreen ? (
@@ -274,79 +329,202 @@ index b2ce09b..b9dfeaf 100644
 -                                ) : (
 -                                    <FullScreenIcon fontSize="large" />
 -                                )}
-+                                <CancelPresentationIcon fontSize="large" />
++                                {state.hostStream ? <CancelPresentationIcon fontSize="large" /> : <PresentToAllIcon fontSize="large" />}
                              </IconButton>
--                        </Tooltip>
+                         </Tooltip>
 -
 -                        <Tooltip title="Settings" arrow>
 -                            <IconButton onClick={() => setOpen(true)} size="large">
 -                                <SettingsIcon fontSize="large" />
-+                        ) : (
-+                            <IconButton
-+                                color="primary"
-+                                data-partylan-native-share="true"
-+                                aria-label="Start Presentation"
-+                                onClick={share}
-+                                size="large"
-+                            >
-+                                <PresentToAllIcon fontSize="large" />
-                             </IconButton>
+-                            </IconButton>
 -                        </Tooltip>
 -                    </Box>
 -                </Paper>
 -            )}
-+                        )}
-+                        {(stream?.getAudioTracks().length ?? 0) > 0 && videoElement && (
-+                            <AudioControl video={videoElement} />
-+                        )}
 +                    </Paper>
-+                )}
++                </Box>
 +            </Box>
  
              <div className={classes.bottomContainer}>
                  {state.clientStreams
-@@ -502,6 +619,86 @@ const useStyles = makeStyles()(() => ({
+@@ -399,7 +511,7 @@ export const Room = ({
+                             align="center"
+                             className={classes.smallVideoLabel}
+                         >
+-                            You
++                            你
+                         </Typography>
+                     </Paper>
+                 )}
+@@ -502,6 +614,241 @@ const useStyles = makeStyles()(() => ({
          transform: 'translateX(-50%)',
          zIndex: 30,
      },
 +    sideRail: {
 +        position: 'fixed',
-+        top: '50%',
-+        right: 16,
-+        transform: 'translateY(-50%)',
++        inset: 0,
 +        zIndex: 40,
-+        display: 'flex',
-+        flexDirection: 'row-reverse',
-+        alignItems: 'center',
-+        gap: 12,
-+        color: '#fbf1d4',
++        pointerEvents: 'none',
++        color: '#0a3043',
 +    },
-+    sideRailBar: {
-+        display: 'flex',
-+        flexDirection: 'column',
-+        gap: 4,
-+        padding: 8,
-+        background: 'rgba(15, 12, 41, .92)',
-+        border: '1px solid rgba(124, 58, 237, .45)',
-+        borderRadius: 14,
-+        backdropFilter: 'blur(12px)',
++    sidePanel: {
++        position: 'fixed',
++        top: 0,
++        bottom: 0,
++        width: 52,
++        pointerEvents: 'auto',
++        '&[data-panel-active="true"] [data-partylan-side-content]': {
++            opacity: 1,
++            pointerEvents: 'auto',
++            transform: 'translate(0, -50%)',
++        },
++        '@media (min-width: 701px) and (hover: hover)': {
++            '&:hover [data-partylan-side-content], &:focus-within [data-partylan-side-content]': {
++                opacity: 1,
++                pointerEvents: 'auto',
++                transform: 'translate(0, -50%)',
++            },
++        },
++        '@media (max-width: 700px), (hover: none), (pointer: coarse)': {
++            top: 'auto',
++            bottom: 0,
++            width: 'calc(50% - 28px)',
++            height: 64,
++            '&:hover [data-partylan-side-content]': {
++                opacity: 0,
++                pointerEvents: 'none',
++                transform: 'translateY(calc(100% + 88px))',
++            },
++            '&[data-panel-active="true"] [data-partylan-side-content]': {
++                opacity: 1,
++                pointerEvents: 'auto',
++                transform: 'translateY(0)',
++            },
++        },
++    },
++    sidePanelLeft: {
++        left: 0,
++    },
++    sidePanelRight: {
++        right: 0,
 +    },
 +    sideRailHandle: {
-+        padding: 4,
-+        background: 'rgba(15, 12, 41, .92)',
-+        border: '1px solid rgba(124, 58, 237, .45)',
-+        borderRadius: 12,
++        position: 'absolute',
++        top: '50%',
++        padding: 0,
++        background: 'linear-gradient(180deg, rgba(239, 252, 255, .96), rgba(216, 241, 247, .94))',
++        border: '1px solid rgba(41, 130, 157, .28)',
++        borderRadius: 8,
++        boxShadow: '0 12px 28px rgba(18, 102, 124, .16)',
 +        backdropFilter: 'blur(12px)',
++        '& .MuiIconButton-root': {
++            color: '#08758e',
++        },
++    },
++    sidePanelPeekLeft: {
++        left: 0,
++        transform: 'translateY(-50%)',
++        borderLeft: 0,
++        borderRadius: '0 8px 8px 0',
++        '@media (max-width: 700px), (hover: none), (pointer: coarse)': {
++            top: 'auto',
++            right: 4,
++            bottom: 'calc(8px + env(safe-area-inset-bottom))',
++            left: 'auto',
++            transform: 'none',
++            border: '1px solid rgba(41, 130, 157, .28)',
++            borderRadius: 8,
++        },
++    },
++    sidePanelPeekRight: {
++        right: 0,
++        transform: 'translateY(-50%)',
++        borderRight: 0,
++        borderRadius: '8px 0 0 8px',
++        '@media (max-width: 700px), (hover: none), (pointer: coarse)': {
++            top: 'auto',
++            right: 'auto',
++            bottom: 'calc(8px + env(safe-area-inset-bottom))',
++            left: 4,
++            transform: 'none',
++            border: '1px solid rgba(41, 130, 157, .28)',
++            borderRadius: 8,
++        },
++    },
++    fullscreenControl: {
++        position: 'fixed',
++        left: '50%',
++        bottom: 24,
++        transform: 'translateX(-50%)',
++        zIndex: 42,
++        pointerEvents: 'auto',
++        display: 'flex',
++        padding: 4,
++        background: 'linear-gradient(180deg, rgba(239, 252, 255, .96), rgba(216, 241, 247, .94))',
++        border: '1px solid rgba(41, 130, 157, .28)',
++        borderRadius: 8,
++        boxShadow: '0 14px 32px rgba(18, 102, 124, .18)',
++        backdropFilter: 'blur(12px)',
++        '& .MuiIconButton-root': {
++            color: '#08758e',
++        },
++        '@media (max-width: 700px), (hover: none), (pointer: coarse)': {
++            bottom: 'calc(8px + env(safe-area-inset-bottom))',
++        },
 +    },
 +    sideDrawer: {
++        position: 'absolute',
++        top: '50%',
 +        width: 'min(300px, calc(100vw - 86px))',
 +        maxHeight: 'min(560px, calc(100vh - 32px))',
 +        overflow: 'auto',
 +        padding: 16,
-+        background: 'rgba(15, 12, 41, .96)',
-+        border: '1px solid rgba(124, 58, 237, .45)',
-+        borderRadius: 14,
++        opacity: 0,
++        pointerEvents: 'none',
++        background: 'linear-gradient(180deg, rgba(239, 252, 255, .97), rgba(216, 241, 247, .95))',
++        color: '#0a3043',
++        border: '1px solid rgba(41, 130, 157, .28)',
++        borderRadius: 8,
++        boxShadow: '0 18px 38px rgba(18, 102, 124, .18)',
 +        backdropFilter: 'blur(16px)',
++        transition: 'transform .2s ease, opacity .16s ease',
++        '& .MuiTypography-root': {
++            color: '#0a3043',
++        },
++        '& .MuiIconButton-root': {
++            color: '#08758e',
++        },
++        '@media (prefers-reduced-motion: reduce)': {
++            transition: 'none',
++        },
++    },
++    sidePanelContentLeft: {
++        left: 52,
++        transform: 'translate(-110%, -50%)',
++        '@media (max-width: 700px), (hover: none), (pointer: coarse)': {
++            position: 'fixed',
++            top: 'auto',
++            right: 8,
++            bottom: 'calc(72px + env(safe-area-inset-bottom))',
++            left: 8,
++            width: 'auto',
++            maxHeight: 'calc(100dvh - 88px - env(safe-area-inset-bottom))',
++            transform: 'translateY(calc(100% + 88px))',
++        },
++    },
++    sidePanelContentRight: {
++        right: 52,
++        transform: 'translate(110%, -50%)',
++        '@media (max-width: 700px), (hover: none), (pointer: coarse)': {
++            position: 'fixed',
++            top: 'auto',
++            right: 8,
++            bottom: 'calc(72px + env(safe-area-inset-bottom))',
++            left: 8,
++            width: 'auto',
++            maxHeight: 'calc(100dvh - 88px - env(safe-area-inset-bottom))',
++            transform: 'translateY(calc(100% + 88px))',
++        },
 +    },
 +    sideDrawerHeader: {
 +        display: 'flex',
@@ -355,7 +533,7 @@ index b2ce09b..b9dfeaf 100644
 +        gap: 8,
 +        paddingBottom: 8,
 +        marginBottom: 12,
-+        borderBottom: '1px solid rgba(148, 163, 184, .18)',
++        borderBottom: '1px solid rgba(41, 130, 157, .2)',
 +    },
 +    memberList: {
 +        display: 'grid',
@@ -363,9 +541,9 @@ index b2ce09b..b9dfeaf 100644
 +    },
 +    memberRow: {
 +        padding: '6px 8px',
-+        border: '1px solid rgba(148, 163, 184, .14)',
++        border: '1px solid rgba(41, 130, 157, .2)',
 +        borderRadius: 8,
-+        background: 'rgba(255, 255, 255, .05)',
++        background: 'rgba(235, 250, 253, .92)',
 +    },
 +    shareOptions: {
 +        display: 'grid',
@@ -374,7 +552,7 @@ index b2ce09b..b9dfeaf 100644
 +        '& label': {
 +            display: 'grid',
 +            gap: 4,
-+            color: '#a5b4fc',
++            color: '#08758e',
 +            fontSize: 12,
 +            fontWeight: 600,
 +        },
@@ -382,29 +560,44 @@ index b2ce09b..b9dfeaf 100644
 +            width: '100%',
 +            minHeight: 34,
 +            padding: '5px 8px',
-+            border: '1px solid rgba(124, 58, 237, .34)',
++            border: '1px solid rgba(41, 130, 157, .28)',
 +            borderRadius: 8,
-+            background: 'rgba(15, 12, 41, .76)',
-+            color: '#e2e8f0',
++            background: 'rgba(231, 249, 252, .96)',
++            color: '#0a3043',
 +            fontSize: 12,
++            outlineColor: '#2ce2c4',
++        },
++        '@media (max-width: 700px), (hover: none), (pointer: coarse)': {
++            '& label': {
++                fontSize: 14,
++            },
++            '& select': {
++                minHeight: 44,
++                fontSize: 16,
++            },
++        },
++    },
++    shareActionRow: {
++        display: 'flex',
++        alignItems: 'center',
++        justifyContent: 'center',
++        minHeight: 48,
++    },
++    shareFooter: {
++        display: 'flex',
++        alignItems: 'center',
++        justifyContent: 'center',
++        gap: 8,
++        paddingTop: 10,
++        marginTop: 10,
++        borderTop: '1px solid rgba(41, 130, 157, .2)',
++        '& .MuiIconButton-root:last-of-type': {
++            color: '#c85252',
 +        },
 +    },
      video: {
          display: 'block',
          margin: '0 auto',
-@@ -564,4 +761,12 @@ const useStyles = makeStyles()(() => ({
- 
-         overflow: 'auto',
-     },
-+    '@media (max-width: 600px)': {
-+        sideRail: {
-+            right: 8,
-+        },
-+        sideDrawer: {
-+            width: 'min(280px, calc(100vw - 70px))',
-+        },
-+    },
- }));
 diff --git a/ui/src/settings.ts b/ui/src/settings.ts
 index 2ba8d1b..0280ba2 100644
 --- a/ui/src/settings.ts

@@ -552,6 +552,7 @@ class RegisterControlAPITest(unittest.TestCase):
         submitted = {
             "event": "webrtc_sample",
             "room": "stats-room",
+            "adaptiveConfiguredFps": 30,
             "telemetryResetReason": "media-source-identity-changed",
             "candidateAddress": "10.0.0.2",
             "credential": "secret",
@@ -575,6 +576,7 @@ class RegisterControlAPITest(unittest.TestCase):
         self.assertTrue(response["ok"])
         self.assertEqual(len(records), 1)
         record = records[0]
+        self.assertEqual(record["adaptiveConfiguredFps"], 30)
         self.assertEqual(record["telemetryResetReason"], "media-source-identity-changed")
         for field, value in diagnostic_values.items():
             self.assertEqual(record[field], value, field)

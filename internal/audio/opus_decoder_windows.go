@@ -48,7 +48,7 @@ static int partylan_decoder_load(void) {
 	}
 	HMODULE lib = LoadLibraryW(L"opus.dll");
 	if (lib == NULL) {
-		partylan_decoder_set_reason("opus.dll not found; place opus.dll next to PartyLAN.exe");
+		partylan_decoder_set_reason("opus.dll not found; place opus.dll next to partylan.exe");
 		return 0;
 	}
 	PARTYLAN_DECODER_API.decoder_get_size = (partylan_decoder_get_size_fn)GetProcAddress(lib, "opus_decoder_get_size");

@@ -28,7 +28,7 @@ func TestDisplaySourcesBuildExpectedMetadata(t *testing.T) {
 func TestWindowSourcesFilterLegacyAndOwnWindows(t *testing.T) {
 	candidates := []WindowCandidate{
 		{Handle: 1, Title: "", ProcessID: 22, ProcessName: "game.exe", Visible: true},
-		{Handle: 2, Title: "PartyLAN", ProcessID: 99, ProcessName: "PartyLAN.exe", Visible: true},
+		{Handle: 2, Title: "partylan", ProcessID: 99, ProcessName: "partylan.exe", Visible: true},
 		{Handle: 3, Title: "Worker", ProcessID: 20, ProcessName: "worker.exe", ClassName: "WorkerW", Visible: true},
 		{Handle: 4, Title: "Chat", ProcessID: 25, ProcessName: "chat.exe", Visible: true, HasOwner: true},
 		{Handle: 5, Title: "Game Window", ProcessID: 55, ProcessName: "game.exe", Visible: true, PreviewDataURL: "data:image/jpeg;base64,test"},

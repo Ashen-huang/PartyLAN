@@ -2,15 +2,12 @@
   'use strict';
 
   var SETTINGS_KEY = 'screegoSettings';
-  var HISTORY_KEY = 'screegoRoomHistory';
-  var REGISTER_URL = '/api/register';
   var STATS_URL = '/api/stats';
   var QUALITY_REPORT_URL = '/api/quality/report';
   var QUALITY_SNAPSHOT_URL = '/api/quality/snapshot';
   var ROOM_STATE_URL = '/api/room-state';
   var PRESENCE_URL = '/api/presence';
   var SHARE_URL = '/api/share';
-  var PRESENT_TO_ALL_ICON_PATH = 'M21 3H3c-1.11 0-2 .89-2 2v14c0 1.11.89 2 2 2h18c1.11 0 2-.89 2-2V5c0-1.11-.89-2-2-2m0 16.02H3V4.98h18zM10 12H8l4-4 4 4h-2v4h-4z';
   var ROOM_STATE_TTL = 15;
   var ROOM_STATE_HEARTBEAT_MS = 5000;
   var PRESENCE_REFRESH_MS = 3000;
@@ -44,11 +41,7 @@
   var lastRoomState = null;
   var lastKnownAuthUser = '';
   var lastKnownLoggedIn = false;
-  var historyLoadedForUser = '';
   var authStateMonitorTimer = 0;
-  var nativeFetch = null;
-  var rawSuggestedRoomId = '';
-  var suggestedRoomId = '';
   var nativeGetDisplayMedia = null;
   var primedDisplayMediaRequest = null;
   var primedDisplayMediaRequestSeq = 0;
@@ -73,14 +66,7 @@
   var webShareSafetyTimer = 0;
   var webShareStopPromise = null;
   var webShareAbortPromise = null;
-  var webAudioCaptureNoticeTimer = 0;
   var activeCaptureAudioMode = 'off';
-  var webHoverToolsRoot = null;
-  var webHoverToolsRoomId = '';
-  var webHoverToolsPinnedSide = '';
-  var webHoverToolsMediaQuery = null;
-  var webHoverToolsOutsideHandler = null;
-  var webHoverToolsKeyHandler = null;
 
   var QUALITY = {
     quality:  { label: '清晰优先', bitrate: 50000000, desc: '带宽不足时优先保分辨率', pref: 'maintain-resolution' },
@@ -319,27 +305,17 @@
     var roomId = currentRoomId();
     var unified = !!roomId && sameRoomId(stateRoom, roomId) && isUnifiedSfuRoom(state);
     window.__PARTYLAN_SFU_ONLY__ = unified;
-    document.querySelectorAll('[data-partylan-legacy-roster]').forEach(function (roster) {
-      roster.style.display = unified ? 'none' : '';
-    });
-    syncWebHoverToolsVisibility();
     return unified;
   }
 
   function clearRoomMediaMode() {
     try { delete window.__PARTYLAN_SFU_ONLY__; } catch (e) { window.__PARTYLAN_SFU_ONLY__ = false; }
-    document.querySelectorAll('[data-partylan-legacy-roster]').forEach(function (roster) {
-      roster.style.display = '';
-    });
-    destroyWebHoverTools();
   }
 
   function rememberRoomState(state) {
     if (!state) return state;
     lastRoomState = state;
     applyRoomMediaMode(state);
-    renderWebPresenceMembers();
-    syncShareButtonAvailability();
     return state;
   }
 
@@ -477,281 +453,6 @@
     return state.shareOwnerParticipantId === getWebParticipantId();
   }
 
-  function buildWebPresenceMemberItem(participant) {
-    var name = participant.name || participant.participantId;
-    var labels = [participant.clientType === 'client' ? '客户端' : '网页端'];
-    labels.push(participant.role === 'owner' ? '房主' : '成员');
-    if (participant.participantId === getWebParticipantId()) labels.push('当前');
-    if (participant.sharing) labels.push('共享中');
-
-    var item = document.createElement('div');
-    item.dataset.gcPresenceMember = '1';
-    item.setAttribute('data-gc-presence-member', '1');
-    item.className = 'gc-presence-member';
-
-    var memberName = document.createElement('span');
-    memberName.className = 'gc-presence-member-name';
-    memberName.textContent = name;
-
-    var memberMeta = document.createElement('span');
-    memberMeta.className = 'gc-presence-member-meta';
-    memberMeta.textContent = labels.join(' · ');
-
-    item.appendChild(memberName);
-    item.appendChild(memberMeta);
-    return item;
-  }
-
-  function renderWebPresenceMembers() {
-    var anchors = [];
-    var tooltipAnchor = document.getElementById('partylan-presence-roster');
-    var drawerAnchor = document.getElementById('gc-web-presence-roster');
-    if (tooltipAnchor) anchors.push(tooltipAnchor);
-    if (drawerAnchor && drawerAnchor !== tooltipAnchor) anchors.push(drawerAnchor);
-    var unified = applyRoomMediaMode(lastRoomState);
-    anchors.forEach(function (anchor) { anchor.replaceChildren(); });
-    if (!currentRoomId() || !unified || !webPresenceMembers.length) {
-      if (drawerAnchor && currentRoomId() && !webPresenceMembers.length) {
-        var empty = document.createElement('div');
-        empty.className = 'gc-hover-empty';
-        empty.textContent = unified ? '暂无在线成员' : '正在同步房间成员';
-        drawerAnchor.appendChild(empty);
-      }
-      syncWebHoverSharePanel();
-      return;
-    }
-
-    anchors.forEach(function (anchor) {
-      webPresenceMembers.forEach(function (participant) {
-        anchor.appendChild(buildWebPresenceMemberItem(participant));
-      });
-    });
-    syncWebHoverSharePanel();
-  }
-
-  var WEB_HOVER_MEMBER_ICON_PATH = 'M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5s-3 1.34-3 3 1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5C15 14.17 10.33 13 8 13zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.86 1.97 3.45V19h7v-2.5c0-2.33-4.67-3.5-7-3.5z';
-  var WEB_HOVER_SHARE_ICON_PATH = 'M4 5h16v14H4zM7 8h10M7 12h6M7 16h4';
-  var WEB_HOVER_CLOSE_ICON_PATH = 'M6 6l12 12M18 6L6 18';
-
-  function webHoverIcon(path) {
-    return '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="' + path + '"></path></svg>';
-  }
-
-  function webHoverToolsIsTouch() {
-    return !!(webHoverToolsMediaQuery && webHoverToolsMediaQuery.matches);
-  }
-
-  function setWebHoverToolsPinned(side) {
-    webHoverToolsPinnedSide = side || '';
-    if (!webHoverToolsRoot) return;
-    if (webHoverToolsPinnedSide) webHoverToolsRoot.setAttribute('data-gc-pinned-side', webHoverToolsPinnedSide);
-    else webHoverToolsRoot.removeAttribute('data-gc-pinned-side');
-  }
-
-  function closeWebHoverTools() {
-    setWebHoverToolsPinned('');
-  }
-
-  function destroyWebHoverTools() {
-    if (webHoverToolsOutsideHandler && document.removeEventListener) document.removeEventListener('click', webHoverToolsOutsideHandler, true);
-    if (webHoverToolsKeyHandler && document.removeEventListener) document.removeEventListener('keydown', webHoverToolsKeyHandler, true);
-    if (webHoverToolsMediaQuery && webHoverToolsMediaQuery.removeEventListener) {
-      webHoverToolsMediaQuery.removeEventListener('change', syncWebHoverToolsVisibility);
-    }
-    webHoverToolsOutsideHandler = null;
-    webHoverToolsKeyHandler = null;
-    webHoverToolsMediaQuery = null;
-    webHoverToolsPinnedSide = '';
-    webHoverToolsRoomId = '';
-    if (webHoverToolsRoot && webHoverToolsRoot.parentNode) {
-      if (typeof webHoverToolsRoot.parentNode.removeChild === 'function') webHoverToolsRoot.parentNode.removeChild(webHoverToolsRoot);
-      else if (typeof webHoverToolsRoot.remove === 'function') webHoverToolsRoot.remove();
-    }
-    webHoverToolsRoot = null;
-  }
-
-  function nativeWebUiActive() {
-    return !!(document && document.querySelector && document.querySelector('[data-partylan-native-tools]'));
-  }
-
-  function setWebHoverShareHint(text, tone) {
-    if (!webHoverToolsRoot) return;
-    var hint = webHoverToolsRoot.querySelector('#gc-hover-share-hint');
-    if (!hint) return;
-    hint.textContent = text || '';
-    hint.dataset.tone = tone || 'neutral';
-  }
-
-  function saveWebHoverShareSettings() {
-    if (!webHoverToolsRoot) return;
-    var res = webHoverToolsRoot.querySelector('#gc-hover-share-res');
-    var fps = webHoverToolsRoot.querySelector('#gc-hover-share-fps');
-    var quality = webHoverToolsRoot.querySelector('#gc-hover-share-quality');
-    var audio = webHoverToolsRoot.querySelector('#gc-hover-share-audio');
-    if (!res || !fps || !quality || !audio) return;
-    var captureState = saveCaptureSettings(res.value, fps.value);
-    var settings = loadCfg();
-    settings.qualityMode = QUALITY[quality.value] ? quality.value : 'balanced';
-    settings.audioMode = AUDIO_MODES[audio.value] ? audio.value : 'app';
-    delete settings.sfuMode;
-    saveCfg(settings);
-    res.value = captureState.res;
-    fps.value = String(captureState.fps);
-    if (activeDisplayStream) syncHostSfuState(currentRoomId());
-    setWebHoverShareHint('设置已保存，下次共享时生效。', 'success');
-    syncWebHoverSharePanel();
-  }
-
-  function shareOwnerLabel(state) {
-    if (!state || !state.sharing) return '当前没有共享者';
-    var ownerId = String(state.shareOwnerParticipantId || '').trim();
-    var owner = webPresenceMembers.find(function (participant) {
-      return participant && participant.participantId === ownerId;
-    });
-    return owner ? owner.name : (ownerId || '其他成员');
-  }
-
-  function syncWebHoverSharePanel() {
-    if (!webHoverToolsRoot) return;
-    var config = extCfg();
-    var state = lastRoomState;
-    var unified = isUnifiedSfuRoom(state) && sameRoomId(state && state.room, currentRoomId());
-    var status = webHoverToolsRoot.querySelector('#gc-hover-share-status');
-    var owner = webHoverToolsRoot.querySelector('#gc-hover-share-owner');
-    var res = webHoverToolsRoot.querySelector('#gc-hover-share-res');
-    var fps = webHoverToolsRoot.querySelector('#gc-hover-share-fps');
-    var quality = webHoverToolsRoot.querySelector('#gc-hover-share-quality');
-    var audio = webHoverToolsRoot.querySelector('#gc-hover-share-audio');
-    var start = webHoverToolsRoot.querySelector('#gc-hover-share-start');
-    var stop = webHoverToolsRoot.querySelector('#gc-hover-share-stop');
-    if (res) res.value = config.res;
-    if (fps) fps.value = String(config.fps);
-    if (quality) quality.value = QUALITY[config.qm] ? config.qm : 'balanced';
-    if (audio) audio.value = AUDIO_MODES[config.audio] ? config.audio : 'app';
-    if (status) {
-      status.textContent = activeDisplayStream ? '共享中' : state && state.sharing ? '其他成员共享中' : '未开始共享';
-      status.dataset.tone = activeDisplayStream ? 'live' : state && state.sharing ? 'busy' : 'idle';
-    }
-    if (owner) owner.textContent = activeDisplayStream ? webDisplayName() : shareOwnerLabel(state);
-    var blocked = !!(state && state.sharing && !webCanStartShare(state));
-    var canStart = unified && !blocked && !activeDisplayStream && !!findShareStartButton();
-    if (start) {
-      start.disabled = !canStart;
-      start.title = blocked ? '当前已有成员正在共享' : (unified ? '' : '当前房间尚未启用统一共享');
-    }
-    if (stop) {
-      stop.hidden = !activeDisplayStream;
-      stop.disabled = !activeDisplayStream;
-    }
-    if (!unified) setWebHoverShareHint('等待房间共享状态确认。', 'neutral');
-  }
-
-  function bindWebHoverTools(root) {
-    var leftHandle = root.querySelector('#gc-hover-members-handle');
-    var rightHandle = root.querySelector('#gc-hover-share-handle');
-    var closeButtons = root.querySelectorAll('[data-gc-hover-close]');
-    [leftHandle, rightHandle].forEach(function (handle) {
-      if (!handle) return;
-      handle.addEventListener('click', function (event) {
-        if (!webHoverToolsIsTouch()) return;
-        event.preventDefault();
-        event.stopPropagation();
-        var side = handle.dataset.gcHoverSide || '';
-        setWebHoverToolsPinned(webHoverToolsPinnedSide === side ? '' : side);
-      });
-    });
-    closeButtons.forEach(function (button) {
-      button.addEventListener('click', function (event) {
-        event.preventDefault();
-        event.stopPropagation();
-        closeWebHoverTools();
-      });
-    });
-    var apply = root.querySelector('#gc-hover-share-apply');
-    if (apply) apply.addEventListener('click', function () { saveWebHoverShareSettings(); });
-    var start = root.querySelector('#gc-hover-share-start');
-    if (start) start.addEventListener('click', function () {
-      var button = findShareStartButton();
-      if (!button) return setWebHoverShareHint('共享入口暂不可用，请刷新后重试。', 'error');
-      createShareSetupModal(button);
-      syncWebHoverSharePanel();
-    });
-    var stop = root.querySelector('#gc-hover-share-stop');
-    if (stop) stop.addEventListener('click', function () {
-      if (activeDisplayStream) void stopWebShare(false);
-    });
-    webHoverToolsOutsideHandler = function (event) {
-      if (!webHoverToolsIsTouch() || !webHoverToolsRoot || webHoverToolsRoot.contains(event.target)) return;
-      closeWebHoverTools();
-    };
-    webHoverToolsKeyHandler = function (event) {
-      if (event.key === 'Escape') closeWebHoverTools();
-    };
-    if (document.addEventListener) {
-      document.addEventListener('click', webHoverToolsOutsideHandler, true);
-      document.addEventListener('keydown', webHoverToolsKeyHandler, true);
-    }
-  }
-
-  function ensureWebHoverTools(roomId) {
-    if (!roomId) return null;
-    if (!document || typeof document.createElement !== 'function' || !document.body) return null;
-    if (nativeWebUiActive()) {
-      destroyWebHoverTools();
-      return null;
-    }
-    if (webHoverToolsRoot && sameRoomId(webHoverToolsRoomId, roomId)) return webHoverToolsRoot;
-    destroyWebHoverTools();
-    var root = document.createElement('div');
-    root.id = 'gc-hover-tools';
-    root.setAttribute('aria-label', 'GameCast 房间工具');
-    root.innerHTML =
-      '<div class="gc-hover-edge gc-hover-edge-left" data-gc-hover-side="left">' +
-        '<button id="gc-hover-members-handle" class="gc-hover-handle" type="button" data-gc-hover-side="left" aria-label="显示成员列表" title="成员列表">' + webHoverIcon(WEB_HOVER_MEMBER_ICON_PATH) + '</button>' +
-        '<aside class="gc-hover-drawer gc-hover-members-drawer" aria-label="成员列表">' +
-          '<div class="gc-hover-drawer-header"><span>成员</span><button type="button" class="gc-hover-close" data-gc-hover-close aria-label="关闭成员列表">' + webHoverIcon(WEB_HOVER_CLOSE_ICON_PATH) + '</button></div>' +
-          '<div id="gc-web-presence-roster" class="gc-presence-roster" aria-live="polite"></div>' +
-        '</aside>' +
-      '</div>' +
-      '<div class="gc-hover-edge gc-hover-edge-right" data-gc-hover-side="right">' +
-        '<button id="gc-hover-share-handle" class="gc-hover-handle" type="button" data-gc-hover-side="right" aria-label="显示共享设置" title="共享设置">' + webHoverIcon(WEB_HOVER_SHARE_ICON_PATH) + '</button>' +
-        '<aside class="gc-hover-drawer gc-hover-share-drawer" aria-label="共享设置">' +
-          '<div class="gc-hover-drawer-header"><span>共享</span><button type="button" class="gc-hover-close" data-gc-hover-close aria-label="关闭共享设置">' + webHoverIcon(WEB_HOVER_CLOSE_ICON_PATH) + '</button></div>' +
-          '<div id="gc-hover-share-status" class="gc-hover-share-status" role="status">未开始共享</div>' +
-          '<div id="gc-hover-share-owner" class="gc-hover-share-owner">当前没有共享者</div>' +
-          '<div class="gc-hover-share-grid">' +
-            '<label>分辨率<select id="gc-hover-share-res">' + Object.keys(RESOLUTIONS).map(function (key) { return '<option value="' + key + '">' + RESOLUTIONS[key].label + '</option>'; }).join('') + '</select></label>' +
-            '<label>帧率<select id="gc-hover-share-fps">' + buildFpsOptionsHtml(30) + '</select></label>' +
-            '<label>优先模式<select id="gc-hover-share-quality"><option value="quality">清晰优先</option><option value="balanced">均衡</option><option value="smooth">流畅优先</option></select></label>' +
-            '<label>音频<select id="gc-hover-share-audio"><option value="app">窗口/标签页</option><option value="off">不共享</option><option value="system">全屏系统音频</option></select></label>' +
-          '</div>' +
-          '<button id="gc-hover-share-apply" class="gc-hover-share-secondary" type="button">应用设置</button>' +
-          '<div class="gc-hover-share-actions"><button id="gc-hover-share-start" class="gc-hover-share-primary" type="button">开始共享</button><button id="gc-hover-share-stop" class="gc-hover-share-danger" type="button" hidden>停止共享</button></div>' +
-          '<div id="gc-hover-share-hint" class="gc-hover-share-hint" role="status">共享设置仅在点击后生效。</div>' +
-        '</aside>' +
-      '</div>';
-    document.body.appendChild(root);
-    webHoverToolsRoot = root;
-    webHoverToolsRoomId = roomId;
-    if (window.matchMedia) webHoverToolsMediaQuery = window.matchMedia('(hover: none), (pointer: coarse)');
-    bindWebHoverTools(root);
-    syncWebHoverSharePanel();
-    return root;
-  }
-
-  function syncWebHoverToolsVisibility() {
-    var roomId = currentRoomId();
-    var stateRoom = String(lastRoomState && lastRoomState.room || '').trim();
-    var unified = !!roomId && sameRoomId(stateRoom, roomId) && isUnifiedSfuRoom(lastRoomState);
-    if (!roomId) {
-      destroyWebHoverTools();
-      return;
-    }
-    var root = ensureWebHoverTools(roomId);
-    if (root) root.setAttribute('data-gc-unified', unified ? '1' : '0');
-    syncWebHoverSharePanel();
-  }
-
   function recoverWebPresence(roomId) {
     roomId = String(roomId || currentRoomId() || '').trim();
     if (!roomId) return Promise.resolve(null);
@@ -791,8 +492,6 @@
     return controlRequest(PRESENCE_URL + '?room=' + encodeURIComponent(roomId)).then(function (data) {
       webPresenceMembers = mergeWebPresence(data.participants);
       if (data.room) rememberRoomState(data.room);
-      renderWebPresenceMembers();
-      syncShareButtonAvailability();
       reconcileOrphanedPeerConnections();
       if (activeDisplayStream && Array.isArray(data.participants) && !hasWebPresenceParticipant(getWebParticipantId())) {
         recoverWebPresence(roomId);
@@ -847,7 +546,7 @@
     webPresenceName = '';
     webPresenceMembers = [];
     clearAdaptiveQualitySnapshot();
-    renderWebPresenceMembers();
+    applyRoomMediaMode(lastRoomState);
     if (!roomId) return Promise.resolve(null);
     var payload = JSON.stringify({ room: roomId, participantId: getWebParticipantId() });
     if (useBeacon && navigator.sendBeacon) {
@@ -977,7 +676,6 @@
         webShareLease = data.lease;
         if (data.room) rememberRoomState(data.room);
         startWebShareHeartbeat();
-        syncShareButtonAvailability();
         return webShareLease;
       });
     });
@@ -988,7 +686,6 @@
     clearWebShareTimers();
     webShareLease = null;
     activeCaptureAudioMode = 'off';
-    syncShareButtonAvailability();
     if (!lease) return Promise.resolve(null);
     var payload = JSON.stringify({ room: lease.room, participantId: getWebParticipantId(), leaseId: lease.leaseId });
     if (useBeacon && navigator.sendBeacon) {
@@ -1065,24 +762,6 @@
     return webShareAbortPromise;
   }
 
-  function syncShareButtonAvailability() {
-    var blocked = !!(lastRoomState && lastRoomState.sharing && !webCanStartShare(lastRoomState));
-    collectShareStartButtons(document.body).forEach(function (button) {
-      if (blocked) {
-        if (!button.dataset.gcControlDisabled) button.dataset.gcControlWasDisabled = button.disabled ? '1' : '0';
-        button.dataset.gcControlDisabled = '1';
-        button.disabled = true;
-        button.title = '当前已有成员正在共享';
-      } else if (button.dataset.gcControlDisabled) {
-        if (button.dataset.gcControlWasDisabled !== '1') button.disabled = false;
-        delete button.dataset.gcControlDisabled;
-        delete button.dataset.gcControlWasDisabled;
-        if (button.title === '当前已有成员正在共享') button.removeAttribute('title');
-      }
-    });
-    syncWebHoverSharePanel();
-  }
-
   function sameRoomId(left, right) {
     return ((left || '') + '').trim().toLowerCase() === ((right || '') + '').trim().toLowerCase();
   }
@@ -1155,16 +834,7 @@
   }
 
   function getMemberCountEstimate() {
-    if (webPresenceMembers.length) return webPresenceMembers.length;
-    var seen = {};
-    var count = 0;
-    document.querySelectorAll('.MuiListItem-root, .user-item, [class*="user"]').forEach(function (item) {
-      var text = (item.textContent || '').trim();
-      if (!text || seen[text]) return;
-      seen[text] = true;
-      count += 1;
-    });
-    return count;
+    return Math.max(1, webPresenceMembers.length);
   }
 
   function syncHostSfuState(roomId) {
@@ -1710,16 +1380,8 @@
 
   function sampleAdaptiveStreaming() {
     if (!activeDisplayStream || webPresenceRecoveryPromise) return;
-    if (document.visibilityState === 'hidden') {
-      pauseAdaptiveStreamingEvidence();
-      return;
-    }
     refreshAdaptiveQualitySnapshot().finally(function () {
       if (!activeDisplayStream || webPresenceRecoveryPromise) return;
-      if (document.visibilityState === 'hidden') {
-        pauseAdaptiveStreamingEvidence();
-        return;
-      }
       var descriptors = getAdaptivePeerDescriptors();
       var budgetedPeerCount = countServerBudgetedAdaptivePeers(descriptors);
       if (budgetedPeerCount !== adaptiveServerBudgetPeerCount) {
@@ -1933,7 +1595,6 @@
       } catch (e) {}
     }
 
-    activateConfirmedRoom(roomId);
   }
 
   function shouldSilenceSocketClose(socket, event) {
@@ -2105,169 +1766,8 @@
     activeRoomSocketRoomId = '';
   }
 
-  function leaveRoomGracefully() {
-    stopRoomStateHeartbeat();
-    var stopPromise = activeDisplayStream || webShareLease
-      ? stopWebShare(false)
-      : Promise.resolve(null);
-    stopPromise.finally(function () {
-      sfuDisconnect();
-      sendRoomStateBeacon(false);
-      leaveWebPresence(false);
-      clearRoomMediaMode();
-      closeActivePeerConnections();
-      closeRoomSocket();
-      setTimeout(function () {
-        window.location.href = '/';
-      }, 80);
-    });
-  }
-
-  /* ── 房间历史（云端同步） ── */
-  function historyKey(user) {
-    user = user || currentUser || loadCfg().name || null;
-    return user ? HISTORY_KEY + '_' + user : HISTORY_KEY;
-  }
-  function preferredRoomIdForUser(user, fallbackRoomId) {
-    user = (user || '').trim();
-    var history = loadHistory(user);
-    if (history.length > 0 && history[0] && history[0].id) return history[0].id;
-    if (user && user !== 'guest') return user;
-    return (fallbackRoomId || '').trim();
-  }
-  function normalizeHistoryEntries(history) {
-    if (!Array.isArray(history)) return [];
-    var seen = {};
-    return history.filter(function (r) {
-      if (!r || typeof r.id !== 'string') return false;
-      var roomId = r.id.trim();
-      if (!roomId || seen[roomId]) return false;
-      seen[roomId] = true;
-      r.id = roomId;
-      r.time = parseInt(r.time, 10) || Date.now();
-      return true;
-    }).sort(function (a, b) {
-      return (b.time || 0) - (a.time || 0);
-    }).slice(0, 20);
-  }
-  function loadHistory(user) {
-    try {
-      var h = JSON.parse(localStorage.getItem(historyKey(user)) || '[]');
-      return normalizeHistoryEntries(h);
-    } catch (e) {
-      return [];
-    }
-  }
-  function saveHistory(h, user) {
-    localStorage.setItem(historyKey(user), JSON.stringify(normalizeHistoryEntries(h)));
-  }
-  function addRoomHistory(roomId) {
-    if (!roomId) return;
-    var h = loadHistory();
-    var idx = h.findIndex(function (r) { return r.id === roomId; });
-    if (idx >= 0) h.splice(idx, 1);
-    h.unshift({ id: roomId, time: Date.now() });
-    saveHistory(h);
-    syncHistoryToServer();
-    fillRoomIdDefault({ forceAutofill: true, preferHistory: true });
-    refreshHistoryDropdown();
-  }
-  function removeRoomHistory(roomId) {
-    roomId = (roomId || '').trim();
-    if (!roomId) return;
-    var h = loadHistory().filter(function (r) { return r.id !== roomId; });
-    saveHistory(h);
-    syncHistoryToServer();
-  }
-  function syncHistoryToServer() {
-    var user = currentUser;
-    if (!user || user === 'guest') return;
-    fetch('/api/history', {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ history: loadHistory(user) })
-    }).catch(function () {});
-  }
-  function loadHistoryFromServer(user) {
-    return fetch('/api/history', { credentials: 'same-origin' })
-      .then(function (r) { return r.json(); })
-      .then(function (data) {
-        var merged = loadHistory(user);
-        if (data.ok && Array.isArray(data.history)) {
-          merged = normalizeHistoryEntries(data.history.concat(merged));
-          saveHistory(merged, user);
-        }
-        refreshHistoryDropdown();
-        fillRoomIdDefault({ forceAutofill: true, preferHistory: true });
-        return merged;
-      }).catch(function () {
-        refreshHistoryDropdown();
-        fillRoomIdDefault({ forceAutofill: true, preferHistory: true });
-        return loadHistory(user);
-      });
-  }
-  function refreshHistoryDropdown() {
-    var arrow = document.getElementById('enh-hist-arrow');
-    if (arrow) arrow.remove();
-    var list = document.getElementById('enh-hist-list');
-    if (list) list.remove();
-    document.querySelectorAll('input[data-enh-history]').forEach(function (inp) { delete inp.dataset.enhHistory; });
-    setTimeout(injectHistoryDropdown, 100);
-  }
-  function isConfigRequest(input) {
-    var url = '';
-    if (typeof input === 'string') url = input;
-    else if (input && typeof input.url === 'string') url = input.url;
-    if (!url) return false;
-    try {
-      return new URL(url, location.origin).pathname === '/config';
-    } catch (e) {
-      return /\/config(?:\?|$)/.test(url);
-    }
-  }
-  function buildJsonResponseLike(response, data) {
-    var headers = new Headers(response.headers || {});
-    headers.set('Content-Type', 'application/json; charset=utf-8');
-    headers.delete('Content-Length');
-    return new Response(JSON.stringify(data), {
-      status: response.status,
-      statusText: response.statusText,
-      headers: headers
-    });
-  }
-  function patchFetch() {
-    if (!window.fetch || window.fetch._gcWrapped) return;
-    nativeFetch = window.fetch.bind(window);
-    window.fetch = function (input, init) {
-      return nativeFetch(input, init).then(function (response) {
-        if (!isConfigRequest(input) || !response || !response.ok) return response;
-        return response.clone().json().then(function (data) {
-          if (!data || typeof data !== 'object') return response;
-          var user = ((data.user || '') + '').trim();
-          rawSuggestedRoomId = ((data.roomName || '') + '').trim();
-          if (data.loggedIn && user && user !== 'guest') {
-            data.roomName = preferredRoomIdForUser(user, data.roomName);
-          }
-          return buildJsonResponseLike(response, data);
-        }).catch(function () {
-          return response;
-        });
-      });
-    };
-    window.fetch._gcWrapped = true;
-  }
-
   /* ── 用户名 ── */
-  function scheduleRoomIdDefaultRefresh() {
-    fillRoomIdDefault({ preferHistory: true, forceAutofill: true });
-    setTimeout(function () { fillRoomIdDefault({ preferHistory: true, forceAutofill: true }); }, 300);
-    setTimeout(function () { fillRoomIdDefault({ preferHistory: true, forceAutofill: true }); }, 1200);
-    setTimeout(function () { fillRoomIdDefault({ preferHistory: true, forceAutofill: true }); }, 2500);
-  }
-  function applyConfigState(data, options) {
-    options = options || {};
-
+  function applyConfigState(data) {
     var nextUser = ((data && data.user) || '').trim() || 'guest';
     var nextLoggedIn = !!(data && data.loggedIn) && nextUser !== 'guest';
     var prevUser = currentUser || 'guest';
@@ -2276,8 +1776,6 @@
     var loginStateChanged = nextLoggedIn !== prevLoggedIn;
 
     currentUser = nextUser;
-    rawSuggestedRoomId = rawSuggestedRoomId || suggestedRoomId;
-    suggestedRoomId = ((data && data.roomName) || '').trim();
     lastKnownAuthUser = nextUser;
     lastKnownLoggedIn = nextLoggedIn;
 
@@ -2287,13 +1785,6 @@
         cfg.name = currentUser;
         saveCfg(cfg);
       }
-      if (userChanged) historyLoadedForUser = '';
-      if (options.forceHistoryReload || userChanged || loginStateChanged || historyLoadedForUser !== currentUser) {
-        loadHistoryFromServer(currentUser).then(function () {
-          historyLoadedForUser = currentUser;
-        });
-      }
-      scheduleRoomIdDefaultRefresh();
       var confirmedRoomId = activeRoomSocketRoomId;
       var confirmedCurrentRoom = confirmedRoomId && sameRoomId(confirmedRoomId, currentRoomId());
       if (confirmedCurrentRoom && (userChanged || loginStateChanged || webPresenceName !== currentUser)) {
@@ -2307,113 +1798,24 @@
     }
 
     stopRoomStateHeartbeat();
-    if (userChanged || loginStateChanged) {
-      historyLoadedForUser = '';
-      refreshHistoryDropdown();
-    }
-    if (!options.silent) scheduleRoomIdDefaultRefresh();
   }
-  function fetchUsername(options) {
-    options = options || {};
+  function fetchUsername() {
     return fetch(location.origin + '/config', { credentials: 'same-origin' })
       .then(function (r) { return r.json(); })
       .then(function (data) {
-        applyConfigState(data, options);
+        applyConfigState(data);
         return data;
       }).catch(function () {
         if (!currentUser) currentUser = 'guest';
-        if (!options.silent) scheduleRoomIdDefaultRefresh();
         return null;
       });
   }
   function startAuthStateMonitor() {
     if (authStateMonitorTimer) return;
     authStateMonitorTimer = setInterval(function () {
-      fetchUsername({ silent: true });
+      fetchUsername();
     }, 5000);
   }
-  function isRoomIdField(input) {
-    if (!input) return false;
-    var wrapper = input.closest('.MuiFormControl-root') || input.parentElement;
-    if (!wrapper) return false;
-    var labelText = wrapper.textContent || '';
-    return labelText.indexOf('id') >= 0 || labelText.indexOf('Id') >= 0;
-  }
-  function clearRoomIdManualOverride(input) {
-    if (!input) return;
-    delete input.dataset.enhManualEdit;
-    delete input.dataset.enhManualEditUser;
-  }
-  function markRoomIdManualOverride(input) {
-    if (!input) return;
-    input.dataset.enhManualEdit = '1';
-    input.dataset.enhManualEditUser = currentUser || '';
-    input.dataset.enhAutofilled = '0';
-    input.dataset.enhAutofilledValue = '';
-  }
-  function hasManualRoomIdOverride(input) {
-    if (!input || input.dataset.enhManualEdit !== '1') return false;
-    var editUser = input.dataset.enhManualEditUser || '';
-    return editUser === (currentUser || '');
-  }
-  function bindRoomIdInputAutofillGuards(root) {
-    queryAllWithSelf(root, 'input').forEach(function (input) {
-      if (!isRoomIdField(input) || input.dataset.enhRoomIdGuardBound) return;
-      input.dataset.enhRoomIdGuardBound = '1';
-      input.addEventListener('input', function () {
-        if (input.dataset.enhProgrammaticWrite === '1') return;
-        markRoomIdManualOverride(input);
-      });
-    });
-  }
-  function setRoomIdInputValue(input, value) {
-    if (!input) return;
-    var previousValue = input.value;
-    var nativeSet = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
-    input.dataset.enhProgrammaticWrite = '1';
-    nativeSet.call(input, value);
-    if (input._valueTracker && typeof input._valueTracker.setValue === 'function') {
-      input._valueTracker.setValue(previousValue);
-    }
-    try {
-      input.dispatchEvent(new InputEvent('input', { bubbles: true, data: value, inputType: 'insertReplacementText' }));
-    } catch (e) {
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-    }
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-    delete input.dataset.enhProgrammaticWrite;
-  }
-  function canAutofillRoomIdInput(input, defaultVal, forceAutofill) {
-    if (!input) return false;
-    if (hasManualRoomIdOverride(input)) return false;
-    var currentVal = (input.value || '').trim();
-    var lastAutofilled = (input.dataset.enhAutofilledValue || '').trim();
-    if (!currentVal) return true;
-    if (currentVal === defaultVal) return true;
-    if (currentVal === rawSuggestedRoomId) return true;
-    if (currentVal === suggestedRoomId) return true;
-    if (currentVal === currentUser) return true;
-    if (input.dataset.enhAutofilled === '1' && currentVal === lastAutofilled) return true;
-    return !!(forceAutofill && input.dataset.enhAutofilled === '1');
-  }
-  function fillRoomIdDefault(options) {
-    options = options || {};
-    if (!currentUser || currentUser === 'guest') return;
-    bindRoomIdInputAutofillGuards(document.body);
-    var history = loadHistory();
-    var defaultVal = history.length > 0 ? history[0].id : currentUser;
-    document.querySelectorAll('input').forEach(function (inp) {
-      if (!isRoomIdField(inp)) return;
-      if (!canAutofillRoomIdInput(inp, defaultVal, options.forceAutofill)) return;
-      inp.dataset.enhFilled = '1';
-      inp.dataset.enhAutofilled = '1';
-      inp.dataset.enhAutofilledValue = defaultVal;
-      clearRoomIdManualOverride(inp);
-      if ((inp.value || '').trim() === defaultVal) return;
-      setRoomIdInputValue(inp, defaultVal);
-    });
-  }
-
   /* ── SFU 模式 ── */
   function sfuConnect(roomId, role, stream) {
     if (typeof GC_SFU === 'undefined') {
@@ -2691,40 +2093,6 @@
     });
   }
 
-  function showWebAudioCaptureNotice(reason) {
-    var previous = document.getElementById('gc-audio-safety-notice');
-    if (previous) previous.remove();
-    if (webAudioCaptureNoticeTimer) clearTimeout(webAudioCaptureNoticeTimer);
-
-    var notice = document.createElement('div');
-    notice.id = 'gc-audio-safety-notice';
-    notice.setAttribute('role', 'status');
-    notice.textContent = reason === 'source-mismatch'
-      ? '所选来源与音频模式不匹配，本次仅共享画面。'
-      : '未获取到所选来源音频，本次仅共享画面。';
-    notice.style.cssText = 'position:fixed;right:20px;bottom:20px;z-index:100002;max-width:420px;padding:10px 14px;background:rgba(15,23,42,.96);color:#f8fafc;border:1px solid rgba(251,191,36,.45);border-left:4px solid #fbbf24;border-radius:6px;box-shadow:0 12px 32px rgba(2,6,23,.32);font-size:13px;line-height:1.5;letter-spacing:0';
-    document.body.appendChild(notice);
-    webAudioCaptureNoticeTimer = setTimeout(function () {
-      if (notice.parentNode) notice.parentNode.removeChild(notice);
-      webAudioCaptureNoticeTimer = 0;
-    }, 5000);
-  }
-
-  function showDisplayCaptureError(error) {
-    var previous = document.getElementById('gc-share-start-error');
-    if (previous) previous.remove();
-    var notice = document.createElement('div');
-    notice.id = 'gc-share-start-error';
-    var raw = displayMediaErrorName(error);
-    if (error && error.message) raw += (raw ? ': ' : '') + error.message;
-    notice.textContent = '共享启动失败：' + localizeDisplayMediaReason(raw);
-    notice.style.cssText = 'position:fixed;right:20px;bottom:20px;z-index:100002;max-width:460px;padding:10px 14px;background:rgba(69,10,10,.96);color:#fef2f2;border:1px solid rgba(248,113,113,.5);border-left:4px solid #f87171;border-radius:6px;box-shadow:0 12px 32px rgba(2,6,23,.32);font-size:13px;line-height:1.5;letter-spacing:0';
-    document.body.appendChild(notice);
-    setTimeout(function () {
-      if (notice.parentNode) notice.parentNode.removeChild(notice);
-    }, 7000);
-  }
-
   function activateCapturedDisplayStream(stream, settings) {
     if (!stream) return stream;
     if (stream._gcCaptureActivated) return stream;
@@ -2733,7 +2101,6 @@
     var audioResult = GameCastWebShareAudioPolicy.sanitizeCapturedStream(stream, requestedAudioMode);
     stream = audioResult.stream;
     activeCaptureAudioMode = audioResult.effectiveMode;
-    if (audioResult.shouldNotify) showWebAudioCaptureNotice(audioResult.noticeReason);
 
     if (currentSfuMode()) {
       try {
@@ -3064,732 +2431,26 @@
     return null;
   }
 
-  /* ── 中文翻译 ── */
-  var T = {
-    'Login to Screego': '登录 GameCast', 'Username': '用户名', 'Password': '密码',
-    'Login': '登录', 'Go Back': '返回', 'Logout': '退出登录',
-    'Create or Join a Room': '创建或加入房间',
-    'Close Room after you leave': '离开后关闭房间',
-    'Nat Traversal via:': 'NAT 穿越:',
-    'Settings': '设置', 'Preferred Codec': '首选编码',
-    'Display Mode': '显示模式', 'FrameRate': '帧率',
-    'Cancel': '取消', 'Save': '保存',
-    'FitToWindow': '适应窗口', 'FitWidth': '适应宽度',
-    'FitHeight': '适应高度', 'OriginalSize': '原始大小',
-    'Start Presentation': '开始共享', 'Cancel Presentation': '停止共享',
-    'Fullscreen': '全屏', 'Copy Link': '复制链接',
-    'Link Copied': '链接已复制', 'Member List': '成员列表',
-    'no stream available': '暂无共享画面',
-    'You': '你', 'Owner': '房主', 'Streaming': '共享中',
-    'Preset: Best Quality': '预设: 最佳画质', 'Preset: Browser Default': '预设: 浏览器默认',
-    'screen sharing for developers': '游戏 · 娱乐 · 屏幕共享',
-    'Screego requires JavaScript (': '需要启用 JavaScript 才能使用 GameCast (',
-    'Could not start presentation': '无法开始共享',
-    'Are you using https?': '请确认使用 HTTPS 访问',
-    'Hello ': '你好 ',
-    'Turn Server': 'TURN 服务器',
-    'Host': '房主',
-    'Viewer': '观看者',
-    'Close': '关闭',
-    'Open': '打开',
-    'Connected': '已连接',
-    'Disconnected': '已断开',
-    'Reconnecting': '重新连接中...',
-    'Error': '错误',
-    'Warning': '警告',
-    'Info': '提示',
-    'OK': '确定',
-    'Yes': '是',
-    'No': '否',
-    'Dismiss': '关闭',
-    'Logged in!': '登录成功',
-    'Logged Out.': '已退出登录'
-  };
-
-  function localizeDisplayMediaReason(reason) {
-    var r = (reason || '').trim();
-    if (!r) return '浏览器未返回具体原因。';
-    if (r.indexOf('NotAllowedError') >= 0 || /permission denied by user/i.test(r)) return '你已取消屏幕或窗口共享授权。';
-    if (r.indexOf('NotReadableError') >= 0) return '系统当前无法读取要共享的内容，可能正被其他程序占用。';
-    if (r.indexOf('AbortError') >= 0) return '共享启动已被中断，请再试一次。';
-    if (r.indexOf('NotFoundError') >= 0) return '没有找到可共享的屏幕、窗口或标签页。';
-    if (r.indexOf('InvalidStateError') >= 0) return '浏览器当前状态不允许开始共享，请刷新页面后重试。';
-    if (r.indexOf('OverconstrainedError') >= 0) return '当前分辨率或帧率设置不受支持，请调低后重试。';
-    if (r.indexOf('TypeError') >= 0) return '浏览器返回了无效的共享参数，请刷新后重试。';
-    return r;
-  }
-
-  function trimTrailingPunctuation(text) {
-    return (text || '').replace(/[.?!:;,]+$/g, '').trim();
-  }
-
-  function quoteLabel(text) {
-    var value = trimTrailingPunctuation(text);
-    return value ? '“' + value + '”' : '“未命名”';
-  }
-
-  function localizeNotificationDetail(detail, fallbackUnknown) {
-    var normalized = trimTrailingPunctuation(detail || '');
-    var match;
-
-    if (!normalized) return fallbackUnknown ? '发生了未知错误，请稍后重试。' : normalized;
-    if (T[normalized]) return T[normalized];
-    if (normalized === '[object Event]') return '网络连接出现异常，请稍后重试。';
-
-    match = normalized.match(/^room with id\s+(.+?)\s+does not exist$/i);
-    if (match) return '房间 ' + quoteLabel(match[1]) + ' 不存在。';
-
-    match = normalized.match(/^room\s+(.+?)\s+does not exist$/i);
-    if (match) return '房间 ' + quoteLabel(match[1]) + ' 不存在。';
-
-    match = normalized.match(/^room with id\s+(.+?)\s+already exists$/i);
-    if (match) return '房间 ' + quoteLabel(match[1]) + ' 已存在。';
-
-    match = normalized.match(/^room\s+(.+?)\s+already exists$/i);
-    if (match) return '房间 ' + quoteLabel(match[1]) + ' 已存在。';
-
-    match = normalized.match(/^user(?:name)?\s+(.+?)\s+already exists$/i);
-    if (match) return '用户 ' + quoteLabel(match[1]) + ' 已存在。';
-
-    if (/^room is full$/i.test(normalized)) return '房间已满，暂时无法加入。';
-    if (/^access denied$/i.test(normalized)) return '访问被拒绝。';
-    if (/^permission denied$/i.test(normalized)) return '权限不足，当前操作被拒绝。';
-    if (/^unauthorized$/i.test(normalized)) return '当前未登录或登录已失效，请重新登录。';
-    if (/^forbidden$/i.test(normalized)) return '当前操作被服务器拒绝。';
-    if (/^network error$/i.test(normalized)) return '网络连接异常，请稍后重试。';
-    if (/^connection error$/i.test(normalized)) return '连接出现异常，请稍后重试。';
-    if (/^connection closed$/i.test(normalized)) return '连接已关闭，请稍后重试。';
-    if (/^disconnected$/i.test(normalized)) return '连接已断开，请稍后重试。';
-    if (/^failed to fetch$/i.test(normalized)) return '请求失败，可能是网络异常，请稍后重试。';
-    if (/^internal server error$/i.test(normalized)) return '服务器内部错误，请稍后重试。';
-    if (/^not found$/i.test(normalized)) return '未找到对应内容。';
-    if (/^(request )?timed? out$/i.test(normalized)) return '请求超时，请稍后重试。';
-    if (/^invalid username or password$/i.test(normalized)) return '用户名或密码不正确。';
-    if (/^you are not allowed to join this room$/i.test(normalized)) return '你没有权限加入这个房间。';
-    if (/^you are not allowed to access this room$/i.test(normalized)) return '你没有权限访问这个房间。';
-    if (/^you are not allowed to perform this action$/i.test(normalized)) return '你没有权限执行这个操作。';
-
-    match = normalized.match(/^failed to join room\s*:?\s*(.+)$/i);
-    if (match) return '加入房间失败：' + localizeNotificationDetail(match[1]);
-
-    match = normalized.match(/^could not join room\s*:?\s*(.+)$/i);
-    if (match) return '无法加入房间：' + localizeNotificationDetail(match[1]);
-
-    match = normalized.match(/^failed to create room\s*:?\s*(.+)$/i);
-    if (match) return '创建房间失败：' + localizeNotificationDetail(match[1]);
-
-    match = normalized.match(/^could not create room\s*:?\s*(.+)$/i);
-    if (match) return '无法创建房间：' + localizeNotificationDetail(match[1]);
-
-    match = normalized.match(/^failed to leave room\s*:?\s*(.+)$/i);
-    if (match) return '离开房间失败：' + localizeNotificationDetail(match[1]);
-
-    match = normalized.match(/^could not leave room\s*:?\s*(.+)$/i);
-    if (match) return '无法离开房间：' + localizeNotificationDetail(match[1]);
-
-    match = normalized.match(/^failed to copy\s*:?\s*(.+)$/i);
-    if (match) return '复制失败：' + localizeNotificationDetail(match[1]);
-
-    return normalized;
-  }
-
-  function localizeText(text) {
-    if (!text) return text;
-    var raw = String(text);
-    var trimmed = raw.trim();
-    var mapped = T[trimmed];
-    var match;
-
-    if (!trimmed) return raw;
-    if (mapped) return raw.replace(trimmed, mapped);
-    if (trimmed === '[object Event]') return '网络连接出现异常，请稍后重试。';
-
-    match = trimmed.match(/^Hello\s+(.+)$/);
-    if (match) return '你好 ' + match[1];
-
-    match = trimmed.match(/^Could not start presentation\. \(getDisplayMedia error\)\. (.+)$/);
-    if (match) return '未开始共享：' + localizeDisplayMediaReason(match[1]);
-
-    match = trimmed.match(/^Could not start presentation\. Are you using https\? \(mediaDevices undefined\)$/);
-    if (match) return '无法开始共享：浏览器没有提供屏幕共享能力，请确认当前通过 HTTPS 访问。';
-
-    match = trimmed.match(/^Could not start presentation\. Your browser likely doesn't support screensharing\.(.*)$/);
-    if (match) return '无法开始共享：当前浏览器可能不支持屏幕共享。';
-
-    match = trimmed.match(/^Could not start presentation\.(.*)$/);
-    if (match) return '无法开始共享，请稍后重试。';
-
-    match = trimmed.match(/^Copy Failed\s*(.+)$/);
-    if (match) return '复制失败：' + localizeNotificationDetail(match[1], true);
-
-    match = trimmed.match(/^Login Failed:\s*(.+)$/);
-    if (match) return '登录失败：' + localizeNotificationDetail(match[1], true);
-
-    match = trimmed.match(/^Logout Failed:\s*(.+)$/);
-    if (match) return '退出登录失败：' + localizeNotificationDetail(match[1], true);
-
-    match = trimmed.match(/^Unknown Event:\s*(.+)$/);
-    if (match) return '收到未知服务端事件：' + localizeNotificationDetail(match[1], true);
-
-    match = trimmed.match(/^(Error|Warning|Info):\s*(.+)$/i);
-    if (match) {
-      var prefixMap = { error: '错误', warning: '警告', info: '提示' };
-      return (prefixMap[match[1].toLowerCase()] || match[1]) + '：' + localizeNotificationDetail(match[2], true);
-    }
-
-    var detailLocalized = localizeNotificationDetail(trimmed, false);
-    if (detailLocalized !== trimTrailingPunctuation(trimmed)) return raw.replace(trimmed, detailLocalized);
-
-    return raw;
-  }
-
-  function translateNode(root) {
-    var w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null, false), n;
-    while ((n = w.nextNode())) {
-      var original = n.textContent;
-      var localized = localizeText(original);
-      if (localized !== original) n.textContent = localized;
-    }
-    root.querySelectorAll('[title],[placeholder],[alt]').forEach(function (el) {
-      ['title', 'placeholder', 'alt'].forEach(function (a) {
-        var v = el.getAttribute(a);
-        if (!v) return;
-        var localized = localizeText(v);
-        if (localized !== v) el.setAttribute(a, localized);
-      });
-    });
-  }
-
-  function hideCloseCheckbox(root) {
-    root.querySelectorAll('span, p, label').forEach(function (el) {
-      if (el.textContent.trim() === 'Close Room after you leave' || el.textContent.trim() === '离开后关闭房间') {
-        var parent = el.closest('.MuiFormControlLabel-root') || el.parentElement;
-        if (parent) {
-          var cb = parent.querySelector('input[type="checkbox"]');
-          if (cb && cb.checked) {
-            cb.click();
-          }
-          parent.style.display = 'none';
+  /* ── 连接诊断 ── */
+  function publishConnectionStats(text, summary) {
+    try {
+      window.dispatchEvent(new CustomEvent('partylan:connection-stats', {
+        detail: {
+          text: text || '等待连接数据...',
+          summary: summary || '等待连接'
         }
-      }
-    });
+      }));
+    } catch (e) {}
   }
 
-  function getStartPresentationButtons(dialog) {
-    var buttons = [];
-    dialog.querySelectorAll('.MuiDialogActions-root button').forEach(function (btn) {
-      var text = btn.textContent.trim();
-      if (text === 'Start Presentation' || text === '开始共享') buttons.push(btn);
-    });
-    return buttons;
-  }
-
-  function saveCaptureSettings(resolution, framerate) {
-    var s = loadCfg();
-    var normalizedRes = normalizeResolutionKey(resolution);
-    var normalizedFps = normalizeFramerateValue(framerate);
-    s.resolution = normalizedRes;
-    s.framerate = normalizedFps;
-    saveCfg(s);
-    return { res: normalizedRes, fps: normalizedFps };
-  }
-
-  function queryAllWithSelf(root, selector) {
-    var nodes = [];
-    if (root && root.nodeType === 1 && root.matches(selector)) nodes.push(root);
-    root.querySelectorAll(selector).forEach(function (node) {
-      nodes.push(node);
-    });
-    return nodes;
-  }
-
-  function buildFpsOptionsHtml(selectedFps) {
-    var normalized = normalizeFramerateValue(selectedFps);
-    var html = '';
-    FPS_OPTIONS.forEach(function (fps) {
-      html += '<option value="' + fps + '"' + (normalized === fps ? ' selected' : '') + '>' + fps + ' FPS</option>';
-    });
-    return html;
-  }
-
-  function enhanceSnackbars(root) {
-    queryAllWithSelf(root, '.notistack-MuiContent, [class*="notistack-MuiContent"]').forEach(function (snack) {
-      if (snack.dataset.gcSnackEnhanced) {
-        translateNode(snack);
-      } else {
-        snack.dataset.gcSnackEnhanced = '1';
-        translateNode(snack);
-      }
-
-      var message = snack.querySelector('#notistack-snackbar');
-      var text = message ? (message.textContent || '').trim() : (snack.textContent || '').trim();
-      var tone = 'default';
-      var cls = snack.className || '';
-
-      if (text.indexOf('未开始共享：') === 0 || text.indexOf('你已取消屏幕或窗口共享授权') >= 0) tone = 'soft-warning';
-      else if (cls.indexOf('notistack-MuiContent-error') >= 0) tone = 'error';
-      else if (cls.indexOf('notistack-MuiContent-success') >= 0) tone = 'success';
-      else if (cls.indexOf('notistack-MuiContent-warning') >= 0) tone = 'warning';
-      else if (cls.indexOf('notistack-MuiContent-info') >= 0) tone = 'info';
-
-      if (message && !text) {
-        if (tone === 'success') message.textContent = '操作已完成。';
-        else if (tone === 'info') message.textContent = '有新的提示信息。';
-        else if (tone === 'warning' || tone === 'soft-warning') message.textContent = '当前操作已取消，请确认后重试。';
-        else message.textContent = '连接已断开，请稍后重试。';
-        text = message.textContent;
-      }
-
-      snack.dataset.gcTone = tone;
-
-      snack.querySelectorAll('button').forEach(function (btn) {
-        var localized = localizeText(btn.textContent);
-        if (localized !== btn.textContent) btn.textContent = localized;
-      });
-    });
-  }
-
-  function mountDialogSection(dialog, section) {
-    var content = dialog.querySelector('.MuiDialogContent-root');
-    var actions = dialog.querySelector('.MuiDialogActions-root');
-    if (content) {
-      content.appendChild(section);
-      return;
-    }
-    if (actions && actions.parentElement) {
-      actions.parentElement.insertBefore(section, actions);
-      return;
-    }
-    dialog.appendChild(section);
-  }
-
-  function getShareSetupModal() {
-    return document.getElementById('gc-share-setup-modal');
-  }
-
-  function finishShareSetupCapture(capturePromise, resolveButton, onReady, onError) {
-    return Promise.resolve(capturePromise).then(function () {
-      var button = typeof resolveButton === 'function' ? resolveButton() : null;
-      if (!button || !button.isConnected) throw new Error('share start button unavailable');
-      if (typeof onReady === 'function') onReady(button);
-      return button;
-    }).catch(function (error) {
-      if (typeof onError === 'function') onError(error);
-      return null;
-    });
-  }
-
-  function closeShareSetupModal(keepLease) {
-    shareSetupClaimSeq += 1;
-    if (!keepLease) {
-      shareSetupCaptureSeq += 1;
-      shareSetupCapturePromise = null;
-      if (primedDisplayMediaRequest) clearPrimedDisplayMediaRequest(primedDisplayMediaRequest, true);
-    }
-    var modal = getShareSetupModal();
-    if (modal) modal.remove();
-    shareSetupPendingButton = null;
-    if (!keepLease && !activeDisplayStream) releaseWebShare(false);
-  }
-
-  function createShareSetupModal(button) {
-    closeShareSetupModal(false);
-    var claimSeq = ++shareSetupClaimSeq;
-    shareSetupPendingButton = button || null;
-
-    var c = extCfg();
-    var overlay = document.createElement('div');
-    overlay.id = 'gc-share-setup-modal';
-    overlay.style.cssText = 'position:fixed;inset:0;z-index:100001;background:rgba(2,6,23,.52);display:flex;align-items:center;justify-content:flex-end;padding:18px 24px;backdrop-filter:blur(6px)';
-
-    var panel = document.createElement('div');
-    panel.style.cssText = 'width:min(360px,100%);max-height:calc(100vh - 36px);overflow:auto;background:rgba(15,12,41,.97);border:1px solid rgba(124,58,237,.35);border-radius:14px;box-shadow:0 20px 56px rgba(0,0,0,.5);padding:14px 14px 12px;color:#e2e8f0';
-
-    var html = '<div style="font-size:17px;font-weight:700;color:#f8fafc">共享前画面设置</div>';
-    html += '<div style="font-size:12px;line-height:1.6;color:#94a3b8;margin-top:6px;margin-bottom:14px">这里修改后，会先保存参数，再继续打开浏览器的共享选择窗口。</div>';
-    html += '<div style="margin-bottom:12px"><label style="display:block;font-size:12px;color:#94a3b8;margin-bottom:5px">分辨率</label><select id="gc-share-modal-res" style="width:100%;padding:8px 10px;background:rgba(15,12,41,.7);color:#e2e8f0;border:1px solid rgba(124,58,237,.3);border-radius:8px;font-size:13px">';
-    for (var k in RESOLUTIONS) html += '<option value="' + k + '"' + (c.res === k ? ' selected' : '') + '>' + RESOLUTIONS[k].label + '</option>';
-    html += '</select></div>';
-    html += '<div style="margin-bottom:10px"><label style="display:block;font-size:12px;color:#94a3b8;margin-bottom:5px">帧率</label><select id="gc-share-modal-fps" style="width:100%;padding:8px 10px;background:rgba(15,12,41,.7);color:#e2e8f0;border:1px solid rgba(124,58,237,.3);border-radius:8px;font-size:13px">' + buildFpsOptionsHtml(c.fps) + '</select></div>';
-    html += '<div id="gc-share-control-hint" style="font-size:11px;color:#64748b;margin-bottom:14px">正在确认房间共享状态...</div>';
-    html += '<div style="display:flex;gap:10px;justify-content:flex-end"><button id="gc-share-modal-cancel" type="button" style="padding:8px 14px;background:transparent;color:#cbd5e1;border:1px solid rgba(124,58,237,.25);border-radius:10px;cursor:pointer;font-size:13px">取消</button><button id="gc-share-modal-confirm" type="button" disabled style="padding:8px 14px;background:linear-gradient(135deg,#7c3aed,#06b6d4);color:#fff;border:none;border-radius:10px;cursor:pointer;font-size:13px;font-weight:600">确认中...</button></div>';
-    panel.innerHTML = html;
-    overlay.appendChild(panel);
-    document.body.appendChild(overlay);
-
-    var fpsSelect = panel.querySelector('#gc-share-modal-fps');
-    var resSelect = panel.querySelector('#gc-share-modal-res');
-    var confirmButton = panel.querySelector('#gc-share-modal-confirm');
-    var controlHint = panel.querySelector('#gc-share-control-hint');
-
-    claimWebShare().then(function () {
-      if (claimSeq !== shareSetupClaimSeq || !confirmButton.isConnected) {
-        releaseWebShare(false);
-        return;
-      }
-      confirmButton.disabled = false;
-      confirmButton.textContent = '继续共享';
-      controlHint.textContent = '共享权限已取得，可以选择要共享的画面。';
-    }).catch(function (error) {
-      if (claimSeq !== shareSetupClaimSeq || !confirmButton.isConnected) return;
-      confirmButton.disabled = true;
-      confirmButton.textContent = '暂不可共享';
-      controlHint.style.color = '#f87171';
-      controlHint.textContent = error && error.message === 'share_locked'
-        ? '当前已有成员正在共享，请等待对方停止后再试。'
-        : '共享状态确认失败，请关闭后重试。';
-    });
-
-    panel.querySelector('#gc-share-modal-cancel').addEventListener('click', function () {
-      closeShareSetupModal(false);
-    });
-
-    overlay.addEventListener('click', function (event) {
-      if (event.target === overlay) closeShareSetupModal(false);
-    });
-
-    panel.querySelector('#gc-share-modal-confirm').addEventListener('click', function () {
-      var btn = shareSetupPendingButton;
-      if (!btn || !btn.isConnected || confirmButton.disabled || !webShareLease) return closeShareSetupModal(false);
-      if (shareSetupCapturePromise) return;
-      var state = saveCaptureSettings(resSelect.value, fpsSelect.value);
-      fpsSelect.value = state.fps;
-      var capturePromise;
-      try {
-        capturePromise = primeDisplayMediaRequestForShare();
-      } catch (e) {
-        releaseWebShare(false);
-        showDisplayCaptureError(e);
-        return closeShareSetupModal(false);
-      }
-      if (!capturePromise || typeof capturePromise.then !== 'function') {
-        releaseWebShare(false);
-        showDisplayCaptureError(new Error('capture request unavailable'));
-        return closeShareSetupModal(false);
-      }
-      var captureSeq = ++shareSetupCaptureSeq;
-      shareSetupCapturePromise = capturePromise;
-      closeShareSetupModal(true);
-      finishShareSetupCapture(capturePromise, findShareStartButton, function (currentButton) {
-        if (captureSeq !== shareSetupCaptureSeq) return;
-        shareSetupCapturePromise = null;
-        shareSetupBypassButton = currentButton;
-        shareSetupBypassUntil = Date.now() + 4000;
-        currentButton.click();
-        if (webShareSafetyTimer) clearTimeout(webShareSafetyTimer);
-        webShareSafetyTimer = setTimeout(function () {
-          if (!activeDisplayStream) releaseWebShare(false);
-        }, 15000);
-      }, function (error) {
-        if (captureSeq !== shareSetupCaptureSeq) return;
-        shareSetupCapturePromise = null;
-        releaseWebShare(false);
-        showDisplayCaptureError(error);
-      });
-    });
-  }
-
-  function collectShareStartButtons(root) {
-    var buttons = [];
-    queryAllWithSelf(root, 'svg path').forEach(function (path) {
-      if (path.getAttribute('d') !== PRESENT_TO_ALL_ICON_PATH) return;
-      var btn = path.closest('button');
-      if (btn && btn.dataset && btn.dataset.partylanNativeShare === 'true') return;
-      if (btn && buttons.indexOf(btn) < 0) buttons.push(btn);
-    });
-    return buttons;
-  }
-
-  function isEditableTarget(node) {
-    if (!node || node === document.body) return false;
-    if (node.isContentEditable) return true;
-    if (node.closest && node.closest('[contenteditable="true"]')) return true;
-    var tag = ((node.tagName || '') + '').toUpperCase();
-    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
-    if (node.getAttribute && node.getAttribute('role') === 'textbox') return true;
-    return false;
-  }
-
-  function findShareStartButton() {
-    var buttons = collectShareStartButtons(document.body);
-    for (var i = 0; i < buttons.length; i++) {
-      if (buttons[i] && buttons[i].isConnected && !buttons[i].disabled) return buttons[i];
-    }
-    return null;
-  }
-
-  function interceptShareButtonClicks(root) {
-    collectShareStartButtons(root).forEach(function (btn) {
-      if (btn.dataset.gcShareInterceptBound) return;
-      btn.dataset.gcShareInterceptBound = '1';
-      btn.addEventListener('click', function (event) {
-        var bypassActive = shareSetupBypassButton === btn && Date.now() < shareSetupBypassUntil;
-        if (bypassActive) {
-          shareSetupBypassButton = null;
-          shareSetupBypassUntil = 0;
-          return;
-        }
-        if (btn.disabled) return;
-        event.preventDefault();
-        event.stopPropagation();
-        event.stopImmediatePropagation();
-        createShareSetupModal(btn);
-      }, true);
-    });
-  }
-
-  function interceptShareHotkey() {
-    if (document.body.dataset.gcShareHotkeyBound) return;
-    document.body.dataset.gcShareHotkeyBound = '1';
-    document.addEventListener('keydown', function (event) {
-      if (event.defaultPrevented) return;
-      if (event.repeat) return;
-      if (event.ctrlKey || event.metaKey || event.altKey) return;
-
-      if (event.key === 'Escape' && getShareSetupModal()) {
-        event.preventDefault();
-        event.stopPropagation();
-        closeShareSetupModal();
-        return;
-      }
-
-      if (event.key !== 's' && event.key !== 'S' && event.code !== 'KeyS') return;
-      if (isEditableTarget(event.target)) return;
-      if (getShareSetupModal()) {
-        event.preventDefault();
-        event.stopPropagation();
-        return;
-      }
-
-      var btn = findShareStartButton();
-      if (!btn) return;
-
-      event.preventDefault();
-      event.stopPropagation();
-      event.stopImmediatePropagation();
-      createShareSetupModal(btn);
-    }, true);
-  }
-
-  function injectShareQuickSettings(dialog) {
-    var startButtons = getStartPresentationButtons(dialog);
-    if (!startButtons.length || dialog.querySelector('#gc-share-quick-settings')) return;
-
-    var c = extCfg();
-    var wrap = document.createElement('div');
-    wrap.id = 'gc-share-quick-settings';
-    wrap.style.cssText = 'margin:12px 24px 0;padding:12px;border:1px solid rgba(124,58,237,.2);border-radius:10px;background:rgba(15,12,41,.35)';
-
-    var html = '<div style="font-size:13px;font-weight:600;color:#a78bfa;margin-bottom:10px">共享前画面设置</div>';
-    html += '<div style="margin-bottom:10px"><label style="display:block;font-size:12px;color:#94a3b8;margin-bottom:4px">分辨率</label><select id="gc-share-res" style="width:100%;padding:6px 8px;background:rgba(15,12,41,.6);color:#e2e8f0;border:1px solid rgba(124,58,237,.3);border-radius:6px;font-size:13px">';
-    for (var k in RESOLUTIONS) html += '<option value="' + k + '"' + (c.res === k ? ' selected' : '') + '>' + RESOLUTIONS[k].label + '</option>';
-    html += '</select></div>';
-    html += '<div style="margin-bottom:10px"><label style="display:block;font-size:12px;color:#94a3b8;margin-bottom:4px">帧率</label><select id="gc-share-fps" style="width:100%;padding:6px 8px;background:rgba(15,12,41,.6);color:#e2e8f0;border:1px solid rgba(124,58,237,.3);border-radius:6px;font-size:13px">' + buildFpsOptionsHtml(c.fps) + '</select></div>';
-    html += '<div id="gc-share-hint" style="font-size:11px;color:#64748b">修改后会在本次点击“开始共享”时直接生效。</div>';
-    wrap.innerHTML = html;
-
-    mountDialogSection(dialog, wrap);
-
-    var resSelect = wrap.querySelector('#gc-share-res');
-    var fpsSelect = wrap.querySelector('#gc-share-fps');
-    var hint = wrap.querySelector('#gc-share-hint');
-
-    function setHint(text, color) {
-      hint.textContent = text;
-      hint.style.color = color || '#64748b';
-    }
-
-    function syncCaptureSettings(showSavedHint) {
-      var state = saveCaptureSettings(resSelect.value, fpsSelect.value);
-      fpsSelect.value = state.fps;
-      if (showSavedHint) {
-        setHint('已保存: ' + RESOLUTIONS[state.res].label + ' / ' + state.fps + ' FPS', '#34d399');
-        clearTimeout(wrap._hintTimer);
-        wrap._hintTimer = setTimeout(function () {
-          setHint('修改后会在本次点击“开始共享”时直接生效。');
-        }, 1800);
-      } else {
-        setHint('修改后会在本次点击“开始共享”时直接生效。');
-      }
-      return state;
-    }
-
-    resSelect.addEventListener('change', function () {
-      syncCaptureSettings(true);
-    });
-    fpsSelect.addEventListener('change', function () {
-      syncCaptureSettings(true);
-    });
-
-    startButtons.forEach(function (btn) {
-      if (btn.dataset.gcShareQuickBound) return;
-      btn.dataset.gcShareQuickBound = '1';
-      btn.addEventListener('click', function () {
-        syncCaptureSettings(false);
-      }, true);
-    });
-  }
-
-  /* ── 隐藏 Screego 自带的帧率和用户名，并增强共享弹窗 ── */
-  function hideScreegoSettings(root) {
-    if (nativeWebUiActive()) return;
-    queryAllWithSelf(root, '.MuiDialogTitle-root').forEach(function (title) {
-      if (title.textContent.trim() !== '设置' && title.textContent.trim() !== 'Settings') return;
-      var dialog = title.closest('.MuiPaper-root');
-      if (!dialog) return;
-      dialog.querySelectorAll('.MuiFormControl-root').forEach(function (fc) {
-        var text = fc.textContent.trim();
-        if (text.indexOf('帧率') >= 0 || text.indexOf('FrameRate') >= 0) fc.style.display = 'none';
-        if (text.indexOf('用户名') >= 0 || text.indexOf('Username') >= 0) fc.style.display = 'none';
-      });
-      dialog.querySelectorAll('.MuiDialogActions-root button').forEach(function (btn) {
-        var t = btn.textContent.trim();
-        if (t === '保存' || t === 'Save') {
-          btn.id = 'gc-hidden-save';
-          btn.style.cssText = 'position:absolute;opacity:0;pointer-events:none;height:0;width:0;overflow:hidden;padding:0;border:0';
-        }
-        if (t === '取消' || t === 'Cancel') btn.textContent = '关闭';
-      });
-      if (!dialog.querySelector('#gc-quality-injected')) injectQualityIntoDialog(dialog);
-    });
-
-    queryAllWithSelf(root, '.MuiDialogActions-root').forEach(function (actions) {
-      var dialog = actions.closest('.MuiPaper-root');
-      if (!dialog) return;
-      injectShareQuickSettings(dialog);
-    });
-  }
-
-  function injectQualityIntoDialog(dialog) {
-    var content = dialog.querySelector('.MuiDialogContent-root') || dialog;
-    var c = extCfg();
-    var wrap = document.createElement('div');
-    wrap.id = 'gc-quality-injected';
-    wrap.style.cssText = 'margin-top:12px;padding-top:12px;border-top:1px solid rgba(124,58,237,.2)';
-
-    var html = '<div style="font-size:13px;font-weight:600;color:#a78bfa;margin-bottom:10px">共享画质设置</div>';
-
-    html += '<div style="margin-bottom:10px"><label style="display:block;font-size:12px;color:#94a3b8;margin-bottom:4px">分辨率</label><select id="gc-res" style="width:100%;padding:6px 8px;background:rgba(15,12,41,.6);color:#e2e8f0;border:1px solid rgba(124,58,237,.3);border-radius:6px;font-size:13px">';
-    for (var k in RESOLUTIONS) html += '<option value="' + k + '"' + (c.res === k ? ' selected' : '') + '>' + RESOLUTIONS[k].label + '</option>';
-    html += '</select></div>';
-
-    html += '<div style="margin-bottom:10px"><label style="display:block;font-size:12px;color:#94a3b8;margin-bottom:4px">帧率</label><select id="gc-fps" style="width:100%;padding:6px 8px;background:rgba(15,12,41,.6);color:#e2e8f0;border:1px solid rgba(124,58,237,.3);border-radius:6px;font-size:13px">' + buildFpsOptionsHtml(c.fps) + '</select></div>';
-
-    html += '<div style="margin-bottom:6px"><label style="display:block;font-size:12px;color:#94a3b8;margin-bottom:6px">优先模式</label><div style="display:flex;gap:6px">';
-    for (var qk in QUALITY) html += '<div class="gc-qbtn' + (c.qm === qk ? ' gc-active' : '') + '" data-m="' + qk + '" style="flex:1;padding:6px 4px;border:1px solid rgba(124,58,237,.3);background:rgba(15,12,41,.6);color:#e2e8f0;border-radius:6px;cursor:pointer;text-align:center;font-size:11px;transition:.2s">' + QUALITY[qk].label + '</div>';
-    html += '</div><div id="gc-qhint" style="font-size:11px;color:#64748b;margin-top:4px">' + (QUALITY[c.qm] ? QUALITY[c.qm].desc : '') + '</div></div>';
-
-    html += '<div style="margin-bottom:10px"><label style="display:block;font-size:12px;color:#94a3b8;margin-bottom:4px">音频共享</label><select id="gc-audio" style="width:100%;padding:6px 8px;background:rgba(15,12,41,.6);color:#e2e8f0;border:1px solid rgba(124,58,237,.3);border-radius:6px;font-size:13px">';
-    for (var ak in AUDIO_MODES) html += '<option value="' + ak + '"' + (c.audio === ak ? ' selected' : '') + '>' + AUDIO_MODES[ak].label + '</option>';
-    html += '</select><div id="gc-audio-hint" style="font-size:11px;color:#64748b;margin-top:4px">' + (AUDIO_MODES[c.audio] ? AUDIO_MODES[c.audio].desc : '') + '</div>';
-    html += '<div style="font-size:11px;color:#fbbf24;margin-top:4px">音频模式会在下次重新开始共享时生效。</div></div>';
-
-    html += '<button id="gc-apply" style="width:100%;padding:8px;margin-top:6px;background:linear-gradient(135deg,#7c3aed,#06b6d4);color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600">应用画质设置</button>';
-
-    wrap.innerHTML = html;
-    content.appendChild(wrap);
-
-    var fpsS = document.getElementById('gc-fps');
-    var audioSelect = document.getElementById('gc-audio');
-    audioSelect.addEventListener('change', function () {
-      document.getElementById('gc-audio-hint').textContent = AUDIO_MODES[audioSelect.value] ? AUDIO_MODES[audioSelect.value].desc : '';
-    });
-
-    wrap.querySelectorAll('.gc-qbtn').forEach(function (btn) {
-      btn.addEventListener('click', function () {
-        wrap.querySelectorAll('.gc-qbtn').forEach(function (b) { b.classList.remove('gc-active'); b.style.background = 'rgba(15,12,41,.6)'; b.style.borderColor = 'rgba(124,58,237,.3)'; });
-        btn.classList.add('gc-active');
-        btn.style.background = 'linear-gradient(135deg,#7c3aed,#06b6d4)';
-        btn.style.borderColor = 'transparent';
-        document.getElementById('gc-qhint').textContent = QUALITY[btn.dataset.m] ? QUALITY[btn.dataset.m].desc : '';
-      });
-    });
-
-    wrap.querySelectorAll('.gc-active').forEach(function (btn) {
-      btn.style.background = 'linear-gradient(135deg,#7c3aed,#06b6d4)';
-      btn.style.borderColor = 'transparent';
-    });
-
-    document.getElementById('gc-apply').addEventListener('click', function () {
-      var myRes = document.getElementById('gc-res').value;
-      var myFps = normalizeFramerateValue(fpsS.value);
-      var myAudio = audioSelect.value;
-      var act = wrap.querySelector('.gc-active');
-      var myQm = act ? act.dataset.m : 'balanced';
-
-      var hiddenSave = document.getElementById('gc-hidden-save');
-      if (hiddenSave) hiddenSave.click();
-
-      setTimeout(function () {
-        var s = loadCfg();
-        var oldAudio = AUDIO_MODES[s.audioMode] ? s.audioMode : 'app';
-        s.resolution = normalizeResolutionKey(myRes);
-        s.framerate = normalizeFramerateValue(myFps);
-        s.qualityMode = myQm;
-        s.audioMode = myAudio;
-        delete s.sfuMode;
-        saveCfg(s);
-
-        if (activeDisplayStream) {
-          var roomId = currentRoomId();
-          syncHostSfuState(roomId);
-        }
-
-        var err = applyLiveConstraints();
-        applyAll();
-        var btn = document.getElementById('gc-apply');
-        var modeText = currentSfuMode() ? ' [SFU]' : '';
-        var audioText = activeDisplayStream && oldAudio !== myAudio ? '，音频下次共享生效' : '';
-        if (err) { btn.textContent = err; btn.style.color = '#fbbf24'; }
-        else {
-          btn.textContent = '已应用 (' + RESOLUTIONS[myRes].label + ' ' + myFps + 'fps' + modeText + audioText + ')';
-          btn.style.color = '#34d399';
-        }
-        setTimeout(function () { btn.textContent = '应用画质设置'; btn.style.color = ''; }, 2500);
-      }, 100);
-    });
-  }
-
-  /* ── 连接性能显示 ── */
-  var statsOverlayId = 'gc-stats-overlay';
-  var statsCollapsed = true;
   function startConnectionStats() {
     setInterval(function () {
-      var inRoom = /[?&]room=/.test(location.search);
-      var overlay = document.getElementById(statsOverlayId);
-      if (!inRoom) { if (overlay) overlay.style.display = 'none'; return; }
-      if (!overlay) {
-        overlay = document.createElement('div');
-        overlay.id = statsOverlayId;
-        overlay.style.cssText = 'position:fixed;top:56px;left:12px;z-index:9999;background:rgba(15,12,41,.9);color:#e2e8f0;border:1px solid rgba(124,58,237,.25);border-radius:10px;font:12px/1.6 -apple-system,BlinkMacSystemFont,monospace;backdrop-filter:blur(10px);cursor:pointer;user-select:none;transition:all .2s;min-width:32px';
-        overlay.innerHTML = '<div id="gc-stats-header" style="padding:4px 10px;display:flex;align-items:center;gap:6px"><span style="font-size:14px">📊</span><span id="gc-stats-toggle" style="font-size:11px;color:#94a3b8">展开</span></div><div id="gc-stats-body" style="padding:0 10px 8px;display:none;white-space:pre"></div>';
-        overlay.addEventListener('click', function () {
-          statsCollapsed = !statsCollapsed;
-          var body = document.getElementById('gc-stats-body');
-          var toggle = document.getElementById('gc-stats-toggle');
-          if (body) body.style.display = statsCollapsed ? 'none' : 'block';
-          if (toggle) toggle.textContent = statsCollapsed ? '展开' : '收起';
-        });
-        document.body.appendChild(overlay);
-      }
-      overlay.style.display = 'block';
-      var body = document.getElementById('gc-stats-body');
-      var primaryDescriptor = getStatsPeerDescriptor();
-      getStatsPeerDescriptors().forEach(function (descriptor) {
-        updateStats(body, descriptor, !!primaryDescriptor && descriptor.pc === primaryDescriptor.pc);
+      if (!/[?&]room=/.test(location.search)) return;
+      var descriptors = getStatsPeerDescriptors();
+      if (!descriptors.length) publishConnectionStats('等待媒体连接建立...', '等待连接');
+      descriptors.forEach(function (descriptor) {
+        updateStats(descriptor);
       });
-      if (body && statsCollapsed) {
-        var descriptor = primaryDescriptor;
-        if (descriptor && descriptor.pc) {
-          var pc = descriptor.pc;
-          var pathText = pc._lastConnType ? pc._lastConnType : (describePeerConnectionState(pc) || '链路检测中');
-          var rttText = pc._lastRtt ? pc._lastRtt : (pc._gcStatsFetchPromise ? '读取中...' : '...');
-          var sfuText = getSfuStatusLabel();
-          document.getElementById('gc-stats-toggle').textContent = pathText + ' | SFU ' + sfuText + ' | ' + rttText;
-        } else {
-          document.getElementById('gc-stats-toggle').textContent = 'SFU ' + getSfuStatusLabel();
-        }
-      }
     }, 2000);
   }
 
@@ -3809,34 +2470,18 @@
     }
   }
 
-  function updateStats(overlay, descriptor, showOverlay) {
-    if (!descriptor || !descriptor.pc) {
-      if (showOverlay && overlay) overlay.textContent = buildStatsStatusText('等待连接...', null);
-      return;
-    }
+  function updateStats(descriptor) {
+    if (!descriptor || !descriptor.pc) return;
     var pc = descriptor.pc;
     var mode = descriptor.mode;
-    if (!peerConnectionCanReportStats(pc)) {
-      if (showOverlay && !statsCollapsed && overlay) overlay.textContent = pc._gcLastStatsText || buildStatsStatusText('连接建立中...', pc);
-      return;
-    }
-    if (pc._gcStatsFetchPromise) {
-      if (showOverlay && overlay && !statsCollapsed) {
-        overlay.textContent = pc._gcLastStatsText || buildStatsStatusText('正在读取链路数据...', pc);
-      }
-      return;
-    }
+    if (!peerConnectionCanReportStats(pc)) return;
+    if (pc._gcStatsFetchPromise) return;
 
     var prevSentBytes = pc._prevSentBytes || 0;
     var prevRecvBytes = pc._prevRecvBytes || 0;
     var prevTime = pc._prevTime || Date.now();
     var requestSeq = ++statsFetchRequestSeq;
     var trackedPeerId = getTrackedPeerId(pc);
-    if (showOverlay && overlay) {
-      overlay.dataset.gcStatsPeerId = trackedPeerId;
-      overlay.dataset.gcStatsRequestSeq = String(requestSeq);
-      if (!statsCollapsed) overlay.textContent = pc._gcLastStatsText || buildStatsStatusText('正在读取链路数据...', pc);
-    }
 
     var statsPromise = getStatsWithTimeout(pc, STATS_FETCH_TIMEOUT_MS);
     pc._gcStatsFetchPromise = statsPromise;
@@ -4016,12 +2661,10 @@
           '📝 说明: 当前为发送侧视角；服务器负载与容量为按当前码率推算';
       }
       pc._gcLastStatsText = statsText;
-      if (showOverlay && overlay && !statsCollapsed &&
-        overlay.dataset.gcStatsPeerId === trackedPeerId &&
-        overlay.dataset.gcStatsRequestSeq === String(requestSeq)
-      ) {
-        overlay.textContent = statsText;
-      }
+      publishConnectionStats(
+        statsText,
+        pc._lastConnType + ' · ' + pc._lastRtt + ' · ' + getSfuStatusLabel()
+      );
 
       pc._gcStatsReportCounter = (pc._gcStatsReportCounter || 0) + 1;
       if (pc._gcStatsReportCounter >= 5) {
@@ -4044,6 +2687,8 @@
           jitter: jitter,
           pcState: pc.connectionState,
           pcCount: activePCs.length,
+          visible: document.visibilityState !== 'hidden',
+          adaptiveConfiguredFps: extCfg().fps,
           targetKbps: adaptiveTargetKbpsValue + 'kbps',
           adaptive: getAdaptiveStatusLabel(pc),
           serverLoadKbps: Math.round(estimatedRelayLoadKbps) + 'kbps',
@@ -4134,145 +2779,13 @@
         pc
       );
       pc._gcLastStatsText = fallbackText;
-      if (showOverlay && overlay && !statsCollapsed &&
-        overlay.dataset.gcStatsPeerId === trackedPeerId &&
-        overlay.dataset.gcStatsRequestSeq === String(requestSeq)
-      ) {
-        overlay.textContent = fallbackText;
-      }
+      publishConnectionStats(fallbackText, describePeerConnectionState(pc) || '连接诊断');
     }).finally(function () {
       if (pc._gcStatsFetchPromise === statsPromise) pc._gcStatsFetchPromise = null;
     });
   }
 
-  /* ── 主题 ── */
-  function applyTheme() {
-    document.title = 'GameCast';
-    var existingFavicon = document.querySelector('link[rel="icon"]');
-    if (existingFavicon) existingFavicon.href = '/favicon.ico';
-    else { var l = document.createElement('link'); l.rel = 'icon'; l.type = 'image/png'; l.href = '/favicon.ico'; document.head.appendChild(l); }
-
-    if (document.getElementById('gc-theme')) return;
-    var s = document.createElement('style');
-    s.id = 'gc-theme';
-    s.textContent =
-      'body, html { background: linear-gradient(135deg, #0f0c29 0%, #1a1a2e 40%, #16213e 100%) !important; min-height: 100vh; }' +
-      'body::before { content: ""; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-image: radial-gradient(2px 2px at 20% 30%, rgba(124,58,237,.3), transparent), radial-gradient(2px 2px at 40% 70%, rgba(6,182,212,.25), transparent), radial-gradient(1px 1px at 60% 20%, rgba(244,114,182,.2), transparent), radial-gradient(1px 1px at 80% 50%, rgba(167,139,250,.3), transparent), radial-gradient(2px 2px at 10% 80%, rgba(34,211,238,.2), transparent); pointer-events: none; z-index: 0; animation: gc-twinkle 8s ease-in-out infinite alternate; }' +
-      '@keyframes gc-twinkle { 0%{opacity:.6} 100%{opacity:1} }' +
-      '@keyframes gc-fadeIn { from{opacity:0;transform:scale(.8)} to{opacity:1;transform:scale(1)} }' +
-      '.MuiPaper-root, .MuiCard-root { background: rgba(15,12,41,.75) !important; backdrop-filter: blur(12px); border: 1px solid rgba(124,58,237,.25) !important; border-radius: 16px !important; box-shadow: 0 8px 32px rgba(0,0,0,.4) !important; }' +
-      '.MuiInputBase-root, .MuiOutlinedInput-root { background: rgba(15,12,41,.6) !important; border-radius: 10px !important; color: #e2e8f0 !important; }' +
-      '.MuiInputBase-root input { color: #e2e8f0 !important; }' +
-      '.MuiInputLabel-root, .MuiFormLabel-root { color: #a78bfa !important; }' +
-      '.MuiOutlinedInput-notchedOutline { border-color: rgba(124,58,237,.4) !important; }' +
-      '.MuiOutlinedInput-root:hover .MuiOutlinedInput-notchedOutline { border-color: #7c3aed !important; }' +
-      '.MuiButton-contained { background: linear-gradient(135deg, #7c3aed, #06b6d4) !important; color: #fff !important; font-weight: 600 !important; border-radius: 10px !important; text-transform: none !important; box-shadow: 0 4px 15px rgba(124,58,237,.4) !important; }' +
-      '.MuiButton-contained:hover { box-shadow: 0 6px 25px rgba(124,58,237,.6) !important; transform: translateY(-1px); }' +
-      '.MuiButton-outlined { border-color: rgba(124,58,237,.5) !important; color: #a78bfa !important; border-radius: 10px !important; }' +
-      '*, .MuiTypography-root, p, span, label { color: #e2e8f0; }' +
-      '.MuiTypography-h4, .MuiTypography-h5 { background: linear-gradient(135deg, #a78bfa, #22d3ee); -webkit-background-clip: text; -webkit-text-fill-color: transparent; font-weight: 700 !important; }' +
-      'a { color: #22d3ee !important; }' +
-      '.MuiToolbar-root { background: linear-gradient(90deg, rgba(15,12,41,.95), rgba(26,26,46,.95)) !important; border-bottom: 1px solid rgba(124,58,237,.3); }' +
-      '.MuiCheckbox-root { color: #7c3aed !important; }' +
-      '.MuiTooltip-tooltip { background: rgba(15,12,41,.95) !important; border: 1px solid rgba(124,58,237,.3); border-radius: 8px !important; }' +
-      '.MuiBadge-badge { background: #7c3aed !important; }' +
-      '.MuiSlider-root { color: #7c3aed !important; }' +
-      '.MuiSlider-thumb { background: #a78bfa !important; }' +
-      '.MuiIconButton-root { color: #a78bfa !important; }' +
-      '.MuiIconButton-root:hover { background: rgba(124,58,237,.15) !important; }' +
-      '#enh-exit-btn:hover { color: #ef4444 !important; }' +
-      '#reg-modal > div { background: rgba(15,12,41,.95) !important; border: 1px solid rgba(124,58,237,.4) !important; border-radius: 16px !important; backdrop-filter: blur(12px); }' +
-      'div[style*="position: absolute"][style*="bottom"] { color: rgba(167,139,250,.5) !important; }' +
-      '.notistack-SnackbarContainer { z-index: 100002 !important; }' +
-      '.notistack-SnackbarContainer .notistack-MuiContent { background: linear-gradient(135deg, rgba(15,12,41,.94), rgba(30,41,59,.92)) !important; color: #e2e8f0 !important; border: 1px solid rgba(148,163,184,.18) !important; border-left: 4px solid rgba(148,163,184,.4) !important; border-radius: 14px !important; box-shadow: 0 18px 50px rgba(2,6,23,.35) !important; backdrop-filter: blur(12px); min-width: 320px; max-width: 560px; }' +
-      '.notistack-SnackbarContainer .notistack-MuiContent[data-gc-tone="success"] { background: linear-gradient(135deg, rgba(6,78,59,.94), rgba(15,23,42,.94)) !important; border-color: rgba(52,211,153,.28) !important; border-left-color: #34d399 !important; }' +
-      '.notistack-SnackbarContainer .notistack-MuiContent[data-gc-tone="info"] { background: linear-gradient(135deg, rgba(8,47,73,.94), rgba(15,23,42,.94)) !important; border-color: rgba(34,211,238,.24) !important; border-left-color: #22d3ee !important; }' +
-      '.notistack-SnackbarContainer .notistack-MuiContent[data-gc-tone="warning"], .notistack-SnackbarContainer .notistack-MuiContent[data-gc-tone="soft-warning"] { background: linear-gradient(135deg, rgba(69,39,12,.95), rgba(15,23,42,.94)) !important; border-color: rgba(251,191,36,.26) !important; border-left-color: #fbbf24 !important; }' +
-      '.notistack-SnackbarContainer .notistack-MuiContent[data-gc-tone="error"] { background: linear-gradient(135deg, rgba(69,10,10,.94), rgba(30,41,59,.94)) !important; border-color: rgba(248,113,113,.24) !important; border-left-color: #f87171 !important; }' +
-      '.notistack-SnackbarContainer .notistack-MuiContent #notistack-snackbar { font-size: 13px !important; line-height: 1.6 !important; letter-spacing: 0 !important; }' +
-      '.notistack-SnackbarContainer .notistack-MuiContent button { color: #cbd5e1 !important; text-transform: none !important; letter-spacing: 0 !important; font-weight: 600 !important; border-radius: 8px !important; }' +
-      '.notistack-SnackbarContainer .notistack-MuiContent button:hover { background: rgba(255,255,255,.08) !important; }';
-    document.head.appendChild(s);
-  }
-
-  function applyWebHoverToolsTheme() {
-    if (document.getElementById('gc-hover-tools-theme')) return;
-    var s = document.createElement('style');
-    s.id = 'gc-hover-tools-theme';
-    s.textContent =
-      '#gc-hover-tools { position:fixed; inset:0; z-index:9990; pointer-events:none; color:#e2e8f0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }' +
-      '#gc-hover-tools .gc-hover-edge { position:absolute; top:50%; width:18px; height:190px; transform:translateY(-50%); pointer-events:auto; }' +
-      '#gc-hover-tools .gc-hover-edge-left { left:0; }' +
-      '#gc-hover-tools .gc-hover-edge-right { right:0; }' +
-      '#gc-hover-tools .gc-hover-handle { position:absolute; top:50%; width:18px; height:64px; transform:translateY(-50%); padding:0; border:1px solid rgba(148,163,184,.24); background:rgba(15,23,42,.78); color:#a5b4fc; cursor:pointer; display:grid; place-items:center; box-shadow:0 12px 32px rgba(2,6,23,.26); transition:background .18s,color .18s,border-color .18s; }' +
-      '#gc-hover-tools .gc-hover-edge-left .gc-hover-handle { left:0; border-left:0; border-radius:0 10px 10px 0; }' +
-      '#gc-hover-tools .gc-hover-edge-right .gc-hover-handle { right:0; border-right:0; border-radius:10px 0 0 10px; }' +
-      '#gc-hover-tools .gc-hover-handle:hover, #gc-hover-tools .gc-hover-handle:focus-visible { background:rgba(30,41,59,.96); color:#67e8f9; border-color:rgba(34,211,238,.58); outline:2px solid rgba(34,211,238,.34); outline-offset:2px; }' +
-      '#gc-hover-tools .gc-hover-handle svg { width:18px; height:18px; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }' +
-      '#gc-hover-tools .gc-hover-edge-left .gc-hover-handle svg { fill:currentColor; stroke:none; }' +
-      '#gc-hover-tools .gc-hover-drawer { position:absolute; top:50%; width:min(300px,calc(100vw - 32px)); max-height:min(560px,calc(100vh - 32px)); overflow:auto; padding:12px; border:1px solid rgba(124,58,237,.34); background:rgba(15,12,41,.96); border-radius:14px; box-shadow:0 20px 60px rgba(2,6,23,.48); backdrop-filter:blur(16px); opacity:0; pointer-events:none; transition:transform .2s ease,opacity .18s ease; }' +
-      '#gc-hover-tools .gc-hover-edge-left .gc-hover-drawer { left:18px; transform:translate(-100%,-50%); }' +
-      '#gc-hover-tools .gc-hover-edge-right .gc-hover-drawer { right:18px; transform:translate(100%,-50%); }' +
-      '#gc-hover-tools .gc-hover-edge:hover .gc-hover-drawer, #gc-hover-tools .gc-hover-edge:focus-within .gc-hover-drawer, #gc-hover-tools[data-gc-pinned-side="left"] .gc-hover-edge-left .gc-hover-drawer, #gc-hover-tools[data-gc-pinned-side="right"] .gc-hover-edge-right .gc-hover-drawer { opacity:1; pointer-events:auto; transform:translate(0,-50%); }' +
-      '#gc-hover-tools .gc-hover-drawer-header { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:0 0 9px; border-bottom:1px solid rgba(148,163,184,.16); color:#f8fafc; font-size:13px; font-weight:700; }' +
-      '#gc-hover-tools .gc-hover-close { width:28px; height:28px; padding:0; border:0; border-radius:8px; background:transparent; color:#94a3b8; cursor:pointer; display:grid; place-items:center; }' +
-      '#gc-hover-tools .gc-hover-close:hover, #gc-hover-tools .gc-hover-close:focus-visible { background:rgba(148,163,184,.14); color:#f8fafc; outline:2px solid rgba(34,211,238,.28); outline-offset:1px; }' +
-      '#gc-hover-tools .gc-hover-close svg { width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; }' +
-      '#gc-hover-tools .gc-presence-roster { display:grid; gap:5px; padding-top:9px; }' +
-      '#gc-hover-tools .gc-presence-member { display:flex; align-items:center; justify-content:space-between; gap:9px; min-width:0; padding:7px 8px; border:1px solid rgba(148,163,184,.13); border-radius:9px; background:rgba(255,255,255,.05); font-size:11px; line-height:1.35; }' +
-      '#gc-hover-tools .gc-presence-member-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#f8fafc; }' +
-      '#gc-hover-tools .gc-presence-member-meta { flex:0 0 auto; max-width:132px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#94a3b8; font-size:10px; }' +
-      '#gc-hover-tools .gc-hover-empty { padding:12px 4px 4px; color:#64748b; font-size:11px; line-height:1.45; }' +
-      '#partylan-presence-roster .gc-presence-member { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:4px 0; font-size:13px; line-height:1.45; }' +
-      '#partylan-presence-roster .gc-presence-member-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#f8fafc; }' +
-      '#partylan-presence-roster .gc-presence-member-meta { flex-shrink:0; color:#94a3b8; font-size:11px; }' +
-      '#gc-hover-tools .gc-hover-share-status { margin-top:10px; color:#67e8f9; font-size:13px; font-weight:700; }' +
-      '#gc-hover-tools .gc-hover-share-status[data-tone="busy"] { color:#fbbf24; }' +
-      '#gc-hover-tools .gc-hover-share-status[data-tone="idle"] { color:#94a3b8; }' +
-      '#gc-hover-tools .gc-hover-share-owner { margin-top:3px; color:#94a3b8; font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }' +
-      '#gc-hover-tools .gc-hover-share-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:12px; }' +
-      '#gc-hover-tools .gc-hover-share-grid label { display:flex; flex-direction:column; gap:4px; color:#a5b4fc; font-size:10px; font-weight:600; }' +
-      '#gc-hover-tools .gc-hover-share-grid select { width:100%; min-width:0; padding:7px 8px; border:1px solid rgba(124,58,237,.34); border-radius:8px; background:rgba(15,12,41,.76); color:#e2e8f0; font-size:11px; outline:none; }' +
-      '#gc-hover-tools .gc-hover-share-grid select:focus-visible { border-color:#22d3ee; outline:2px solid rgba(34,211,238,.24); outline-offset:1px; }' +
-      '#gc-hover-tools .gc-hover-share-secondary, #gc-hover-tools .gc-hover-share-primary, #gc-hover-tools .gc-hover-share-danger { width:100%; min-height:34px; margin-top:9px; padding:7px 10px; border-radius:8px; cursor:pointer; font-size:11px; font-weight:700; transition:background .16s,border-color .16s,opacity .16s; }' +
-      '#gc-hover-tools .gc-hover-share-secondary { border:1px solid rgba(124,58,237,.34); background:rgba(124,58,237,.12); color:#c4b5fd; }' +
-      '#gc-hover-tools .gc-hover-share-primary { border:1px solid rgba(34,211,238,.46); background:linear-gradient(135deg,#7c3aed,#0891b2); color:#fff; }' +
-      '#gc-hover-tools .gc-hover-share-danger { border:1px solid rgba(248,113,113,.42); background:rgba(127,29,29,.42); color:#fecaca; }' +
-      '#gc-hover-tools .gc-hover-share-secondary:hover, #gc-hover-tools .gc-hover-share-secondary:focus-visible { background:rgba(124,58,237,.24); }' +
-      '#gc-hover-tools .gc-hover-share-primary:hover, #gc-hover-tools .gc-hover-share-primary:focus-visible { background:linear-gradient(135deg,#8b5cf6,#06b6d4); }' +
-      '#gc-hover-tools .gc-hover-share-danger:hover, #gc-hover-tools .gc-hover-share-danger:focus-visible { background:rgba(153,27,27,.58); }' +
-      '#gc-hover-tools button:disabled { opacity:.46; cursor:not-allowed; }' +
-      '#gc-hover-tools .gc-hover-share-actions { display:grid; grid-template-columns:1fr; gap:0; }' +
-      '#gc-hover-tools .gc-hover-share-hint { min-height:30px; padding-top:8px; color:#64748b; font-size:10px; line-height:1.45; }' +
-      '#gc-hover-tools .gc-hover-share-hint[data-tone="success"] { color:#6ee7b7; }' +
-      '#gc-hover-tools .gc-hover-share-hint[data-tone="error"] { color:#fca5a5; }' +
-      '#gc-hover-tools .gc-hover-share-danger[hidden] { display:none; }' +
-      '@media (hover:none), (pointer:coarse) { #gc-hover-tools .gc-hover-edge { width:30px; } #gc-hover-tools .gc-hover-handle { width:30px; height:72px; } #gc-hover-tools .gc-hover-edge-left .gc-hover-drawer { left:30px; } #gc-hover-tools .gc-hover-edge-right .gc-hover-drawer { right:30px; } }' +
-      '@media (prefers-reduced-motion: reduce) { #gc-hover-tools .gc-hover-drawer, #gc-hover-tools .gc-hover-handle, #gc-hover-tools button { transition:none !important; } }';
-    document.head.appendChild(s);
-  }
-
-  /* ── 替换 logo ── */
-  function replaceLogo(root) {
-    root.querySelectorAll('img').forEach(function (img) {
-      if (img.dataset.gcLogo) return;
-      if (img.src && (img.src.indexOf('logo') >= 0 || img.alt === 'logo')) {
-        img.dataset.gcLogo = '1';
-        img.src = '/favicon.ico';
-        img.style.filter = 'drop-shadow(0 0 20px rgba(124,58,237,.4))';
-      }
-    });
-  }
-
   /* ── 监听 URL ── */
-  function activateConfirmedRoom(roomId) {
-    if (!roomId) return;
-    addRoomHistory(roomId);
-    ensureWebPresence(roomId).then(function (presence) {
-      if (presence && activeRoomSocketRoomId === roomId) startRoomStateHeartbeat();
-    });
-  }
-
   function monitorRoomUrl() {
     var lastUrl = location.href;
     var lastRoomId = currentRoomId();
@@ -4301,238 +2814,13 @@
     }, 1000);
   }
 
-  /* ── 退出房间按钮 ── */
-  var exitBtnId = 'enh-exit-btn';
-  var EXIT_SVG = '<svg xmlns="http://www.w3.org/2000/svg" height="24" viewBox="0 0 24 24" width="24" fill="currentColor"><path d="M10.09 15.59L11.5 17l5-5-5-5-1.41 1.41L12.67 11H3v2h9.67l-2.58 2.59zM19 3H5c-1.11 0-2 .9-2 2v4h2V5h14v14H5v-4H3v4c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z"/></svg>';
-  function monitorExitButton() {
-    setInterval(function () {
-      var inRoom = /[?&]room=/.test(location.search);
-      var existing = document.getElementById(exitBtnId);
-      if (nativeWebUiActive()) {
-        if (existing) existing.remove();
-        return;
-      }
-      if (inRoom && !existing) {
-        var refBtn = document.querySelector('.MuiIconButton-root');
-        if (!refBtn) return;
-        var container = refBtn.parentElement;
-        if (!container) return;
-        var btn = document.createElement('button');
-        btn.id = exitBtnId;
-        btn.className = refBtn.className;
-        btn.innerHTML = EXIT_SVG;
-        btn.title = '退出房间';
-        btn.addEventListener('click', function () { leaveRoomGracefully(); });
-        container.appendChild(btn);
-      } else if (!inRoom && existing) {
-        existing.remove();
-      }
-    }, 800);
-  }
-
-  /* ── 房间历史下拉 ── */
-  function injectHistoryDropdown() {
-    if (document.getElementById('enh-hist-arrow')) return;
-    var idInput = null;
-    document.querySelectorAll('input').forEach(function (inp) {
-      if (idInput) return;
-      if (isRoomIdField(inp)) idInput = inp;
-    });
-    if (!idInput || idInput.dataset.enhHistory) return;
-    idInput.dataset.enhHistory = '1';
-    var inputRect = idInput.getBoundingClientRect();
-    if (inputRect.width < 30) { idInput.dataset.enhHistory = ''; return; }
-
-    var arrow = document.createElement('div');
-    arrow.id = 'enh-hist-arrow';
-    arrow.innerHTML = '&#9662;';
-    arrow.style.cssText = 'position:absolute;right:6px;top:50%;transform:translateY(-50%);cursor:pointer;color:#a78bfa;font-size:16px;z-index:101;user-select:none;padding:4px 6px;line-height:1;transition:color .2s';
-    arrow.addEventListener('mouseenter', function () { arrow.style.color = '#22d3ee'; });
-    arrow.addEventListener('mouseleave', function () { arrow.style.color = '#a78bfa'; });
-
-    var parent = idInput.parentElement;
-    if (parent) {
-      if (getComputedStyle(parent).position === 'static') parent.style.position = 'relative';
-      parent.appendChild(arrow);
-    }
-
-    var list = document.createElement('div');
-    list.id = 'enh-hist-list';
-    list.style.cssText = 'position:absolute;top:100%;left:0;right:0;background:rgba(15,12,41,.97);border:1px solid rgba(124,58,237,.35);border-top:none;border-radius:0 0 10px 10px;max-height:180px;overflow-y:auto;z-index:200;display:none;font-size:12px;backdrop-filter:blur(16px);box-shadow:0 8px 24px rgba(0,0,0,.4)';
-    if (parent) parent.appendChild(list);
-
-    function refreshList() {
-      var history = loadHistory();
-      list.innerHTML = '';
-      if (!history.length) { list.innerHTML = '<div style="padding:12px;color:#64748b;text-align:center">暂无历史记录</div>'; return; }
-      history.forEach(function (r) {
-        var item = document.createElement('div');
-        var name = document.createElement('span');
-        var time = document.createElement('span');
-        var remove = document.createElement('button');
-        var d = new Date(r.time);
-        var ts = (d.getMonth() + 1) + '/' + d.getDate() + ' ' + d.getHours() + ':' + String(d.getMinutes()).padStart(2, '0');
-        item.style.cssText = 'padding:8px 12px;cursor:pointer;border-bottom:1px solid rgba(124,58,237,.1);display:flex;align-items:center;gap:8px;transition:background .15s';
-        name.textContent = r.id;
-        name.style.cssText = 'color:#e2e8f0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
-        time.textContent = ts;
-        time.style.cssText = 'color:#64748b;margin-left:auto;font-size:11px;flex-shrink:0';
-        remove.type = 'button';
-        remove.textContent = '×';
-        remove.title = '删除此历史记录';
-        remove.setAttribute('aria-label', '删除 ' + r.id);
-        remove.style.cssText = 'flex-shrink:0;width:22px;height:22px;border:none;border-radius:999px;background:rgba(239,68,68,.12);color:#fda4af;cursor:pointer;font-size:15px;line-height:1;display:flex;align-items:center;justify-content:center;padding:0';
-        item.addEventListener('mouseenter', function () { item.style.background = 'rgba(124,58,237,.2)'; });
-        item.addEventListener('mouseleave', function () { item.style.background = ''; });
-        item.addEventListener('click', function () {
-          clearRoomIdManualOverride(idInput);
-          setRoomIdInputValue(idInput, r.id);
-          idInput.dataset.enhAutofilled = '0';
-          idInput.dataset.enhAutofilledValue = '';
-          list.style.display = 'none';
-          open = false;
-        });
-        remove.addEventListener('click', function (event) {
-          event.preventDefault();
-          event.stopPropagation();
-          removeRoomHistory(r.id);
-          if (idInput.dataset.enhAutofilledValue === r.id) {
-            fillRoomIdDefault({ forceAutofill: true, preferHistory: true });
-          }
-          refreshList();
-        });
-        remove.addEventListener('mouseenter', function (event) {
-          event.stopPropagation();
-          remove.style.background = 'rgba(239,68,68,.2)';
-          remove.style.color = '#fecdd3';
-        });
-        remove.addEventListener('mouseleave', function (event) {
-          event.stopPropagation();
-          remove.style.background = 'rgba(239,68,68,.12)';
-          remove.style.color = '#fda4af';
-        });
-        item.appendChild(name);
-        item.appendChild(time);
-        item.appendChild(remove);
-        list.appendChild(item);
-      });
-    }
-
-    var open = false;
-    arrow.addEventListener('click', function (e) {
-      e.stopPropagation();
-      open = !open;
-      if (open) { refreshList(); list.style.display = 'block'; }
-      else { list.style.display = 'none'; }
-    });
-    document.addEventListener('click', function (e) {
-      if (!parent || !parent.contains(e.target)) { open = false; list.style.display = 'none'; }
-    });
-  }
-
-  /* ── 注册 ── */
-  function showRegisterModal() {
-    if (document.getElementById('reg-modal')) return;
-    var overlay = document.createElement('div');
-    overlay.id = 'reg-modal';
-    overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.7);z-index:99999;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(4px)';
-    var box = document.createElement('div');
-    box.style.cssText = 'background:rgba(15,12,41,.95);color:#e2e8f0;border:1px solid rgba(124,58,237,.4);border-radius:16px;padding:28px;min-width:320px;max-width:380px;backdrop-filter:blur(12px);box-shadow:0 8px 32px rgba(0,0,0,.5),0 0 30px rgba(124,58,237,.15)';
-    box.innerHTML =
-      '<div style="font-size:18px;font-weight:700;margin-bottom:18px;background:linear-gradient(135deg,#a78bfa,#22d3ee);-webkit-background-clip:text;-webkit-text-fill-color:transparent">注册账号</div>' +
-      '<div style="margin-bottom:12px"><input id="reg-user" placeholder="用户名" style="width:100%;padding:10px 12px;background:rgba(15,12,41,.6);color:#e2e8f0;border:1px solid rgba(124,58,237,.4);border-radius:10px;font-size:14px;box-sizing:border-box;outline:none"></div>' +
-      '<div style="margin-bottom:12px"><input id="reg-pass" type="password" placeholder="密码" style="width:100%;padding:10px 12px;background:rgba(15,12,41,.6);color:#e2e8f0;border:1px solid rgba(124,58,237,.4);border-radius:10px;font-size:14px;box-sizing:border-box;outline:none"></div>' +
-      '<div id="reg-msg" style="font-size:12px;color:#94a3b8;margin-bottom:12px;min-height:16px"></div>' +
-      '<div style="display:flex;gap:10px"><button id="reg-ok" style="flex:1;padding:10px;background:linear-gradient(135deg,#7c3aed,#06b6d4);color:#fff;border:none;border-radius:10px;cursor:pointer;font-size:14px;font-weight:600">注册</button>' +
-      '<button id="reg-cancel" style="flex:1;padding:10px;background:rgba(255,255,255,.08);color:#e2e8f0;border:1px solid rgba(124,58,237,.3);border-radius:10px;cursor:pointer;font-size:14px">取消</button></div>';
-    overlay.appendChild(box);
-    document.body.appendChild(overlay);
-
-    document.getElementById('reg-cancel').addEventListener('click', function () { overlay.remove(); });
-    overlay.addEventListener('click', function (e) { if (e.target === overlay) overlay.remove(); });
-    document.getElementById('reg-ok').addEventListener('click', function () {
-      var user = document.getElementById('reg-user').value.trim();
-      var pass = document.getElementById('reg-pass').value;
-      var msg = document.getElementById('reg-msg');
-      if (!user || !pass) { msg.textContent = '用户名和密码不能为空'; return; }
-      msg.textContent = '注册中...'; msg.style.color = '#94a3b8';
-      fetch(REGISTER_URL, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user: user, pass: pass })
-      }).then(function (r) { return r.json(); }).then(function (data) {
-        if (data.ok) {
-          msg.style.color = '#34d399';
-          msg.textContent = data.message || '注册成功！请返回登录。';
-          setTimeout(function () { overlay.remove(); }, 1800);
-        }
-        else { msg.style.color = '#f87171'; msg.textContent = data.error || '注册失败'; }
-      }).catch(function () { msg.style.color = '#f87171'; msg.textContent = '网络错误'; });
-    });
-  }
-
-  function injectRegisterButton(root) {
-    root.querySelectorAll('form').forEach(function (form) {
-      if (form.dataset.enhReg) return;
-      var hasLogin = false;
-      form.querySelectorAll('button, [type=submit]').forEach(function (btn) {
-        if (btn.textContent.trim() === 'Login' || btn.textContent.trim() === '登录') hasLogin = true;
-      });
-      if (!hasLogin) return;
-      form.dataset.enhReg = '1';
-      var regBtn = document.createElement('button');
-      regBtn.type = 'button'; regBtn.textContent = '注册';
-      regBtn.style.cssText = 'margin-top:8px;width:100%;padding:8px;background:transparent;color:#a78bfa;border:1px solid rgba(124,58,237,.4);border-radius:10px;cursor:pointer;font-size:13px;transition:all .2s';
-      regBtn.addEventListener('mouseenter', function () { regBtn.style.background = 'rgba(124,58,237,.1)'; });
-      regBtn.addEventListener('mouseleave', function () { regBtn.style.background = 'transparent'; });
-      regBtn.addEventListener('click', function (e) { e.preventDefault(); showRegisterModal(); });
-      form.appendChild(regBtn);
-    });
-  }
-
-  /* ── 主 Observer ── */
-  function startObserver() {
-    var obs = new MutationObserver(function (muts) {
-      muts.forEach(function (m) {
-        m.addedNodes.forEach(function (nd) {
-          if (nd.nodeType !== 1) return;
-          if (nd.id === 'gc-hover-tools' || (nd.closest && nd.closest('#gc-hover-tools'))) return;
-          translateNode(nd);
-          enhanceSnackbars(nd);
-          hideCloseCheckbox(nd);
-          hideScreegoSettings(nd);
-          interceptShareButtonClicks(nd);
-          syncShareButtonAvailability();
-          renderWebPresenceMembers();
-          injectRegisterButton(nd);
-          injectHistoryDropdown();
-          fillRoomIdDefault();
-          replaceLogo(nd);
-        });
-      });
-    });
-    obs.observe(document.body, { childList: true, subtree: true });
-    translateNode(document.body);
-    enhanceSnackbars(document.body);
-    hideCloseCheckbox(document.body);
-    hideScreegoSettings(document.body);
-    interceptShareButtonClicks(document.body);
-    renderWebPresenceMembers();
-    syncShareButtonAvailability();
-    interceptShareHotkey();
-    injectRegisterButton(document.body);
+  function startRuntime() {
     monitorRoomUrl();
-    monitorExitButton();
     monitorSfuMode();
     startAdaptiveStreamingMonitor();
     startAuthStateMonitor();
     startConnectionStats();
     fetchUsername();
-    applyTheme();
-    applyWebHoverToolsTheme();
-    syncWebHoverToolsVisibility();
-    replaceLogo(document.body);
-    setTimeout(injectHistoryDropdown, 1500);
-    setTimeout(fillRoomIdDefault, 2000);
   }
 
   /* ── 启动 ── */
@@ -4552,17 +2840,13 @@
       if (canMaintainRoomState(currentRoomId())) sendRoomStateBeacon(false, roomStateHeartbeatRoomId || currentRoomId());
       leaveWebPresence(true);
       clearRoomMediaMode();
-      destroyWebHoverTools();
       closeRoomSocket();
     });
     installScreegoPeerSessionHook();
     patchWebSocket();
-    patchFetch();
     patchGDM();
     patchRTC();
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', function () { startObserver(); });
-    } else { startObserver(); }
+    startRuntime();
   }
   init();
 })();

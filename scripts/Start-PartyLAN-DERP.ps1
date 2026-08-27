@@ -14,9 +14,9 @@ Set-StrictMode -Version Latest
 $packageRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $packageRoot
 
-$exePath = Join-Path $packageRoot 'PartyLAN.exe'
+$exePath = Join-Path $packageRoot 'partylan.exe'
 if (-not (Test-Path $exePath)) {
-  throw "PartyLAN.exe not found beside $($MyInvocation.MyCommand.Name)."
+  throw "partylan.exe not found beside $($MyInvocation.MyCommand.Name)."
 }
 
 # Keep the release package aligned with the currently deployed custom DERP.
@@ -56,7 +56,7 @@ if ($TURNCredential) {
 }
 
 $launchMode = if ($ForceTsnet) { 'networked/tsnet' } else { 'tailscale-system' }
-Write-Host "Launching PartyLAN in $launchMode mode with custom DERP region 901/cn1 at 103.236.92.32:443"
+Write-Host "Launching partylan in $launchMode mode with custom DERP region 901/cn1 at 103.236.92.32:443"
 if ($ForceTsnet) {
   Write-Host "Network backend override: tsnet"
 }

@@ -86,7 +86,8 @@ STATS_NUMBER_FIELDS = set([
     'receiverReportAgeMs', 'receiverDecodedFps', 'receiverIncomingKbps',
     'receiverLossPercent', 'receiverJitterMs', 'senderCapturedFps',
     'senderEncodedFps', 'senderSentFps',
-    'adaptiveStableMs', 'adaptiveProbeUntil', 'adaptiveProbeImprovedCount',
+    'adaptiveConfiguredFps', 'adaptiveStableMs',
+    'adaptiveProbeUntil', 'adaptiveProbeImprovedCount',
 ])
 STATS_BOOL_FIELDS = set(['valid', 'visible', 'receiverBound'])
 

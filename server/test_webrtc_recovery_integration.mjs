@@ -146,6 +146,7 @@ test('source and deployed telemetry copies stay byte-identical with complete whi
   }
   assert.match(numberFields, /['"]adaptiveNominalBitrate['"]/);
   assert.match(numberFields, /['"]adaptiveDegradeFloorBitrate['"]/);
+  assert.match(numberFields, /['"]adaptiveConfiguredFps['"]/);
   assert.doesNotMatch(numberFields, /diagnosticPacketsSentDelta/);
 });
 
@@ -156,9 +157,9 @@ test('deployed telemetry resource versions and load order are exact', () => {
   assert.deepEqual(scripts, [
     'webrtc-stats.js?v=5',
     'webrtc-quality.js?v=2',
-    'webrtc-adaptive.js?v=8',
+    'webrtc-adaptive.js?v=9',
     'web-share-audio.js?v=2',
-    'inject.js?v=6.33',
+    'inject.js?v=6.38',
     'sfu-client.js?v=1.9',
   ]);
 });

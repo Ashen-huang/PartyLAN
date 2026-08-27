@@ -28,7 +28,7 @@ func main() {
 	app := NewApp(net)
 
 	err = wails.Run(&options.App{
-		Title:     "PartyLAN",
+		Title:     "partylan",
 		Width:     1120,
 		Height:    630,
 		Frameless: true,

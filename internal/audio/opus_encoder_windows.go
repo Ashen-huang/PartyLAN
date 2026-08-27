@@ -60,7 +60,7 @@ static int partylan_opus_load(void) {
 
 	HMODULE lib = LoadLibraryW(L"opus.dll");
 	if (lib == NULL) {
-		partylan_opus_set_reason("opus.dll not found; place a libopus-compatible opus.dll next to PartyLAN.exe");
+		partylan_opus_set_reason("opus.dll not found; place a libopus-compatible opus.dll next to partylan.exe");
 		return 0;
 	}
 
