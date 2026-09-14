@@ -1,0 +1,43 @@
+- generic [ref=e3]:
+  - generic [ref=e4]:
+    - generic [ref=e5]: PartyLAN
+    - generic [ref=e6]:
+      - button "设置" [ref=e7] [cursor=pointer]: ⚙
+      - button "最小化" [ref=e8] [cursor=pointer]: −
+      - button "关闭" [ref=e9] [cursor=pointer]: ×
+  - generic [ref=e11]:
+    - generic [ref=e12]: 延迟 0ms
+    - generic [ref=e13]: "|"
+    - generic [ref=e14]: 码率 --Mbps
+    - generic [ref=e15]: "|"
+    - generic [ref=e16]: 已连接
+    - generic [ref=e17]: "|"
+    - generic [ref=e18]: gamecast-client
+    - generic [ref=e19]: "|"
+    - generic [ref=e20]: 主机 native
+    - generic [ref=e21]: "|"
+    - generic [ref=e22]: GameCast 客户端
+    - generic [ref=e23]: "|"
+    - generic [ref=e24]: GameCast 服务端
+    - generic [ref=e25]: "|"
+    - generic [ref=e26]: 原生媒体受限
+  - main [ref=e28]:
+    - generic [ref=e29]:
+      - heading "PartyLAN" [level=1] [ref=e30]
+      - paragraph [ref=e31]: 创建房间，或加入正在进行的共享。
+    - region "大厅操作" [ref=e32]:
+      - region "账号" [ref=e33]:
+        - generic [ref=e34]:
+          - heading "账号" [level=2] [ref=e35]
+          - generic [ref=e36]: admin
+        - generic [ref=e37]:
+          - generic [ref=e38]: 已登录：admin
+          - button "退出登录" [ref=e39] [cursor=pointer]
+      - region "可加入房间" [ref=e40]:
+        - button "创建我的房间" [ref=e41] [cursor=pointer]
+        - generic [ref=e42]:
+          - heading "可加入房间" [level=2] [ref=e43]
+          - generic [ref=e44]: 0 个
+        - generic [ref=e46]: 暂无其他用户创建的活动房间
+      - button "更多" [ref=e48] [cursor=pointer]:
+        - generic [ref=e49]: 更多

@@ -1,0 +1,48 @@
+- generic [ref=e59]:
+  - generic [ref=e60]:
+    - button "连接数据 等待连接" [expanded] [active] [ref=e61] [cursor=pointer]:
+      - img [ref=e62]
+      - generic [ref=e64]:
+        - generic [ref=e65]: 连接数据
+        - generic [ref=e66]: 等待连接
+      - img [ref=e67]
+    - generic [ref=e105]: 等待媒体连接建立...
+  - heading "复制房间链接" [level=4] [ref=e107] [cursor=pointer]: decisive-tan-elephant
+  - generic [ref=e71]: 暂无共享画面
+  - generic:
+    - complementary "成员列表" [ref=e73]:
+      - heading "成员列表" [level=6] [ref=e75]
+      - paragraph [ref=e77]: Creative Walrus (你, 房主)
+    - generic [ref=e78]:
+      - button "退出全屏" [disabled]:
+        - img
+    - complementary "共享设置" [ref=e80]:
+      - heading "共享" [level=6] [ref=e82]
+      - paragraph [ref=e83]: 准备共享屏幕
+      - generic [ref=e84]:
+        - generic [ref=e85]:
+          - text: 分辨率
+          - combobox "分辨率" [ref=e86]:
+            - option "1080p (1920x1080)"
+            - option "720p (1280x720)" [selected]
+            - option "480p (854x480)"
+            - option "360p (640x360)"
+        - generic [ref=e87]:
+          - text: 帧率
+          - combobox "帧率" [ref=e88]:
+            - option "60 FPS"
+            - option "45 FPS"
+            - option "30 FPS" [selected]
+        - generic [ref=e89]:
+          - text: 音频
+          - combobox "音频" [ref=e90]:
+            - option "窗口/标签页音频" [selected]
+            - option "系统音频"
+            - option "无音频"
+      - button "开始共享" [ref=e92] [cursor=pointer]:
+        - img [ref=e93]
+      - generic [ref=e95]:
+        - button "设置" [ref=e96] [cursor=pointer]:
+          - img [ref=e97]
+        - button "退出房间" [ref=e99] [cursor=pointer]:
+          - img [ref=e100]

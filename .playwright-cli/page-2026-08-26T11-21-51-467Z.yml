@@ -1,0 +1,25 @@
+- generic [ref=e140]:
+  - banner [ref=e141]:
+    - img "PartyLAN" [ref=e142]
+  - main [ref=e143]:
+    - generic [ref=e145]:
+      - generic [ref=e146]: 用户名显示：
+      - generic "用户名显示" [ref=e147]:
+        - generic [ref=e148]:
+          - textbox "用户名显示：" [ref=e149]: 网页昵称
+          - group
+    - region "可加入房间" [ref=e150]:
+      - button "创建我的房间" [ref=e151] [cursor=pointer]
+      - generic [ref=e152]:
+        - heading "可加入房间" [level=6] [ref=e153]
+        - generic [ref=e154]:
+          - paragraph [ref=e155]: 0 个
+          - button "刷新房间列表" [ref=e156] [cursor=pointer]:
+            - img [ref=e157]
+      - paragraph [ref=e160]: 暂无其他用户创建的活动房间
+    - generic [ref=e161]:
+      - button "更多" [ref=e162] [cursor=pointer]:
+        - text: 更多
+        - img [ref=e164]
+      - generic: 手动输入房间 ID
+  - button "登录账号" [ref=e166] [cursor=pointer]

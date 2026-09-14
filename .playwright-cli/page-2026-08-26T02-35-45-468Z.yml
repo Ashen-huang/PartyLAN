@@ -1,0 +1,53 @@
+- generic [active]:
+  - generic:
+    - generic [ref=e37]:
+      - heading "复制房间链接" [level=4] [ref=e39] [cursor=pointer]: test
+      - generic [ref=e40]: 暂无共享画面
+      - generic:
+        - complementary "成员列表" [ref=e42]:
+          - generic [ref=e43]:
+            - heading "成员列表" [level=6] [ref=e44]
+            - button "关闭成员列表" [ref=e45] [cursor=pointer]:
+              - img [ref=e46]
+          - paragraph [ref=e49]: Enthusiastic Goat (你, 房主)
+        - generic [ref=e50]:
+          - button "退出全屏" [disabled]:
+            - img
+        - complementary "共享设置" [ref=e52]:
+          - generic [ref=e53]:
+            - heading "共享" [level=6] [ref=e54]
+            - button "关闭共享面板" [ref=e55] [cursor=pointer]:
+              - img [ref=e56]
+          - paragraph [ref=e58]: 准备共享屏幕
+          - generic [ref=e59]:
+            - generic [ref=e60]:
+              - text: 分辨率
+              - combobox "分辨率" [ref=e61]:
+                - option "1080p (1920x1080)"
+                - option "720p (1280x720)" [selected]
+                - option "480p (854x480)"
+                - option "360p (640x360)"
+            - generic [ref=e62]:
+              - text: 帧率
+              - combobox "帧率" [ref=e63]:
+                - option "60 FPS"
+                - option "45 FPS"
+                - option "30 FPS" [selected]
+            - generic [ref=e64]:
+              - text: 音频
+              - combobox "音频" [ref=e65]:
+                - option "窗口/标签页音频" [selected]
+                - option "系统音频"
+                - option "无音频"
+          - button "开始共享" [ref=e67] [cursor=pointer]:
+            - img [ref=e68]
+          - generic [ref=e70]:
+            - button "设置" [ref=e71] [cursor=pointer]:
+              - img [ref=e72]
+            - button "退出房间" [ref=e74] [cursor=pointer]:
+              - img [ref=e75]
+    - alert [ref=e31]:
+      - generic [ref=e32]:
+        - img [ref=e33]
+        - text: room with id test does not exist
+      - button "关闭" [ref=e36] [cursor=pointer]

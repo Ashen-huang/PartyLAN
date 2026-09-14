@@ -1,0 +1,24 @@
+- generic [ref=e3]:
+  - generic [ref=e4]:
+    - paragraph [ref=e5]:
+      - img "logo" [ref=e6]
+    - generic [ref=e10]:
+      - paragraph [ref=e12]: 登录 GameCast
+      - generic [ref=e13]:
+        - generic: 用户名
+        - generic [ref=e14]:
+          - textbox "用户名" [ref=e15]
+          - group:
+            - generic: 用户名
+      - generic [ref=e16]:
+        - generic: 密码
+        - generic [ref=e17]:
+          - textbox "密码" [ref=e18]
+          - group:
+            - generic: 密码
+      - button "登录" [ref=e20] [cursor=pointer]
+      - button "注册" [ref=e21] [cursor=pointer]
+  - generic [ref=e22]:
+    - text: Screego partylan-unified-udp-20260806 |
+    - link "GitHub" [ref=e23] [cursor=pointer]:
+      - /url: https://github.com/screego/server/

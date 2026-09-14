@@ -1,0 +1,53 @@
+- generic [active] [ref=e1]:
+  - generic "GameCast 房间工具":
+    - generic [ref=e3]:
+      - button "显示成员列表" [ref=e4] [cursor=pointer]:
+        - img [ref=e5]
+      - complementary "成员列表":
+        - generic:
+          - generic: 成员
+          - button "关闭成员列表":
+            - img
+        - generic:
+          - generic: 正在同步房间成员
+    - generic [ref=e7]:
+      - button "显示共享设置" [ref=e8] [cursor=pointer]:
+        - img [ref=e9]
+      - complementary "共享设置":
+        - generic:
+          - generic: 共享
+          - button "关闭共享设置":
+            - img
+        - status: 未开始共享
+        - generic: 当前没有共享者
+        - generic:
+          - generic:
+            - text: 分辨率
+            - combobox "分辨率":
+              - option "自动 (推荐)"
+              - option "1080p (1920×1080)"
+              - option "720p (1280×720)" [selected]
+              - option "480p (854×480)"
+              - option "360p (640×360)"
+          - generic:
+            - text: 帧率
+            - combobox "帧率":
+              - option "30 FPS" [selected]
+              - option "45 FPS"
+              - option "60 FPS"
+          - generic:
+            - text: 优先模式
+            - combobox "优先模式":
+              - option "清晰优先"
+              - option "均衡" [selected]
+              - option "流畅优先"
+          - generic:
+            - text: 音频
+            - combobox "音频":
+              - option "窗口/标签页" [selected]
+              - option "不共享"
+              - option "全屏系统音频"
+        - button "应用设置"
+        - generic:
+          - button "开始共享" [disabled]
+        - status: 等待房间共享状态确认。

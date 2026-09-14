@@ -1,0 +1,24 @@
+- generic [ref=e3]:
+  - generic [ref=e4]:
+    - paragraph [ref=e5]:
+      - img "logo"
+    - generic [ref=e9]:
+      - paragraph [ref=e11]: 登录 GameCast
+      - generic [ref=e12]:
+        - generic: 用户名
+        - generic [ref=e13]:
+          - textbox "用户名" [ref=e14]
+          - group:
+            - generic: 用户名
+      - generic [ref=e15]:
+        - generic: 密码
+        - generic [ref=e16]:
+          - textbox "密码" [ref=e17]
+          - group:
+            - generic: 密码
+      - button "登录" [ref=e19] [cursor=pointer]
+      - button "注册" [ref=e20] [cursor=pointer]
+  - generic [ref=e21]:
+    - text: Screego partylan-receiver-adaptive-20260815 |
+    - link "GitHub" [ref=e22] [cursor=pointer]:
+      - /url: https://github.com/screego/server/

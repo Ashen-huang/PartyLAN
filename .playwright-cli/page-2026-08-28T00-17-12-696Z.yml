@@ -1,0 +1,32 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - banner [ref=e4]:
+      - img "partylan" [ref=e5]
+    - main [ref=e22]:
+      - generic [ref=e23]:
+        - generic [ref=e24]:
+          - generic [ref=e25]: 用户名显示：
+          - generic "用户名显示" [ref=e26]:
+            - generic [ref=e27]:
+              - textbox "用户名显示：" [ref=e28]: dev
+              - group
+        - button "退出登录" [ref=e29] [cursor=pointer]
+      - region "可加入房间" [ref=e30]:
+        - button "创建我的房间" [ref=e31] [cursor=pointer]
+        - generic [ref=e32]:
+          - heading "可加入房间" [level=6] [ref=e33]
+          - generic [ref=e34]:
+            - paragraph [ref=e35]: 0 个
+            - button "刷新房间列表" [ref=e36] [cursor=pointer]:
+              - img [ref=e37]
+        - paragraph [ref=e40]: 暂无其他用户创建的活动房间
+      - generic [ref=e41]:
+        - button "更多" [ref=e42] [cursor=pointer]:
+          - text: 更多
+          - img [ref=e44]
+        - generic: 手动输入房间 ID
+  - alert [ref=e49]:
+    - generic [ref=e50]:
+      - img [ref=e51]
+      - text: 登录成功
+    - button "关闭" [ref=e54] [cursor=pointer]

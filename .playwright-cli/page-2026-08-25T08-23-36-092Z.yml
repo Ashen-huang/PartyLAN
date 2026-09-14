@@ -1,0 +1,57 @@
+- generic [ref=e1]:
+  - heading "Copy Link" [level=4] [ref=e3] [cursor=pointer]: partylan-preview
+  - generic [ref=e4]: 暂无共享画面
+  - generic:
+    - generic [ref=e5]:
+      - complementary "成员列表":
+        - generic:
+          - heading "成员列表" [level=6]
+          - button "关闭成员列表":
+            - img
+        - generic:
+          - paragraph: 测试用户 (你, 房主)
+          - paragraph: 访客
+      - button "打开成员列表" [ref=e7] [cursor=pointer]:
+        - generic [ref=e8]:
+          - img [ref=e9]
+          - generic [ref=e11]: "2"
+    - generic [ref=e12]:
+      - button "退出全屏" [disabled]:
+        - img
+    - generic [ref=e13]:
+      - complementary "共享设置":
+        - generic:
+          - heading "共享" [level=6]
+          - button "关闭共享面板" [active]:
+            - img
+        - paragraph: 准备共享屏幕
+        - generic:
+          - generic:
+            - text: 分辨率
+            - combobox "分辨率":
+              - option "1080p (1920x1080)"
+              - option "720p (1280x720)" [selected]
+              - option "480p (854x480)"
+              - option "360p (640x360)"
+          - generic:
+            - text: 帧率
+            - combobox "帧率":
+              - option "60 FPS"
+              - option "45 FPS"
+              - option "30 FPS" [selected]
+          - generic:
+            - text: 音频
+            - combobox "音频":
+              - option "窗口/标签页音频" [selected]
+              - option "系统音频"
+              - option "无音频"
+        - generic:
+          - button "开始共享":
+            - img
+        - generic:
+          - button "设置":
+            - img
+          - button "退出房间":
+            - img
+      - button "打开共享面板" [ref=e15] [cursor=pointer]:
+        - img [ref=e16]

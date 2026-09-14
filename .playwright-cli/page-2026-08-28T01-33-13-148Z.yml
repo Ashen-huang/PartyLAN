@@ -1,0 +1,35 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - img "partylan" [ref=e5]
+  - generic [ref=e8]:
+    - generic [ref=e9]:
+      - img [ref=e11]
+      - generic [ref=e13]:
+        - heading "注册 partylan" [level=1] [ref=e30]
+        - paragraph [ref=e15]: 创建新的 partylan 账号
+    - group "认证方式" [ref=e16]:
+      - button "登录" [ref=e17] [cursor=pointer]
+      - button "注册" [pressed] [ref=e18] [cursor=pointer]: 注册
+    - generic [ref=e19]:
+      - generic [ref=e20]: 用户名
+      - generic [ref=e21]:
+        - textbox "用户名" [ref=e22]: visual_test
+        - group:
+          - generic: 用户名
+      - paragraph [ref=e23]: 2-20 个字符
+    - generic [ref=e24]:
+      - generic [ref=e36]: 密码
+      - generic [ref=e25]:
+        - textbox "密码" [ref=e26]: abcd
+        - group:
+          - generic: 密码
+      - paragraph [ref=e27]: 至少 4 个字符
+    - generic [ref=e31]:
+      - generic [ref=e37]: 确认密码
+      - generic [ref=e32]:
+        - textbox "确认密码" [invalid] [ref=e33]: abce
+        - group:
+          - generic: 确认密码
+      - paragraph [ref=e34]: 两次输入的密码不一致
+    - button "创建账号" [active] [ref=e35] [cursor=pointer]:
+      - generic [ref=e29]: 创建账号

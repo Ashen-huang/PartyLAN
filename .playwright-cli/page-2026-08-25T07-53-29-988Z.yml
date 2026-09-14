@@ -1,0 +1,61 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e3]:
+    - heading "Copy Link" [level=4] [ref=e33] [cursor=pointer]: test
+    - generic [ref=e6]: no stream available
+    - generic:
+      - generic [ref=e7]:
+        - complementary "成员列表":
+          - generic:
+            - heading "成员列表" [level=6]
+            - button "关闭成员列表":
+              - img
+          - generic:
+            - paragraph: 测试用户 (You, Owner)
+            - paragraph: 房间成员
+        - button "打开成员列表" [ref=e9] [cursor=pointer]:
+          - generic [ref=e10]:
+            - img [ref=e11]
+            - generic [ref=e13]: "2"
+      - generic [ref=e14]:
+        - button "退出全屏" [disabled]:
+          - img
+      - generic [ref=e15]:
+        - complementary "共享设置" [ref=e34]:
+          - generic [ref=e35]:
+            - heading "共享" [level=6] [ref=e36]
+            - button "关闭共享面板" [ref=e37] [cursor=pointer]:
+              - img [ref=e38]
+          - paragraph [ref=e40]: 准备共享屏幕
+          - generic [ref=e41]:
+            - generic [ref=e42]:
+              - text: 分辨率
+              - combobox "分辨率" [ref=e43]:
+                - option "1080p (1920x1080)"
+                - option "720p (1280x720)" [selected]
+                - option "480p (854x480)"
+                - option "360p (640x360)"
+            - generic [ref=e44]:
+              - text: 帧率
+              - combobox "帧率" [ref=e45]:
+                - option "60 FPS"
+                - option "45 FPS"
+                - option "30 FPS" [selected]
+            - generic [ref=e46]:
+              - text: 音频
+              - combobox "音频" [ref=e47]:
+                - option "窗口/标签页音频" [selected]
+                - option "系统音频"
+                - option "无音频"
+          - button "开始共享" [ref=e49] [cursor=pointer]:
+            - img [ref=e50]
+          - generic [ref=e52]:
+            - button "设置" [ref=e53] [cursor=pointer]:
+              - img [ref=e54]
+            - button "退出房间" [ref=e56] [cursor=pointer]:
+              - img [ref=e57]
+        - button "打开共享面板" [ref=e17] [cursor=pointer]:
+          - img [ref=e18]
+  - tooltip "成员列表":
+    - generic: 成员列表
+  - tooltip "共享" [ref=e59]:
+    - generic [ref=e60]: 共享

@@ -1,0 +1,28 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - img "partylan" [ref=e5]
+  - generic [ref=e8]:
+    - generic [ref=e9]:
+      - img [ref=e11]
+      - generic [ref=e13]:
+        - heading "登录 partylan" [level=1] [ref=e14]
+        - paragraph [ref=e15]: 进入你的共享房间
+    - group "认证方式" [ref=e16]:
+      - button "登录" [pressed] [ref=e17] [cursor=pointer]
+      - button "注册" [ref=e18] [cursor=pointer]
+    - generic [ref=e19]:
+      - generic [ref=e20]: 用户名
+      - generic [ref=e21]:
+        - textbox "用户名" [active] [ref=e22]
+        - group:
+          - generic: 用户名
+      - paragraph [ref=e23]
+    - generic [ref=e24]:
+      - generic: 密码
+      - generic [ref=e25]:
+        - textbox "密码" [ref=e26]
+        - group:
+          - generic: 密码
+      - paragraph [ref=e27]
+    - button "登录" [ref=e28] [cursor=pointer]:
+      - generic [ref=e29]: 登录

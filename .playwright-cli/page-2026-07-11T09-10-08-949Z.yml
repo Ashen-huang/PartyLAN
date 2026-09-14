@@ -1,0 +1,148 @@
+- generic [ref=e3]:
+  - generic [ref=e4]:
+    - generic [ref=e5]: PartyLAN
+    - generic [ref=e6]:
+      - button "设置" [active] [ref=e7] [cursor=pointer]: ⚙
+      - button "最小化" [ref=e8] [cursor=pointer]: −
+      - button "关闭" [ref=e9] [cursor=pointer]: ×
+  - generic [ref=e11]:
+    - generic [ref=e12]: 延迟 12ms
+    - generic [ref=e13]: "|"
+    - generic [ref=e14]: 码率 --Mbps
+    - generic [ref=e15]: "|"
+    - generic [ref=e16]: 已连接
+    - generic [ref=e17]: "|"
+    - generic [ref=e18]: gamecast-client
+    - generic [ref=e19]: "|"
+    - generic [ref=e20]: 主机 native
+    - generic [ref=e21]: "|"
+    - generic [ref=e22]: GameCast 客户端
+    - generic [ref=e23]: "|"
+    - generic [ref=e24]: GameCast 服务端
+    - generic [ref=e25]: "|"
+    - generic [ref=e26]: 原生媒体受限
+  - main [ref=e28]:
+    - generic [ref=e29]:
+      - heading "PartyLAN" [level=1] [ref=e30]
+      - paragraph [ref=e31]: 创建房间，或加入正在进行的共享。
+    - region "大厅操作" [ref=e32]:
+      - region "账号" [ref=e33]:
+        - heading "账号" [level=2] [ref=e35]
+        - generic [ref=e36]:
+          - generic [ref=e37]:
+            - generic [ref=e38]: 用户名
+            - textbox "用户名" [ref=e39]
+          - generic [ref=e40]:
+            - generic [ref=e41]: 密码
+            - textbox "密码" [ref=e42]
+          - generic [ref=e43]:
+            - button "登录" [disabled] [ref=e44]
+            - button "注册" [disabled] [ref=e45]
+      - region "可加入房间" [ref=e46]:
+        - button "创建我的房间" [ref=e47] [cursor=pointer]
+        - generic [ref=e48]:
+          - heading "可加入房间" [level=2] [ref=e49]
+          - generic [ref=e50]: 6 个
+        - generic [ref=e51]:
+          - button "Friday-LAN" [ref=e52] [cursor=pointer]:
+            - generic [ref=e53]:
+              - strong [ref=e54]: Friday-LAN
+              - generic [ref=e55]: Alice - 客户端
+            - generic [ref=e56]: SFU 共享中
+          - button "Design-Review" [ref=e57] [cursor=pointer]:
+            - generic [ref=e58]:
+              - strong [ref=e59]: Design-Review
+              - generic [ref=e60]: Bob - 网页端
+            - generic [ref=e61]: 房间在线
+          - button "Long-room-name-for-overflow-verification-1234567890" [ref=e62] [cursor=pointer]:
+            - generic [ref=e63]:
+              - strong [ref=e64]: Long-room-name-for-overflow-verification-1234567890
+              - generic [ref=e65]: Carol - 客户端
+            - generic [ref=e66]: 房间在线
+          - button "Fourth-Room" [ref=e67] [cursor=pointer]:
+            - generic [ref=e68]:
+              - strong [ref=e69]: Fourth-Room
+              - generic [ref=e70]: Dana - 网页端
+            - generic [ref=e71]: 房间在线
+          - button "Fifth-Room" [ref=e72] [cursor=pointer]:
+            - generic [ref=e73]:
+              - strong [ref=e74]: Fifth-Room
+              - generic [ref=e75]: Eli - 客户端
+            - generic [ref=e76]: 房间在线
+          - button "Sixth-Room" [ref=e77] [cursor=pointer]:
+            - generic [ref=e78]:
+              - strong [ref=e79]: Sixth-Room
+              - generic [ref=e80]: Faye - 网页端
+            - generic [ref=e81]: 房间在线
+      - button "更多" [ref=e83] [cursor=pointer]:
+        - generic [ref=e84]: 更多
+  - generic [ref=e152]:
+    - generic [ref=e153]:
+      - generic [ref=e154]:
+        - generic [ref=e155]: 设置
+        - generic [ref=e156]: 服务器、身份与诊断设置。
+      - button "取消" [ref=e157] [cursor=pointer]: X
+    - generic [ref=e158]:
+      - generic [ref=e159]:
+        - generic [ref=e160]: 个人
+        - generic [ref=e161]:
+          - generic [ref=e162]: 显示名称
+          - textbox "显示名称" [ref=e163]:
+            - /placeholder: 例如 Player One
+            - text: Player One
+        - generic [ref=e164]: 创建或加入房间时，成员列表会显示这个名称；留空则使用本机名称。
+      - generic [ref=e165]:
+        - generic [ref=e166]: GameCast 服务器
+        - generic [ref=e167]:
+          - generic [ref=e168]: 服务器地址
+          - textbox "服务器地址" [ref=e169]:
+            - /placeholder: 例如 https://gamecast.example.com
+            - text: https://gamecast.test
+        - generic [ref=e170]:
+          - button "检测服务器" [ref=e171] [cursor=pointer]
+          - status [ref=e172]: 尚未检测
+        - generic [ref=e173]: 保存后，大厅将从此服务器读取可加入房间。
+      - generic [ref=e174]:
+        - generic [ref=e175]: 偏好
+        - generic [ref=e176]:
+          - generic [ref=e177]: 语言
+          - combobox "语言" [ref=e178]:
+            - option "中文" [selected]
+            - option "English"
+      - generic [ref=e179]:
+        - generic [ref=e180]: 诊断
+        - generic [ref=e181]:
+          - checkbox "显示房间诊断叠层" [checked] [ref=e182]
+          - generic [ref=e183]: 显示房间诊断叠层
+        - generic [ref=e184]:
+          - generic [ref=e185]:
+            - generic [ref=e186]:
+              - generic [ref=e187]: 模式
+              - generic [ref=e188]: GameCast 客户端
+            - generic [ref=e189]:
+              - generic [ref=e190]: 网络
+              - generic [ref=e191]: GameCast 服务端
+            - generic [ref=e192]:
+              - generic [ref=e193]: 状态
+              - generic [ref=e194]: connected
+            - generic [ref=e195]:
+              - generic [ref=e196]: 视频
+              - generic [ref=e197]: 原生媒体受限
+            - generic [ref=e198]:
+              - generic [ref=e199]: 音频
+              - generic [ref=e200]: 应用音频已就绪
+            - generic [ref=e201]:
+              - generic [ref=e202]: 房间
+              - generic [ref=e203]: 未加入
+            - generic [ref=e204]:
+              - generic [ref=e205]: 共享
+              - generic [ref=e206]: 不可用
+            - generic [ref=e207]:
+              - generic [ref=e208]: 观众
+              - generic [ref=e209]: "0"
+          - generic [ref=e210]:
+            - generic [ref=e211]: 运行时：GameCast 客户端
+            - generic [ref=e212]: 版本：1.0.0
+    - generic [ref=e213]:
+      - button "取消" [ref=e214] [cursor=pointer]
+      - button "保存" [ref=e215] [cursor=pointer]

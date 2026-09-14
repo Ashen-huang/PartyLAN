@@ -1,0 +1,59 @@
+- generic:
+  - generic [ref=e30]:
+    - button [ref=e75] [cursor=pointer]:
+      - img [ref=e33]
+      - generic [ref=e35]:
+        - generic [ref=e36]: 连接数据
+        - generic [ref=e37]: 等待连接
+      - img [ref=e38]
+    - heading [level=4] [ref=e76] [cursor=pointer]: resourceful-bronze-goat
+    - generic [ref=e42]: 暂无共享画面
+    - generic:
+      - complementary [ref=e77]:
+        - heading [level=6] [ref=e78]: 成员列表
+        - paragraph [ref=e47]: 网页昵称 (你)
+      - generic [ref=e48]:
+        - button [disabled]:
+          - img
+      - complementary [ref=e79]:
+        - heading [level=6] [ref=e80]: 共享
+        - paragraph [ref=e52]: 准备共享屏幕
+        - generic [ref=e53]:
+          - generic [ref=e54]:
+            - text: 分辨率
+            - combobox [ref=e81]
+          - generic [ref=e56]:
+            - text: 帧率
+            - combobox [ref=e82]
+          - generic [ref=e58]:
+            - text: 音频
+            - combobox [ref=e83]
+        - button [ref=e84] [cursor=pointer]:
+          - img [ref=e62]
+        - generic [ref=e64]:
+          - button [ref=e85] [cursor=pointer]:
+            - img [ref=e66]
+          - button [ref=e86] [cursor=pointer]:
+            - img [ref=e69]
+  - dialog "设置" [ref=e89]:
+    - heading "设置" [level=2] [ref=e90]
+    - generic [ref=e92]:
+      - generic [ref=e95]:
+        - generic [ref=e96]: 首选编码器
+        - generic [ref=e97]:
+          - combobox "首选编码器" [ref=e98]: 预设：浏览器默认
+          - button "Open" [ref=e100] [cursor=pointer]:
+            - img [ref=e101]
+          - group:
+            - generic: 首选编码器
+      - generic [ref=e105]:
+        - generic [ref=e106]: 显示模式
+        - generic [ref=e107]:
+          - combobox "显示模式" [ref=e108]: 适应窗口
+          - button "Open" [ref=e110] [cursor=pointer]:
+            - img [ref=e111]
+          - group:
+            - generic: 显示模式
+    - generic [ref=e113]:
+      - button "取消" [ref=e114] [cursor=pointer]
+      - button "保存" [ref=e115] [cursor=pointer]

@@ -1,0 +1,46 @@
+- generic [ref=e30]:
+  - button "连接数据 等待连接" [ref=e116] [cursor=pointer]:
+    - img [ref=e33]
+    - generic [ref=e35]:
+      - generic [ref=e36]: 连接数据
+      - generic [ref=e37]: 等待连接
+    - img [ref=e38]
+  - heading "复制房间链接" [level=4] [ref=e117] [cursor=pointer]: resourceful-bronze-goat
+  - generic [ref=e42]: 暂无共享画面
+  - generic:
+    - complementary "成员列表" [ref=e118]:
+      - heading "成员列表" [level=6] [ref=e119]
+      - paragraph [ref=e47]: 网页昵称 (你)
+    - generic [ref=e48]:
+      - button "退出全屏" [disabled]:
+        - img
+    - complementary "共享设置" [ref=e120]:
+      - heading "共享" [level=6] [ref=e121]
+      - paragraph [ref=e52]: 准备共享屏幕
+      - generic [ref=e53]:
+        - generic [ref=e54]:
+          - text: 分辨率
+          - combobox "分辨率" [ref=e122]:
+            - option "1080p (1920x1080)"
+            - option "720p (1280x720)" [selected]
+            - option "480p (854x480)"
+            - option "360p (640x360)"
+        - generic [ref=e56]:
+          - text: 帧率
+          - combobox "帧率" [ref=e123]:
+            - option "60 FPS"
+            - option "45 FPS"
+            - option "30 FPS" [selected]
+        - generic [ref=e58]:
+          - text: 音频
+          - combobox "音频" [ref=e124]:
+            - option "窗口/标签页音频" [selected]
+            - option "系统音频"
+            - option "无音频"
+      - button "开始共享" [ref=e125] [cursor=pointer]:
+        - img [ref=e62]
+      - generic [ref=e64]:
+        - button "设置" [active] [ref=e126] [cursor=pointer]:
+          - img [ref=e66]
+        - button "退出房间" [ref=e127] [cursor=pointer]:
+          - img [ref=e69]

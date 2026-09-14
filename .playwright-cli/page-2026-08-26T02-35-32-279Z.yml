@@ -1,0 +1,28 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - img "PartyLAN" [ref=e5]
+  - generic [ref=e6]:
+    - paragraph [ref=e7]:
+      - generic [ref=e8]: 你好，guest！
+      - button "登录" [ref=e9] [cursor=pointer]
+    - generic [ref=e11]:
+      - generic [ref=e12]:
+        - generic [ref=e13]: 房间 ID
+        - generic [ref=e14]:
+          - textbox "房间 ID" [ref=e15]: test
+          - group:
+            - generic: 房间 ID
+      - generic [ref=e16] [cursor=pointer]:
+        - generic [ref=e17]:
+          - checkbox "离开后关闭房间" [checked] [ref=e18]
+          - img [ref=e19]
+        - generic [ref=e21]: 离开后关闭房间
+      - paragraph [ref=e23]:
+        - text: 网络穿透：
+        - link "TURN" [ref=e24] [cursor=pointer]:
+          - /url: https://screego.net/#/nat-traversal
+      - button "创建或加入房间" [ref=e25] [cursor=pointer]
+  - contentinfo [ref=e26]:
+    - text: PartyLAN web-ui-v6 |
+    - link "GitHub" [ref=e27] [cursor=pointer]:
+      - /url: https://github.com/screego/server/

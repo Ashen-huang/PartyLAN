@@ -1,0 +1,24 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - img "PartyLAN" [ref=e5]
+  - main [ref=e6]:
+    - generic [ref=e8]:
+      - heading "你好，guest！" [level=1] [ref=e9]
+      - paragraph [ref=e10]: 创建自己的共享房间，或加入正在进行的活动房间
+    - region "可加入房间" [ref=e11]:
+      - button "创建我的房间" [ref=e12] [cursor=pointer]
+      - generic [ref=e13]:
+        - heading "可加入房间" [level=6] [ref=e14]
+        - generic [ref=e15]:
+          - paragraph [ref=e16]: 0 个
+          - button "刷新房间列表" [ref=e17] [cursor=pointer]:
+            - img [ref=e18]
+      - generic [ref=e21]:
+        - paragraph [ref=e22]: "房间列表读取失败：Failed to execute 'json' on 'Response': Unexpected end of JSON input"
+        - button "重试" [ref=e23] [cursor=pointer]
+    - generic [ref=e24]:
+      - button "更多" [ref=e25] [cursor=pointer]:
+        - text: 更多
+        - img [ref=e27]
+      - generic: 手动输入房间 ID
+  - button "登录账号" [ref=e29] [cursor=pointer]

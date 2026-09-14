@@ -1,0 +1,50 @@
+- generic [ref=e3]:
+  - banner [ref=e22]:
+    - img "PartyLAN" [ref=e23]
+  - main [ref=e4]:
+    - generic [ref=e6]:
+      - heading "你好，guest！" [level=1] [ref=e7]
+      - paragraph [ref=e8]: 创建自己的共享房间，或加入正在进行的活动房间
+    - region "可加入房间" [ref=e9]:
+      - button "创建我的房间" [ref=e10] [cursor=pointer]
+      - generic [ref=e11]:
+        - heading "可加入房间" [level=6] [ref=e12]
+        - generic [ref=e13]:
+          - paragraph [ref=e14]: 0 个
+          - button "刷新房间列表" [ref=e24] [cursor=pointer]:
+            - img [ref=e28]
+      - paragraph [ref=e30]: 暂无其他用户创建的活动房间
+    - generic [ref=e16]:
+      - button "更多" [expanded] [active] [ref=e17] [cursor=pointer]:
+        - text: 更多
+        - img [ref=e19]
+      - generic [ref=e34]:
+        - generic [ref=e35]:
+          - generic [ref=e36]:
+            - paragraph [ref=e37]: 服务器
+            - paragraph [ref=e38]: 127.0.0.1:5070
+          - generic [ref=e39]:
+            - paragraph [ref=e40]: 账号
+            - paragraph [ref=e41]: guest
+          - generic [ref=e42]:
+            - paragraph [ref=e43]: 网络穿透
+            - paragraph [ref=e44]: TURN
+          - generic [ref=e45]:
+            - paragraph [ref=e46]: 版本
+            - paragraph [ref=e47]: web-lobby-v9-local
+        - generic [ref=e48]:
+          - generic [ref=e49]:
+            - generic: 手动输入房间 ID
+            - generic [ref=e50]:
+              - textbox "手动输入房间 ID" [ref=e51]
+              - group:
+                - generic: 手动输入房间 ID
+          - button "加入指定房间" [disabled]
+        - generic [ref=e52] [cursor=pointer]:
+          - generic [ref=e53]:
+            - checkbox "离开后关闭自己创建的房间" [checked] [ref=e54]
+            - img [ref=e55]
+          - generic [ref=e57]: 离开后关闭自己创建的房间
+        - link "项目主页" [ref=e58] [cursor=pointer]:
+          - /url: https://github.com/screego/server/
+  - button "登录账号" [ref=e21] [cursor=pointer]

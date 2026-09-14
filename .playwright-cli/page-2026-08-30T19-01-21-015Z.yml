@@ -1,0 +1,21 @@
+- generic [ref=e2]:
+  - generic [ref=e5]:
+    - heading "您的连接不是私密连接" [level=1] [ref=e6]
+    - paragraph [ref=e7]:
+      - text: 攻击者可能会试图从
+      - strong [ref=e8]: 8.134.126.54
+      - text: 窃取您的信息（例如：密码、消息或信用卡信息）。
+      - link "详细了解此警告" [ref=e9] [cursor=pointer]:
+        - /url: "#"
+    - button "net::ERR_CERT_AUTHORITY_INVALID" [ref=e11]
+  - generic [ref=e12]:
+    - button "返回安全连接" [ref=e13] [cursor=pointer]
+    - button "隐藏详情" [expanded] [active] [ref=e14] [cursor=pointer]
+  - generic [ref=e15]:
+    - paragraph [ref=e16]:
+      - text: 此服务器无法证明它是
+      - strong [ref=e17]: 8.134.126.54
+      - text: ；您计算机的操作系统不信任其安全证书。出现此问题的原因可能是配置有误或您的连接被拦截了。
+    - paragraph [ref=e18]:
+      - link "继续前往8.134.126.54（不安全）" [ref=e19] [cursor=pointer]:
+        - /url: "#"
