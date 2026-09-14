@@ -1,0 +1,230 @@
+diff --git a/ui/src/Room.native-ui.test.mjs b/ui/src/Room.native-ui.test.mjs
+index 84f4cf0..5bca7a9 100644
+--- a/ui/src/Room.native-ui.test.mjs
++++ b/ui/src/Room.native-ui.test.mjs
+@@ -50,7 +50,19 @@ test('Room no longer renders the legacy bottom control toolbar', () => {
+     assert.match(roomSource, /'& \[data-partylan-panel-close\]'/);
+     assert.match(roomSource, /display: 'none'/);
+     assert.match(roomSource, /opacity: 1/);
+-    assert.match(roomSource, /left: 0,\r?\n        transform: 'translate\(0, -50%\)'/);
++    assert.match(
++        roomSource,
++        /left: 0,\r?\n        transform: 'translate\(calc\(-100% - 16px\), -50%\)'/
++    );
++});
++
++test('desktop side panels stay hidden until their edge is hovered or focused', () => {
++    assert.match(roomSource, /'& \[data-partylan-side-content\]': \{\r?\n\s+opacity: 0/);
++    assert.match(roomSource, /'&:hover \[data-partylan-side-content\]'/);
++    assert.match(roomSource, /'&:focus-within \[data-partylan-side-content\]'/);
++    assert.match(roomSource, /'&::before': \{/);
++    assert.match(roomSource, /width: 24/);
++    assert.match(roomSource, /pointerEvents: 'none'/);
+ });
+ 
+ test('native share keeps the PartyLAN media control hook and room leave hook', () => {
+@@ -66,6 +78,9 @@ test('web theme and entry screens use the PartyLAN light theme and Chinese copy'
+     assert.match(htmlSource, /lang="zh-CN"/);
+     assert.match(htmlSource, /<title>PartyLAN<\/title>/);
+     assert.match(manageSource, /创建我的房间/);
++    assert.match(manageSource, /width: 'min\(100%, 720px\)'/);
++    assert.match(manageSource, /sx=\{\{minHeight: 48/);
++    assert.match(manageSource, /minHeight: 56/);
+     assert.match(manageSource, /可加入房间/);
+     assert.match(manageSource, /暂无其他用户创建的活动房间/);
+     assert.match(manageSource, /更多/);
+diff --git a/ui/src/Room.tsx b/ui/src/Room.tsx
+index c00307f..85958ae 100644
+--- a/ui/src/Room.tsx
++++ b/ui/src/Room.tsx
+@@ -831,14 +831,31 @@ const useStyles = makeStyles()(() => ({
+         top: 0,
+         bottom: 0,
+         width: 'min(360px, 30vw)',
+-        pointerEvents: 'auto',
++        pointerEvents: 'none',
++        '& [data-partylan-side-content]': {
++            opacity: 0,
++            pointerEvents: 'none',
++        },
+         '&[data-panel-active="true"] [data-partylan-side-content]': {
+             opacity: 1,
+             pointerEvents: 'auto',
+             transform: 'translate(0, -50%)',
+         },
+         '@media (min-width: 701px) and (hover: hover)': {
+-            '& [data-partylan-side-content]': {
++            '&::before': {
++                content: '""',
++                position: 'absolute',
++                top: 0,
++                bottom: 0,
++                width: 24,
++                pointerEvents: 'auto',
++            },
++            '&:hover [data-partylan-side-content]': {
++                opacity: 1,
++                pointerEvents: 'auto',
++                transform: 'translate(0, -50%)',
++            },
++            '&:focus-within [data-partylan-side-content]': {
+                 opacity: 1,
+                 pointerEvents: 'auto',
+                 transform: 'translate(0, -50%)',
+@@ -871,14 +888,25 @@ const useStyles = makeStyles()(() => ({
+     },
+     sidePanelLeft: {
+         left: 0,
++        '@media (min-width: 701px) and (hover: hover)': {
++            '&::before': {
++                left: 0,
++            },
++        },
+     },
+     sidePanelRight: {
+         right: 0,
++        '@media (min-width: 701px) and (hover: hover)': {
++            '&::before': {
++                right: 0,
++            },
++        },
+     },
+     sideRailHandle: {
+         position: 'absolute',
+         top: '50%',
+         padding: 0,
++        pointerEvents: 'auto',
+         background: 'linear-gradient(180deg, rgba(239, 252, 255, .96), rgba(216, 241, 247, .94))',
+         border: '1px solid rgba(41, 130, 157, .28)',
+         borderRadius: 8,
+@@ -970,7 +998,7 @@ const useStyles = makeStyles()(() => ({
+     },
+     sidePanelContentLeft: {
+         left: 0,
+-        transform: 'translate(0, -50%)',
++        transform: 'translate(calc(-100% - 16px), -50%)',
+         '@media (max-width: 700px), (hover: none), (pointer: coarse)': {
+             position: 'fixed',
+             top: 'auto',
+@@ -984,7 +1012,7 @@ const useStyles = makeStyles()(() => ({
+     },
+     sidePanelContentRight: {
+         right: 0,
+-        transform: 'translate(0, -50%)',
++        transform: 'translate(calc(100% + 16px), -50%)',
+         '@media (max-width: 700px), (hover: none), (pointer: coarse)': {
+             position: 'fixed',
+             top: 'auto',
+diff --git a/ui/src/RoomManage.tsx b/ui/src/RoomManage.tsx
+index 03e2da0..efd6b88 100644
+--- a/ui/src/RoomManage.tsx
++++ b/ui/src/RoomManage.tsx
+@@ -111,7 +111,7 @@ const Lobby = ({room, config}: {room: FCreateRoom; config: UseConfig}) => {
+             component="main"
+             elevation={3}
+             sx={{
+-                width: 'min(100%, 900px)',
++                width: 'min(100%, 720px)',
+                 overflow: 'hidden',
+                 borderColor: 'rgba(44, 226, 196, .72)',
+                 backgroundColor: 'rgba(239, 252, 255, .95)',
+@@ -124,7 +124,7 @@ const Lobby = ({room, config}: {room: FCreateRoom; config: UseConfig}) => {
+                     alignItems: 'center',
+                     justifyContent: 'space-between',
+                     gap: 2,
+-                    padding: {xs: 2, sm: '20px 30px'},
++                    padding: {xs: 2, sm: '16px 20px'},
+                     borderBottom: '1px solid rgba(41, 130, 157, .22)',
+                 }}
+             >
+@@ -146,14 +146,14 @@ const Lobby = ({room, config}: {room: FCreateRoom; config: UseConfig}) => {
+             <Box
+                 component="section"
+                 aria-labelledby="available-rooms-title"
+-                sx={{padding: {xs: 2, sm: '26px 30px'}}}
++                sx={{padding: {xs: 2, sm: '18px 20px'}}}
+             >
+                 <Button
+                     fullWidth
+                     variant="contained"
+                     color="secondary"
+                     onClick={createOwnRoom}
+-                    sx={{minHeight: 54, mb: 2.5, color: '#0a3043'}}
++                    sx={{minHeight: 48, mb: 2, color: '#0a3043'}}
+                 >
+                     创建我的房间
+                 </Button>
+@@ -163,7 +163,7 @@ const Lobby = ({room, config}: {room: FCreateRoom; config: UseConfig}) => {
+                         display: 'flex',
+                         alignItems: 'center',
+                         justifyContent: 'space-between',
+-                        mb: 1.5,
++                        mb: 1,
+                     }}
+                 >
+                     <Typography
+@@ -198,8 +198,8 @@ const Lobby = ({room, config}: {room: FCreateRoom; config: UseConfig}) => {
+                 <Box
+                     aria-live="polite"
+                     sx={{
+-                        maxHeight: 284,
+-                        minHeight: 78,
++                        maxHeight: 224,
++                        minHeight: 66,
+                         overflowY: 'auto',
+                         border: '1px solid rgba(41, 130, 157, .28)',
+                         borderRadius: 2,
+@@ -210,7 +210,7 @@ const Lobby = ({room, config}: {room: FCreateRoom; config: UseConfig}) => {
+                         <Box
+                             role="status"
+                             aria-label="正在读取房间列表"
+-                            sx={{minHeight: 76, display: 'grid', placeItems: 'center'}}
++                            sx={{minHeight: 64, display: 'grid', placeItems: 'center'}}
+                         >
+                             <CircularProgress size={24} />
+                         </Box>
+@@ -219,7 +219,7 @@ const Lobby = ({room, config}: {room: FCreateRoom; config: UseConfig}) => {
+                         <Typography
+                             color="text.secondary"
+                             align="center"
+-                            sx={{padding: '28px 16px'}}
++                            sx={{padding: '20px 16px'}}
+                         >
+                             暂无其他用户创建的活动房间
+                         </Typography>
+@@ -244,9 +244,9 @@ const Lobby = ({room, config}: {room: FCreateRoom; config: UseConfig}) => {
+                             fullWidth
+                             onClick={() => void joinRoom(entry.room)}
+                             sx={{
+-                                minHeight: 64,
++                                minHeight: 56,
+                                 justifyContent: 'space-between',
+-                                padding: '10px 14px',
++                                padding: '8px 12px',
+                                 borderRadius: 0,
+                                 borderBottom:
+                                     index === rooms.length - 1
+@@ -287,7 +287,7 @@ const Lobby = ({room, config}: {room: FCreateRoom; config: UseConfig}) => {
+ 
+             <Box
+                 component="section"
+-                sx={{borderTop: '1px solid rgba(41, 130, 157, .22)', padding: '0 30px'}}
++                sx={{borderTop: '1px solid rgba(41, 130, 157, .22)', padding: '0 20px'}}
+             >
+                 <Button
+                     fullWidth
+@@ -302,12 +302,12 @@ const Lobby = ({room, config}: {room: FCreateRoom; config: UseConfig}) => {
+                             }}
+                         />
+                     }
+-                    sx={{minHeight: 64, justifyContent: 'space-between', color: 'text.primary'}}
++                    sx={{minHeight: 52, justifyContent: 'space-between', color: 'text.primary'}}
+                 >
+                     更多
+                 </Button>
+                 <Collapse in={moreOpen}>
+-                    <Box id="lobby-more-content" sx={{pb: 3, display: 'grid', gap: 2}}>
++                    <Box id="lobby-more-content" sx={{pb: 2, display: 'grid', gap: 2}}>
+                         <Box
+                             sx={{
+                                 display: 'grid',

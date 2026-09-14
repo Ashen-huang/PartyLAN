@@ -1,0 +1,1019 @@
+diff --git a/ui/index.html b/ui/index.html
+index f6f1140..337276a 100644
+--- a/ui/index.html
++++ b/ui/index.html
+@@ -1,25 +1,25 @@
+ <!DOCTYPE html>
+-<html lang="en">
++<html lang="zh-CN">
+   <head>
+     <meta charset="utf-8" />
+     <link rel="icon" href="./favicon.ico" />
+     <meta name="viewport" content="width=device-width, initial-scale=1" />
+-    <meta name="theme-color" content="#FFFFFF" />
++    <meta name="theme-color" content="#e9f7fb" />
+     <meta property="og:type" content="website" />
+-    <meta property="og:title" content="Screego" />
+-    <meta property="og:description" content="screen sharing for developers" />
++    <meta property="og:title" content="PartyLAN" />
++    <meta property="og:description" content="PartyLAN 局域网协作与屏幕共享" />
+     <meta property="og:image" content="./og-banner.png" />
+     <meta property="og:image:width" content="400" />
+     <meta property="og:image:height" content="300" />
+     <meta
+       name="description"
+-      content="Screego - screen sharing for developers"
++      content="PartyLAN 局域网协作与屏幕共享"
+     />
+     <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
+-    <title>Screego</title>
++    <title>PartyLAN</title>
+   </head>
+   <body>
+-    <noscript>Screego requires JavaScript (:</noscript>
++    <noscript>PartyLAN 需要启用 JavaScript 才能运行。</noscript>
+     <div id="root"></div>
+     <script type="module" src="/src/index.tsx"></script>
+   </body>
+diff --git a/ui/src/LoginForm.tsx b/ui/src/LoginForm.tsx
+index c70d5a9..4887da4 100644
+--- a/ui/src/LoginForm.tsx
++++ b/ui/src/LoginForm.tsx
+@@ -30,10 +30,10 @@ export const LoginForm = ({config: {login}, hide}: {config: UseConfig; hide?: ()
+             <FormControl fullWidth>
+                 <form onSubmit={submit}>
+                     <div style={{display: 'flex', alignItems: 'center'}}>
+-                        <Typography style={{flex: 1}}>Login to Screego</Typography>
++                        <Typography style={{flex: 1}}>登录 PartyLAN</Typography>
+                         {hide ? (
+                             <Button variant="outlined" size="small" onClick={hide}>
+-                                Go Back
++                                返回
+                             </Button>
+                         ) : undefined}
+                     </div>
+@@ -41,7 +41,7 @@ export const LoginForm = ({config: {login}, hide}: {config: UseConfig; hide?: ()
+                         fullWidth
+                         value={user}
+                         onChange={(e) => setUser(e.target.value)}
+-                        label="Username"
++                        label="用户名"
+                         size="small"
+                         margin="dense"
+                     />
+@@ -50,7 +50,7 @@ export const LoginForm = ({config: {login}, hide}: {config: UseConfig; hide?: ()
+                         value={pass}
+                         type="password"
+                         onChange={(e) => setPass(e.target.value)}
+-                        label="Password"
++                        label="密码"
+                         size="small"
+                         margin="dense"
+                     />
+@@ -62,7 +62,7 @@ export const LoginForm = ({config: {login}, hide}: {config: UseConfig; hide?: ()
+                             fullWidth
+                             variant="contained"
+                         >
+-                            Login
++                            登录
+                         </LoadingButton>
+                     </Box>
+                 </form>
+diff --git a/ui/src/Room.native-ui.test.mjs b/ui/src/Room.native-ui.test.mjs
+index 773998d..7500394 100644
+--- a/ui/src/Room.native-ui.test.mjs
++++ b/ui/src/Room.native-ui.test.mjs
+@@ -4,6 +4,11 @@ import test from 'node:test';
+ 
+ const roomSource = await readFile(new URL('./Room.tsx', import.meta.url), 'utf8');
+ const useRoomSource = await readFile(new URL('./useRoom.ts', import.meta.url), 'utf8');
++const indexSource = await readFile(new URL('./index.tsx', import.meta.url), 'utf8');
++const htmlSource = await readFile(new URL('../index.html', import.meta.url), 'utf8');
++const manageSource = await readFile(new URL('./RoomManage.tsx', import.meta.url), 'utf8');
++const loginSource = await readFile(new URL('./LoginForm.tsx', import.meta.url), 'utf8');
++const settingSource = await readFile(new URL('./SettingDialog.tsx', import.meta.url), 'utf8');
+ 
+ test('Room renders the native PartyLAN side rail and stable action hooks', () => {
+     assert.match(roomSource, /data-partylan-native-tools/);
+@@ -36,6 +41,12 @@ test('Room no longer renders the legacy bottom control toolbar', () => {
+     assert.match(roomSource, /data-partylan-side-content="left"/);
+     assert.match(roomSource, /data-partylan-side-content="right"/);
+     assert.match(roomSource, /@media \(max-width: 700px\), \(hover: none\), \(pointer: coarse\)/);
++    assert.match(roomSource, /@media \(min-width: 701px\) and \(hover: hover\)/);
++    assert.match(roomSource, /data-partylan-panel-close/);
++    assert.match(roomSource, /'& \[data-partylan-panel-close\]'/);
++    assert.match(roomSource, /display: 'none'/);
++    assert.match(roomSource, /opacity: 1/);
++    assert.match(roomSource, /left: 0,\n        transform: 'translate\(0, -50%\)'/);
+ });
+ 
+ test('native share keeps the PartyLAN media control hook and room leave hook', () => {
+@@ -43,3 +54,24 @@ test('native share keeps the PartyLAN media control hook and room leave hook', (
+     assert.match(useRoomSource, /const leave = \(\): void/);
+     assert.match(useRoomSource, /return \{state, room, share, stopShare, setName, leave\}/);
+ });
++
++test('web theme and entry screens use the PartyLAN light theme and Chinese copy', () => {
++    assert.match(indexSource, /mode: 'light'/);
++    assert.match(indexSource, /MuiCssBaseline/);
++    assert.match(indexSource, /#e9f7fb/);
++    assert.match(htmlSource, /lang="zh-CN"/);
++    assert.match(htmlSource, /<title>PartyLAN<\/title>/);
++    assert.match(manageSource, /创建或加入房间/);
++    assert.match(manageSource, /离开后关闭房间/);
++    assert.match(manageSource, /网络穿透/);
++    assert.doesNotMatch(manageSource, /Create or Join a Room|Close Room after you leave|Nat Traversal/);
++    assert.match(loginSource, /登录 PartyLAN/);
++    assert.match(loginSource, /用户名/);
++    assert.match(loginSource, /密码/);
++    assert.match(settingSource, /<DialogTitle>设置<\/DialogTitle>/);
++    assert.match(settingSource, /首选编码器/);
++    assert.match(settingSource, /显示模式/);
++    assert.match(settingSource, /帧率/);
++    assert.match(settingSource, /取消/);
++    assert.match(settingSource, /保存/);
++});
+diff --git a/ui/src/Room.tsx b/ui/src/Room.tsx
+index e04f189..1595a19 100644
+--- a/ui/src/Room.tsx
++++ b/ui/src/Room.tsx
+@@ -59,7 +59,7 @@ const activeFullscreenElement = (document: FullScreenDocument) =>
+ 
+ const requestFullscreen = async (element: FullScreenHTMLVideoElement | null) => {
+     if (!element) {
+-        throw new Error('No video stream is selected');
++        throw new Error('未选择视频流');
+     }
+     if (element.requestFullscreen) {
+         await element.requestFullscreen();
+@@ -70,7 +70,7 @@ const requestFullscreen = async (element: FullScreenHTMLVideoElement | null) =>
+     } else if (element.webkitRequestFullscreen) {
+         await element.webkitRequestFullscreen();
+     } else {
+-        throw new Error('Fullscreen is not supported by this browser');
++        throw new Error('当前浏览器不支持全屏');
+     }
+ };
+ 
+@@ -82,7 +82,7 @@ const exitFullscreen = async (document: FullScreenDocument) => {
+     } else if (document.msExitFullscreen) {
+         await document.msExitFullscreen();
+     } else {
+-        throw new Error('Fullscreen is not supported by this browser');
++        throw new Error('当前浏览器不支持全屏');
+     }
+ };
+ 
+@@ -122,7 +122,7 @@ export const Room = ({
+             }
+         } catch (error) {
+             const detail = error instanceof Error ? error.message : String(error);
+-            enqueueSnackbar(`Fullscreen failed: ${detail}`, {variant: 'error'});
++            enqueueSnackbar(`全屏失败：${detail}`, {variant: 'error'});
+         }
+     }, [enqueueSnackbar, videoElement]);
+ 
+@@ -264,7 +264,7 @@ export const Room = ({
+         <div className={classes.videoContainer}>
+             {controlVisible && (
+                 <Paper className={classes.title} elevation={10} {...setHoverState}>
+-                    <Tooltip title="Copy Link">
++                    <Tooltip title="复制房间链接">
+                         <Typography
+                             variant="h4"
+                             component="h4"
+@@ -315,26 +315,40 @@ export const Room = ({
+                     >
+                         <Box className={classes.sideDrawerHeader}>
+                             <Typography variant="h6">成员列表</Typography>
+-                            <IconButton aria-label="关闭成员列表" onClick={() => setActivePanel(null)} size="small">
++                            <IconButton
++                                data-partylan-panel-close
++                                aria-label="关闭成员列表"
++                                onClick={() => setActivePanel(null)}
++                                size="small"
++                            >
+                                 <CloseIcon />
+                             </IconButton>
+                         </Box>
+                         <Box id="partylan-presence-roster" className={classes.memberList} />
+                         <Box data-partylan-legacy-roster className={classes.memberList}>
+                             {state.users.map((user) => (
+-                                <Typography key={user.id} variant="body2" className={classes.memberRow}>
++                                <Typography
++                                    key={user.id}
++                                    variant="body2"
++                                    className={classes.memberRow}
++                                >
+                                     {user.name} {flags(user)}
+                                 </Typography>
+                             ))}
+                         </Box>
+                     </Paper>
+-                    <Paper className={`${classes.sideRailHandle} ${classes.sidePanelPeekLeft}`} elevation={10}>
++                    <Paper
++                        className={`${classes.sideRailHandle} ${classes.sidePanelPeekLeft}`}
++                        elevation={10}
++                    >
+                         <Tooltip title="成员列表" placement="right" arrow>
+                             <IconButton
+                                 aria-label="打开成员列表"
+                                 aria-controls="partylan-members-panel"
+                                 aria-expanded={activePanel === 'members'}
+-                                onClick={() => setActivePanel(activePanel === 'members' ? null : 'members')}
++                                onClick={() =>
++                                    setActivePanel(activePanel === 'members' ? null : 'members')
++                                }
+                                 size="large"
+                             >
+                                 <Badge badgeContent={state.users.length} color="primary">
+@@ -353,7 +367,11 @@ export const Room = ({
+                             disabled={!selectedStream}
+                             size="large"
+                         >
+-                            {fullscreen ? <FullscreenExitIcon fontSize="large" /> : <FullScreenIcon fontSize="large" />}
++                            {fullscreen ? (
++                                <FullscreenExitIcon fontSize="large" />
++                            ) : (
++                                <FullScreenIcon fontSize="large" />
++                            )}
+                         </IconButton>
+                     </Tooltip>
+                 </Paper>
+@@ -373,7 +391,12 @@ export const Room = ({
+                     >
+                         <Box className={classes.sideDrawerHeader}>
+                             <Typography variant="h6">共享</Typography>
+-                            <IconButton aria-label="关闭共享面板" onClick={() => setActivePanel(null)} size="small">
++                            <IconButton
++                                data-partylan-panel-close
++                                aria-label="关闭共享面板"
++                                onClick={() => setActivePanel(null)}
++                                size="small"
++                            >
+                                 <CloseIcon />
+                             </IconButton>
+                         </Box>
+@@ -386,7 +409,12 @@ export const Room = ({
+                                     分辨率
+                                     <select
+                                         value={settings.resolution ?? '1280x720'}
+-                                        onChange={(event) => setSettings({...settings, resolution: event.target.value})}
++                                        onChange={(event) =>
++                                            setSettings({
++                                                ...settings,
++                                                resolution: event.target.value,
++                                            })
++                                        }
+                                     >
+                                         <option value="1920x1080">1080p (1920x1080)</option>
+                                         <option value="1280x720">720p (1280x720)</option>
+@@ -398,7 +426,12 @@ export const Room = ({
+                                     帧率
+                                     <select
+                                         value={settings.framerate}
+-                                        onChange={(event) => setSettings({...settings, framerate: Number(event.target.value)})}
++                                        onChange={(event) =>
++                                            setSettings({
++                                                ...settings,
++                                                framerate: Number(event.target.value),
++                                            })
++                                        }
+                                     >
+                                         <option value={60}>60 FPS</option>
+                                         <option value={45}>45 FPS</option>
+@@ -409,7 +442,15 @@ export const Room = ({
+                                     音频
+                                     <select
+                                         value={settings.audioMode ?? 'app'}
+-                                        onChange={(event) => setSettings({...settings, audioMode: event.target.value as 'app' | 'system' | 'off'})}
++                                        onChange={(event) =>
++                                            setSettings({
++                                                ...settings,
++                                                audioMode: event.target.value as
++                                                    | 'app'
++                                                    | 'system'
++                                                    | 'off',
++                                            })
++                                        }
+                                     >
+                                         <option value="app">窗口/标签页音频</option>
+                                         <option value="system">系统音频</option>
+@@ -421,13 +462,24 @@ export const Room = ({
+                         <Box className={classes.shareActionRow}>
+                             {state.hostStream ? (
+                                 <Tooltip title="停止共享" placement="top" arrow>
+-                                    <IconButton color="error" aria-label="停止共享" onClick={stopShare} size="large">
++                                    <IconButton
++                                        color="error"
++                                        aria-label="停止共享"
++                                        onClick={stopShare}
++                                        size="large"
++                                    >
+                                         <CancelPresentationIcon fontSize="large" />
+                                     </IconButton>
+                                 </Tooltip>
+                             ) : (
+                                 <Tooltip title="开始共享" placement="top" arrow>
+-                                    <IconButton color="primary" data-partylan-native-share="true" aria-label="开始共享" onClick={share} size="large">
++                                    <IconButton
++                                        color="primary"
++                                        data-partylan-native-share="true"
++                                        aria-label="开始共享"
++                                        onClick={share}
++                                        size="large"
++                                    >
+                                         <PresentToAllIcon fontSize="large" />
+                                     </IconButton>
+                                 </Tooltip>
+@@ -438,7 +490,11 @@ export const Room = ({
+                         </Box>
+                         <Box className={classes.shareFooter}>
+                             <Tooltip title="设置" placement="top" arrow>
+-                                <IconButton aria-label="设置" onClick={() => setOpen(true)} size="large">
++                                <IconButton
++                                    aria-label="设置"
++                                    onClick={() => setOpen(true)}
++                                    size="large"
++                                >
+                                     <SettingsIcon fontSize="large" />
+                                 </IconButton>
+                             </Tooltip>
+@@ -449,8 +505,15 @@ export const Room = ({
+                             </Tooltip>
+                         </Box>
+                     </Paper>
+-                    <Paper className={`${classes.sideRailHandle} ${classes.sidePanelPeekRight}`} elevation={10}>
+-                        <Tooltip title={state.hostStream ? '停止共享' : '共享'} placement="left" arrow>
++                    <Paper
++                        className={`${classes.sideRailHandle} ${classes.sidePanelPeekRight}`}
++                        elevation={10}
++                    >
++                        <Tooltip
++                            title={state.hostStream ? '停止共享' : '共享'}
++                            placement="left"
++                            arrow
++                        >
+                             <IconButton
+                                 data-partylan-native-share="true"
+                                 aria-label={state.hostStream ? '停止共享' : '打开共享面板'}
+@@ -459,11 +522,18 @@ export const Room = ({
+                                 onClick={
+                                     state.hostStream
+                                         ? stopShare
+-                                        : () => setActivePanel(activePanel === 'share' ? null : 'share')
++                                        : () =>
++                                              setActivePanel(
++                                                  activePanel === 'share' ? null : 'share'
++                                              )
+                                 }
+                                 size="large"
+                             >
+-                                {state.hostStream ? <CancelPresentationIcon fontSize="large" /> : <PresentToAllIcon fontSize="large" />}
++                                {state.hostStream ? (
++                                    <CancelPresentationIcon fontSize="large" />
++                                ) : (
++                                    <PresentToAllIcon fontSize="large" />
++                                )}
+                             </IconButton>
+                         </Tooltip>
+                     </Paper>
+@@ -625,7 +695,7 @@ const useStyles = makeStyles()(() => ({
+         position: 'fixed',
+         top: 0,
+         bottom: 0,
+-        width: 52,
++        width: 'min(360px, 30vw)',
+         pointerEvents: 'auto',
+         '&[data-panel-active="true"] [data-partylan-side-content]': {
+             opacity: 1,
+@@ -633,17 +703,25 @@ const useStyles = makeStyles()(() => ({
+             transform: 'translate(0, -50%)',
+         },
+         '@media (min-width: 701px) and (hover: hover)': {
+-            '&:hover [data-partylan-side-content], &:focus-within [data-partylan-side-content]': {
++            '& [data-partylan-side-content]': {
+                 opacity: 1,
+                 pointerEvents: 'auto',
+                 transform: 'translate(0, -50%)',
+             },
++            '& [data-partylan-panel-close]': {
++                display: 'none',
++            },
+         },
+         '@media (max-width: 700px), (hover: none), (pointer: coarse)': {
+             top: 'auto',
+             bottom: 0,
+             width: 'calc(50% - 28px)',
+             height: 64,
++            '& [data-partylan-side-content]': {
++                opacity: 0,
++                pointerEvents: 'none',
++                transform: 'translateY(calc(100% + 88px))',
++            },
+             '&:hover [data-partylan-side-content]': {
+                 opacity: 0,
+                 pointerEvents: 'none',
+@@ -674,6 +752,9 @@ const useStyles = makeStyles()(() => ({
+         '& .MuiIconButton-root': {
+             color: '#08758e',
+         },
++        '@media (min-width: 701px) and (hover: hover)': {
++            display: 'none',
++        },
+     },
+     sidePanelPeekLeft: {
+         left: 0,
+@@ -733,9 +814,9 @@ const useStyles = makeStyles()(() => ({
+         maxHeight: 'min(560px, calc(100vh - 32px))',
+         overflow: 'auto',
+         padding: 16,
+-        opacity: 0,
+-        pointerEvents: 'none',
+-        background: 'linear-gradient(180deg, rgba(239, 252, 255, .97), rgba(216, 241, 247, .95))',
++        opacity: 1,
++        pointerEvents: 'auto',
++        background: 'rgba(239, 252, 255, .97)',
+         color: '#0a3043',
+         border: '1px solid rgba(41, 130, 157, .28)',
+         borderRadius: 8,
+@@ -753,8 +834,8 @@ const useStyles = makeStyles()(() => ({
+         },
+     },
+     sidePanelContentLeft: {
+-        left: 52,
+-        transform: 'translate(-110%, -50%)',
++        left: 0,
++        transform: 'translate(0, -50%)',
+         '@media (max-width: 700px), (hover: none), (pointer: coarse)': {
+             position: 'fixed',
+             top: 'auto',
+@@ -767,8 +848,8 @@ const useStyles = makeStyles()(() => ({
+         },
+     },
+     sidePanelContentRight: {
+-        right: 52,
+-        transform: 'translate(110%, -50%)',
++        right: 0,
++        transform: 'translate(0, -50%)',
+         '@media (max-width: 700px), (hover: none), (pointer: coarse)': {
+             position: 'fixed',
+             top: 'auto',
+@@ -889,7 +970,8 @@ const useStyles = makeStyles()(() => ({
+         position: 'absolute',
+         display: 'block',
+         bottom: 0,
+-        background: 'rgba(0,0,0,.5)',
++        background: 'rgba(10, 48, 67, .84)',
++        color: '#effcff',
+         padding: '5px 15px',
+     },
+     noMaxWidth: {
+@@ -910,5 +992,7 @@ const useStyles = makeStyles()(() => ({
+         height: '100%',
+ 
+         overflow: 'auto',
++        backgroundColor: '#e9f7fb',
++        color: '#0a3043',
+     },
+ }));
+diff --git a/ui/src/RoomManage.tsx b/ui/src/RoomManage.tsx
+index 7a46ba2..2122537 100644
+--- a/ui/src/RoomManage.tsx
++++ b/ui/src/RoomManage.tsx
+@@ -5,7 +5,6 @@ import {
+     Checkbox,
+     FormControl,
+     FormControlLabel,
+-    Grid,
+     Paper,
+     TextField,
+     Typography,
+@@ -38,7 +37,7 @@ const CreateRoom = ({room, config}: Pick<UseRoom, 'room'> & {config: UIConfig})
+                     fullWidth
+                     value={id}
+                     onChange={(e) => setId(e.target.value)}
+-                    label="id"
++                    label="房间 ID"
+                     margin="dense"
+                 />
+                 <FormControlLabel
+@@ -48,11 +47,11 @@ const CreateRoom = ({room, config}: Pick<UseRoom, 'room'> & {config: UIConfig})
+                             onChange={(_, checked) => setOwnerLeave(checked)}
+                         />
+                     }
+-                    label="Close Room after you leave"
++                    label="离开后关闭房间"
+                 />
+                 <Box sx={{paddingBottom: 0.5}}>
+                     <Typography>
+-                        Nat Traversal via:{' '}
++                        网络穿透：{' '}
+                         <Link
+                             href="https://screego.net/#/nat-traversal"
+                             target="_blank"
+@@ -63,7 +62,7 @@ const CreateRoom = ({room, config}: Pick<UseRoom, 'room'> & {config: UIConfig})
+                     </Typography>
+                 </Box>
+                 <Button onClick={submit} fullWidth variant="contained">
+-                    Create or Join a Room
++                    创建或加入房间
+                 </Button>
+             </FormControl>
+         </div>
+@@ -77,50 +76,66 @@ export const RoomManage = ({room, config}: {room: FCreateRoom; config: UseConfig
+     const loginVisible = !config.loggedIn && (showLogin || !canCreateRoom);
+ 
+     return (
+-        <Grid
+-            container={true}
+-            sx={{justifyContent: 'center'}}
+-            style={{paddingTop: 50, maxWidth: 400, width: '100%', margin: '0 auto'}}
+-            spacing={4}
++        <Box
++            sx={{
++                minHeight: '100dvh',
++                width: '100%',
++                display: 'flex',
++                flexDirection: 'column',
++                alignItems: 'center',
++                justifyContent: 'center',
++                gap: 2.5,
++                padding: {xs: '28px 16px 72px', sm: '40px 24px 72px'},
++                backgroundColor: '#e9f7fb',
++            }}
+         >
+-            <Grid size={12}>
+-                <Typography align="center" gutterBottom>
+-                    <img src="./logo.svg" style={{width: 230}} alt="logo" />
+-                </Typography>
+-                <Paper elevation={3} style={{padding: 20}}>
+-                    {loginVisible ? (
+-                        <LoginForm
+-                            config={config}
+-                            hide={canCreateRoom ? () => setShowLogin(false) : undefined}
+-                        />
+-                    ) : (
+-                        <>
+-                            <Typography style={{display: 'flex', alignItems: 'center'}}>
+-                                <span style={{flex: 1}}>Hello {config.user}!</span>{' '}
+-                                {config.loggedIn ? (
+-                                    <Button variant="outlined" size="small" onClick={config.logout}>
+-                                        Logout
+-                                    </Button>
+-                                ) : (
+-                                    <Button
+-                                        variant="outlined"
+-                                        size="small"
+-                                        onClick={() => setShowLogin(true)}
+-                                    >
+-                                        Login
+-                                    </Button>
+-                                )}
+-                            </Typography>
++            <Box component="header" sx={{textAlign: 'center'}}>
++                <img
++                    src="./logo.svg"
++                    style={{width: 'min(230px, 70vw)', display: 'block'}}
++                    alt="PartyLAN"
++                />
++            </Box>
++            <Paper
++                elevation={3}
++                sx={{
++                    width: 'min(100%, 440px)',
++                    padding: {xs: 2, sm: 2.5},
++                    borderRadius: 2,
++                }}
++            >
++                {loginVisible ? (
++                    <LoginForm
++                        config={config}
++                        hide={canCreateRoom ? () => setShowLogin(false) : undefined}
++                    />
++                ) : (
++                    <>
++                        <Typography style={{display: 'flex', alignItems: 'center'}}>
++                            <span style={{flex: 1}}>你好，{config.user}！</span>{' '}
++                            {config.loggedIn ? (
++                                <Button variant="outlined" size="small" onClick={config.logout}>
++                                    退出登录
++                                </Button>
++                            ) : (
++                                <Button
++                                    variant="outlined"
++                                    size="small"
++                                    onClick={() => setShowLogin(true)}
++                                >
++                                    登录
++                                </Button>
++                            )}
++                        </Typography>
+ 
+-                            <CreateRoom room={room} config={config} />
+-                        </>
+-                    )}
+-                </Paper>
+-            </Grid>
+-            <div style={{position: 'absolute', margin: '0 auto', bottom: 0}}>
+-                Screego {config.version} |{' '}
++                        <CreateRoom room={room} config={config} />
++                    </>
++                )}
++            </Paper>
++            <Box component="footer" sx={{position: 'absolute', bottom: 16, textAlign: 'center'}}>
++                PartyLAN {config.version} |{' '}
+                 <Link href="https://github.com/screego/server/">GitHub</Link>
+-            </div>
+-        </Grid>
++            </Box>
++        </Box>
+     );
+ };
+diff --git a/ui/src/SettingDialog.tsx b/ui/src/SettingDialog.tsx
+index ab454fb..92fb116 100644
+--- a/ui/src/SettingDialog.tsx
++++ b/ui/src/SettingDialog.tsx
+@@ -36,6 +36,24 @@ const getAvailableCodecs = (): PreferredCodec[] => {
+ 
+ const NativeCodecs = getAvailableCodecs();
+ 
++const displayModeLabels: Record<VideoDisplayMode, string> = {
++    [VideoDisplayMode.FitToWindow]: '适应窗口',
++    [VideoDisplayMode.FitWidth]: '适应宽度',
++    [VideoDisplayMode.FitHeight]: '适应高度',
++    [VideoDisplayMode.OriginalSize]: '原始尺寸',
++};
++
++const codecLabel = ({mimeType, sdpFmtpLine}: PreferredCodec): string => {
++    const preset = codecName(mimeType);
++    const translated =
++        preset === 'Preset: Best Quality'
++            ? '预设：最高质量'
++            : preset === 'Preset: Browser Default'
++              ? '预设：浏览器默认'
++              : preset;
++    return translated + (sdpFmtpLine ? ` (${sdpFmtpLine})` : '');
++};
++
+ export const SettingDialog = ({open, setOpen, updateName, saveSettings}: SettingDialogProps) => {
+     const [settingsInput, setSettingsInput] = React.useState(loadSettings);
+ 
+@@ -49,14 +67,14 @@ export const SettingDialog = ({open, setOpen, updateName, saveSettings}: Setting
+ 
+     return (
+         <Dialog open={open} onClose={() => setOpen(false)} maxWidth={'xs'} fullWidth>
+-            <DialogTitle>Settings</DialogTitle>
+-            <DialogContent>
++            <DialogTitle>设置</DialogTitle>
++            <DialogContent dividers>
+                 <form onSubmit={doSubmit}>
+                     <Box sx={{paddingBottom: 1}}>
+                         <TextField
+                             autoFocus
+                             margin="dense"
+-                            label="Username"
++                            label="用户名"
+                             value={name}
+                             onChange={(e) =>
+                                 setSettingsInput((c) => ({...c, name: e.target.value}))
+@@ -68,9 +86,7 @@ export const SettingDialog = ({open, setOpen, updateName, saveSettings}: Setting
+                         <Box sx={{paddingY: 1}}>
+                             <Autocomplete<PreferredCodec>
+                                 options={[CodecBestQuality, CodecDefault, ...NativeCodecs]}
+-                                getOptionLabel={({mimeType, sdpFmtpLine}) =>
+-                                    codecName(mimeType) + (sdpFmtpLine ? ` (${sdpFmtpLine})` : '')
+-                                }
++                                getOptionLabel={codecLabel}
+                                 value={preferCodec}
+                                 isOptionEqualToValue={(a, b) =>
+                                     a.mimeType === b.mimeType && a.sdpFmtpLine === b.sdpFmtpLine
+@@ -83,7 +99,7 @@ export const SettingDialog = ({open, setOpen, updateName, saveSettings}: Setting
+                                     }))
+                                 }
+                                 renderInput={(params) => (
+-                                    <TextField {...params} label="Preferred Codec" />
++                                    <TextField {...params} label="首选编码器" />
+                                 )}
+                             />
+                         </Box>
+@@ -99,12 +115,13 @@ export const SettingDialog = ({open, setOpen, updateName, saveSettings}: Setting
+                             }
+                             value={displayMode}
+                             fullWidth
+-                            renderInput={(params) => <TextField {...params} label="Display Mode" />}
++                            getOptionLabel={(mode) => displayModeLabels[mode] ?? mode}
++                            renderInput={(params) => <TextField {...params} label="显示模式" />}
+                         />
+                     </Box>
+                     <Box sx={{paddingTop: 1}}>
+                         <NumberField
+-                            label="FrameRate"
++                            label="帧率"
+                             min={1}
+                             onChange={(framerate) => setSettingsInput((c) => ({...c, framerate}))}
+                             value={framerate}
+@@ -115,10 +132,10 @@ export const SettingDialog = ({open, setOpen, updateName, saveSettings}: Setting
+             </DialogContent>
+             <DialogActions>
+                 <Button onClick={() => setOpen(false)} color="primary">
+-                    Cancel
++                    取消
+                 </Button>
+                 <Button onClick={doSubmit} color="primary">
+-                    Save
++                    保存
+                 </Button>
+             </DialogActions>
+         </Dialog>
+diff --git a/ui/src/global.css b/ui/src/global.css
+index dde34bf..2585f60 100644
+--- a/ui/src/global.css
++++ b/ui/src/global.css
+@@ -1,5 +1,24 @@
+ #root,
+ body,
+ html {
+-    height: 100%;
+-}
+\ No newline at end of file
++    min-height: 100%;
++}
++
++html,
++body {
++    margin: 0;
++    min-width: 320px;
++    background: #e9f7fb;
++    color: #0a3043;
++}
++
++body {
++    overflow-x: hidden;
++}
++
++button,
++input,
++select,
++textarea {
++    font: inherit;
++}
+diff --git a/ui/src/index.tsx b/ui/src/index.tsx
+index 74cc636..97d49f3 100644
+--- a/ui/src/index.tsx
++++ b/ui/src/index.tsx
+@@ -6,64 +6,193 @@ import {Router} from './Router';
+ import {SnackbarProvider} from 'notistack';
+ 
+ const theme = createTheme({
++    palette: {
++        mode: 'light',
++        background: {
++            default: '#e9f7fb',
++            paper: '#effcff',
++        },
++        text: {
++            primary: '#0a3043',
++            secondary: '#2d6172',
++        },
++        primary: {
++            main: '#08758e',
++            contrastText: '#ffffff',
++        },
++        secondary: {
++            main: '#2ce2c4',
++            contrastText: '#0a3043',
++        },
++        error: {
++            main: '#c85252',
++        },
++        divider: 'rgba(41, 130, 157, .24)',
++    },
++    shape: {
++        borderRadius: 8,
++    },
++    typography: {
++        fontFamily: 'Inter, "Segoe UI", "Microsoft YaHei", sans-serif',
++        button: {
++            fontWeight: 700,
++            textTransform: 'none',
++        },
++    },
+     components: {
+-        MuiSelect: {
++        MuiCssBaseline: {
++            styleOverrides: {
++                ':root': {
++                    colorScheme: 'light',
++                },
++                html: {
++                    minHeight: '100%',
++                    backgroundColor: '#e9f7fb',
++                },
++                body: {
++                    minHeight: '100%',
++                    margin: 0,
++                    backgroundColor: '#e9f7fb',
++                    backgroundImage: 'none',
++                    color: '#0a3043',
++                    WebkitFontSmoothing: 'antialiased',
++                },
++                '#root': {
++                    minHeight: '100dvh',
++                },
++                '*, *::before, *::after': {
++                    boxSizing: 'border-box',
++                },
++            },
++        },
++        MuiPaper: {
+             styleOverrides: {
+-                icon: {position: 'relative'},
++                root: {
++                    backgroundImage: 'none',
++                    backgroundColor: 'rgba(239, 252, 255, .96)',
++                    border: '1px solid rgba(41, 130, 157, .24)',
++                    boxShadow: '0 14px 32px rgba(18, 102, 124, .14)',
++                },
++            },
++        },
++        MuiButton: {
++            styleOverrides: {
++                root: {
++                    minHeight: 40,
++                    borderRadius: 8,
++                },
++                outlined: {
++                    borderColor: 'rgba(8, 117, 142, .45)',
++                    '&:hover': {
++                        borderColor: '#08758e',
++                        backgroundColor: 'rgba(44, 226, 196, .12)',
++                    },
++                },
++            },
++        },
++        MuiTextField: {
++            defaultProps: {
++                variant: 'outlined',
++            },
++        },
++        MuiOutlinedInput: {
++            styleOverrides: {
++                root: {
++                    backgroundColor: 'rgba(255, 255, 255, .58)',
++                    '& .MuiOutlinedInput-notchedOutline': {
++                        borderColor: 'rgba(41, 130, 157, .32)',
++                    },
++                    '&:hover .MuiOutlinedInput-notchedOutline': {
++                        borderColor: '#08758e',
++                    },
++                    '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
++                        borderColor: '#08758e',
++                        borderWidth: 2,
++                    },
++                },
++            },
++        },
++        MuiInputLabel: {
++            styleOverrides: {
++                root: {
++                    color: '#2d6172',
++                    '&.Mui-focused': {
++                        color: '#08758e',
++                    },
++                },
++            },
++        },
++        MuiCheckbox: {
++            styleOverrides: {
++                root: {
++                    color: '#08758e',
++                    '&.Mui-checked': {
++                        color: '#08758e',
++                    },
++                },
++            },
++        },
++        MuiDialog: {
++            styleOverrides: {
++                paper: {
++                    margin: 16,
++                    borderRadius: 12,
++                },
++            },
++        },
++        MuiDialogTitle: {
++            styleOverrides: {
++                root: {
++                    fontWeight: 800,
++                },
+             },
+         },
+         MuiLink: {
+             styleOverrides: {
+                 root: {
+-                    color: '#458588',
++                    color: '#08758e',
++                    fontWeight: 600,
+                 },
+             },
+         },
+         MuiIconButton: {
+             styleOverrides: {
+                 root: {
+-                    color: 'inherit',
++                    color: '#08758e',
++                    '&:hover': {
++                        backgroundColor: 'rgba(44, 226, 196, .16)',
++                    },
+                 },
+             },
+         },
+         MuiListItemIcon: {
+             styleOverrides: {
+                 root: {
+-                    color: 'inherit',
++                    color: '#08758e',
+                 },
+             },
+         },
+         MuiToolbar: {
+             styleOverrides: {
+                 root: {
+-                    background: '#a89984',
++                    backgroundColor: '#d8f1f7',
++                    color: '#0a3043',
+                 },
+             },
+         },
+         MuiTooltip: {
+             styleOverrides: {
+                 tooltip: {
+-                    fontSize: '1.6em',
++                    backgroundColor: '#0a3043',
++                    color: '#effcff',
++                    fontSize: '.875rem',
++                },
++                arrow: {
++                    color: '#0a3043',
+                 },
+             },
+         },
+     },
+-    palette: {
+-        background: {
+-            default: '#282828',
+-            paper: '#32302f',
+-        },
+-        text: {
+-            primary: '#fbf1d4',
+-        },
+-        primary: {
+-            main: '#a89984',
+-        },
+-        secondary: {
+-            main: '#f44336',
+-        },
+-        mode: 'dark',
+-    },
+ });
+ 
+ const Snackbar: React.FC<React.PropsWithChildren> = ({children}) => {
+@@ -78,7 +207,7 @@ const Snackbar: React.FC<React.PropsWithChildren> = ({children}) => {
+             ref={notistackRef}
+             action={(key) => (
+                 <Button onClick={onClickDismiss(key)} size="small">
+-                    Dismiss
++                    关闭
+                 </Button>
+             )}
+         >
+diff --git a/ui/src/useConfig.ts b/ui/src/useConfig.ts
+index 4a028f8..3d9ecc3 100644
+--- a/ui/src/useConfig.ts
++++ b/ui/src/useConfig.ts
+@@ -35,20 +35,20 @@ export const useConfig = (): UseConfig => {
+         const result = await fetch(`${urlWithSlash}login`, {method: 'POST', body});
+         const json = await result.json();
+         if (result.status !== 200) {
+-            enqueueSnackbar('Login Failed: ' + json.message, {variant: 'error'});
++            enqueueSnackbar('登录失败：' + json.message, {variant: 'error'});
+         } else {
+             await refetch();
+-            enqueueSnackbar('Logged in!', {variant: 'success'});
++            enqueueSnackbar('登录成功', {variant: 'success'});
+         }
+     };
+ 
+     const logout = async () => {
+         const result = await fetch(`${urlWithSlash}logout`, {method: 'POST'});
+         if (result.status !== 200) {
+-            enqueueSnackbar('Logout Failed: ' + (await result.text()), {variant: 'error'});
++            enqueueSnackbar('退出登录失败：' + (await result.text()), {variant: 'error'});
+         } else {
+             await refetch();
+-            enqueueSnackbar('Logged Out.', {variant: 'success'});
++            enqueueSnackbar('已退出登录', {variant: 'success'});
+         }
+     };
+ 

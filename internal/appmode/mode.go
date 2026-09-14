@@ -8,6 +8,7 @@ import (
 type Mode string
 
 const (
+	ModeGameCastClient  Mode = "gamecast-client"
 	ModeLoopback        Mode = "loopback"
 	ModeLAN             Mode = "lan"
 	ModeNetworked       Mode = "networked"
@@ -16,10 +17,12 @@ const (
 
 // DefaultModeName can be overridden at link time so packaged builds can pick a
 // different startup mode without changing runtime overrides.
-var DefaultModeName = string(ModeTailscaleSystem)
+var DefaultModeName = string(ModeGameCastClient)
 
 func ParseMode(raw string) (Mode, bool) {
 	switch Mode(strings.ToLower(strings.TrimSpace(raw))) {
+	case ModeGameCastClient:
+		return ModeGameCastClient, true
 	case ModeLoopback:
 		return ModeLoopback, true
 	case ModeLAN:

@@ -3,6 +3,7 @@
 package video
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -10,18 +11,28 @@ import (
 )
 
 type fakeMediaBridge struct {
-	decoderHandle uintptr
-	reason        string
-	decodeStatus  windowsmedia.Status
-	decodeFrame   windowsmedia.CapturedFrame
+	capturerHandle uintptr
+	captureStatus  windowsmedia.Status
+	captureFrame   windowsmedia.CapturedFrame
+	encoderHandle  uintptr
+	decoderHandle  uintptr
+	reason         string
+	decodeStatus   windowsmedia.Status
+	decodeFrame    windowsmedia.CapturedFrame
 
-	createDecoderCalls int
-	configureCalls     int
-	decodeCalls        int
-	closeCalls         int
-	destroyCalls       int
+	createEncoderCalls    int
+	encoderConfigureCalls int
+	encoderCloseCalls     int
+	destroyEncoderCalls   int
+	createDecoderCalls    int
+	configureCalls        int
+	decodeCalls           int
+	closeCalls            int
+	destroyCalls          int
 
 	lastConfig          windowsmedia.DecoderConfig
+	encoderConfigs      []windowsmedia.EncoderConfig
+	encoderStatuses     []windowsmedia.Status
 	lastDecodeHandle    uintptr
 	lastDecodeData      []byte
 	lastDecodeTimestamp int64
@@ -36,11 +47,12 @@ func (b *fakeMediaBridge) LastErrorReason() string {
 }
 
 func (b *fakeMediaBridge) CreateCapturer() uintptr {
-	return 0
+	return b.capturerHandle
 }
 
 func (b *fakeMediaBridge) CreateEncoder() uintptr {
-	return 0
+	b.createEncoderCalls++
+	return b.encoderHandle
 }
 
 func (b *fakeMediaBridge) CreateDecoder() uintptr {
@@ -49,16 +61,22 @@ func (b *fakeMediaBridge) CreateDecoder() uintptr {
 }
 
 func (b *fakeMediaBridge) CapturerStart(handle uintptr, displayIndex int) windowsmedia.Status {
-	return windowsmedia.StatusUnavailable
+	return windowsmedia.StatusOK
 }
 
 func (b *fakeMediaBridge) CapturerGrabFrame(handle uintptr, timeoutMs int) (windowsmedia.CapturedFrame, windowsmedia.Status) {
-	return windowsmedia.CapturedFrame{}, windowsmedia.StatusUnavailable
+	return b.captureFrame, b.captureStatus
 }
 
 func (b *fakeMediaBridge) CapturerStop(handle uintptr) {}
 
 func (b *fakeMediaBridge) EncoderConfigure(handle uintptr, config windowsmedia.EncoderConfig) windowsmedia.Status {
+	b.encoderConfigs = append(b.encoderConfigs, config)
+	index := b.encoderConfigureCalls
+	b.encoderConfigureCalls++
+	if index < len(b.encoderStatuses) {
+		return b.encoderStatuses[index]
+	}
 	return windowsmedia.StatusUnavailable
 }
 
@@ -74,7 +92,9 @@ func (b *fakeMediaBridge) EncoderRequestKeyFrame(handle uintptr) windowsmedia.St
 	return windowsmedia.StatusUnavailable
 }
 
-func (b *fakeMediaBridge) EncoderClose(handle uintptr) {}
+func (b *fakeMediaBridge) EncoderClose(handle uintptr) {
+	b.encoderCloseCalls++
+}
 
 func (b *fakeMediaBridge) DecoderConfigure(handle uintptr, config windowsmedia.DecoderConfig) windowsmedia.Status {
 	b.configureCalls++
@@ -98,7 +118,9 @@ func (b *fakeMediaBridge) DecoderClose(handle uintptr) {
 
 func (b *fakeMediaBridge) DestroyCapturer(handle uintptr) {}
 
-func (b *fakeMediaBridge) DestroyEncoder(handle uintptr) {}
+func (b *fakeMediaBridge) DestroyEncoder(handle uintptr) {
+	b.destroyEncoderCalls++
+}
 
 func (b *fakeMediaBridge) DestroyDecoder(handle uintptr) {
 	b.destroyCalls++
@@ -143,6 +165,22 @@ func TestNativeDecoderConfiguresAndDecodesAnnexB(t *testing.T) {
 	}
 	if frame.Width != 2 || frame.Height != 1 || frame.Timestamp != 123 || len(frame.Data) != 8 {
 		t.Fatalf("decoded frame = %+v len=%d, want 2x1 ts=123 len=8", frame, len(frame.Data))
+	}
+}
+
+func TestNativeCapturerMapsFrameTimeoutToTransientError(t *testing.T) {
+	bridge := &fakeMediaBridge{
+		capturerHandle: 42,
+		captureStatus:  windowsmedia.StatusUnavailable,
+	}
+	capturer := newNativeCapturerWithBridge(bridge)
+	if err := capturer.Start(CaptureConfig{DisplayIndex: 0, FrameRate: 30}); err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+	defer capturer.Stop()
+	_, err := capturer.GetFrame()
+	if !errors.Is(err, ErrCaptureFrameUnavailable) {
+		t.Fatalf("GetFrame error = %v, want transient frame-unavailable error", err)
 	}
 }
 
@@ -197,5 +235,54 @@ func TestNativeDecoderReconfiguresAfterDimensionChange(t *testing.T) {
 	}
 	if bridge.lastConfig.Width != 2 || bridge.lastConfig.Height != 1 {
 		t.Fatalf("last DecoderConfigure dimensions = %dx%d, want 2x1", bridge.lastConfig.Width, bridge.lastConfig.Height)
+	}
+}
+
+func TestNativeEncoderRetriesInvalidInitializeWithFreshCompatibilitySession(t *testing.T) {
+	bridge := &fakeMediaBridge{
+		encoderHandle: 42,
+		reason:        "nvEncInitializeEncoder failed: 8",
+		encoderStatuses: []windowsmedia.Status{
+			windowsmedia.StatusRetryable,
+			windowsmedia.StatusOK,
+		},
+	}
+	encoder := newNativeEncoderWithBridge(bridge)
+	defer encoder.Close()
+
+	err := encoder.Configure(EncoderConfig{
+		Codec: CodecH264, Bitrate: 8000, Width: 1920, Height: 1080, FrameRate: 60,
+	})
+	if err != nil {
+		t.Fatalf("Configure returned error: %v", err)
+	}
+	if bridge.createEncoderCalls != 2 || bridge.encoderConfigureCalls != 2 {
+		t.Fatalf("encoder create/configure calls = %d/%d, want 2/2", bridge.createEncoderCalls, bridge.encoderConfigureCalls)
+	}
+	if bridge.encoderCloseCalls != 1 || bridge.destroyEncoderCalls != 1 {
+		t.Fatalf("failed session close/destroy calls = %d/%d, want 1/1", bridge.encoderCloseCalls, bridge.destroyEncoderCalls)
+	}
+	if len(bridge.encoderConfigs) != 2 || bridge.encoderConfigs[0].CompatibilityMode || !bridge.encoderConfigs[1].CompatibilityMode {
+		t.Fatalf("compatibility modes = %+v, want false then true", bridge.encoderConfigs)
+	}
+}
+
+func TestNativeEncoderDoesNotRetryUnsupportedGPU(t *testing.T) {
+	bridge := &fakeMediaBridge{
+		encoderHandle:   42,
+		reason:          "NVENC runtime not found",
+		encoderStatuses: []windowsmedia.Status{windowsmedia.StatusUnsupportedGPU},
+	}
+	encoder := newNativeEncoderWithBridge(bridge)
+	defer encoder.Close()
+
+	err := encoder.Configure(EncoderConfig{
+		Codec: CodecH264, Bitrate: 8000, Width: 1920, Height: 1080, FrameRate: 60,
+	})
+	if !errors.Is(err, ErrUnsupportedHostGPU) {
+		t.Fatalf("Configure error = %v, want unsupported GPU", err)
+	}
+	if bridge.createEncoderCalls != 1 || bridge.encoderConfigureCalls != 1 {
+		t.Fatalf("encoder create/configure calls = %d/%d, want 1/1", bridge.createEncoderCalls, bridge.encoderConfigureCalls)
 	}
 }

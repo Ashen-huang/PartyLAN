@@ -1,5 +1,6 @@
 ﻿import { AudioCapability, RuntimeStatus, VideoCapability } from '../types';
 import type { Translator } from '../i18n';
+import type { StreamStats } from '../types';
 import './DiagnosticsPanel.css';
 
 interface DiagnosticsPanelProps {
@@ -19,6 +20,7 @@ interface DiagnosticsPanelProps {
   hostVideoCapable: boolean;
   canShareToPeers: boolean;
   remoteViewerCount: number;
+  streamStats?: StreamStats | null;
   t: Translator;
   onOpenAuthUrl: () => void;
 }
@@ -59,6 +61,8 @@ export function pickMediaNote(lines: string[] | null | undefined): string {
 
 function modeLabel(mode: string, t: Translator) {
   switch (mode) {
+    case 'gamecast-client':
+      return t('mode.gamecastClient');
     case 'loopback':
       return t('mode.loopback');
     case 'lan':
@@ -74,6 +78,8 @@ function modeLabel(mode: string, t: Translator) {
 
 function networkLabel(backend: string, t: Translator) {
   switch (backend) {
+    case 'gamecast-client':
+      return t('network.gamecastClient');
     case 'loopback':
       return t('network.loopback');
     case 'lan':
@@ -123,9 +129,17 @@ function audioLabel(runtime: RuntimeStatus | null, t: Translator) {
 function toneFor(value: boolean | number | string, kind: 'mode' | 'network' | 'video' | 'audio' | 'share' | 'room' | 'viewer'): Tone {
   switch (kind) {
     case 'mode':
-      return value === 'networked' || value === 'lan' ? 'good' : value === 'tailscale-system' ? 'warn' : 'neutral';
+      return value === 'gamecast-client' || value === 'networked' || value === 'lan'
+        ? 'good'
+        : value === 'tailscale-system'
+          ? 'warn'
+          : 'neutral';
     case 'network':
-      return value === 'networked' || value === 'lan' ? 'good' : value === 'tailscale-system' ? 'warn' : 'neutral';
+      return value === 'gamecast-client' || value === 'networked' || value === 'lan'
+        ? 'good'
+        : value === 'tailscale-system'
+          ? 'warn'
+          : 'neutral';
     case 'video':
       return value === 'supported' ? 'good' : value === 'native' ? 'warn' : 'neutral';
     case 'audio':
@@ -169,11 +183,12 @@ export default function DiagnosticsPanel({
   hostVideoCapable,
   canShareToPeers,
   remoteViewerCount,
+  streamStats,
   t,
   onOpenAuthUrl,
 }: DiagnosticsPanelProps) {
   const healthLine = runtime?.networkHealth?.[0] || '';
-  const showAuthButton = Boolean(runtime?.networkAuthUrl);
+  const showAuthButton = Boolean(runtime?.networkAuthUrl) && (runtime?.mode === 'networked' || runtime?.mode === 'tailscale-system');
   const audioReason = audioCapability?.reason || '';
   const preferredHealthLine = pickNetworkNote(runtime?.networkHealth);
   const preferredMediaLine = pickMediaNote(runtime?.mediaHealth);
@@ -185,6 +200,19 @@ export default function DiagnosticsPanel({
         ? 'diag.watching'
         : 'diag.ready';
   const effectiveShareValue = t(effectiveShareKey);
+  const adaptiveActive = Boolean(selfSharing && streamStats?.adaptivePolicy);
+  const requestedProfile = adaptiveActive
+    ? `${streamStats?.requestedWidth || 0}x${streamStats?.requestedHeight || 0}@${streamStats?.requestedFps || 0}`
+    : '';
+  const actualProfile = adaptiveActive
+    ? `${streamStats?.width || 0}x${streamStats?.height || 0}@${streamStats?.actualFps || 0}`
+    : '';
+  const adaptiveState = adaptiveActive
+    ? `${streamStats?.adaptiveState || 'unknown'}${streamStats?.adaptiveReason ? ` / ${streamStats.adaptiveReason}` : ''}`
+    : '';
+  const adaptiveLoad = adaptiveActive
+    ? `${(streamStats?.freshFps || 0).toFixed(1)} FPS / ${Math.round((streamStats?.encodeBudgetRatio || 0) * 100)}%`
+    : '';
 
   return (
     <div className={className ? `diagnostics-panel diagnostics-${variant} ${className}` : `diagnostics-panel diagnostics-${variant}`}>
@@ -202,6 +230,10 @@ export default function DiagnosticsPanel({
           value={remoteViewerCount > 0 ? `${remoteViewerCount}` : '0'}
           tone={toneFor(remoteViewerCount, 'viewer')}
         />
+        {adaptiveActive && <Badge label={t('diag.requestedQuality')} value={requestedProfile} tone="neutral" />}
+        {adaptiveActive && <Badge label={t('diag.actualQuality')} value={actualProfile} tone="good" />}
+        {adaptiveActive && <Badge label={t('diag.adaptive')} value={adaptiveState} tone={streamStats?.adaptiveState === 'normal' ? 'good' : 'warn'} />}
+        {adaptiveActive && <Badge label={t('diag.captureLoad')} value={adaptiveLoad} tone={(streamStats?.encodeBudgetRatio || 0) < 0.85 ? 'good' : 'warn'} />}
       </div>
       <div className="diagnostics-detail">
         <span>{t('diag.runtime', { value: runtime?.mode ? modeLabel(runtime.mode, t) : t('runtime.unknown') })}</span>

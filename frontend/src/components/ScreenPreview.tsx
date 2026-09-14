@@ -1,13 +1,15 @@
 ﻿import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import type { StreamFrame, StreamSettings, WebRTCPlaybackStats } from '../types';
+import type { StreamFrame, StreamSettings, StreamStats, WebRTCPlaybackStats } from '../types';
 import type { Translator } from '../i18n';
+import { WindowFullscreen, WindowIsFullscreen, WindowUnfullscreen } from '../../wailsjs/runtime/runtime';
 import './ScreenPreview.css';
 
 interface ScreenPreviewProps {
   frame: StreamFrame | null;
   remoteStream?: MediaStream | null;
   webrtcStats?: WebRTCPlaybackStats | null;
+  localStreamStats?: StreamStats | null;
   inRoom: boolean;
   sharing: boolean;
   selfSharing: boolean;
@@ -16,6 +18,18 @@ interface ScreenPreviewProps {
   streamOwnerName: string | null;
   diagnosticsOverlay?: ReactNode;
   t: Translator;
+}
+
+interface FullscreenCapableElement extends HTMLDivElement {
+  webkitRequestFullscreen?: () => Promise<void> | void;
+  msRequestFullscreen?: () => Promise<void> | void;
+}
+
+interface FullscreenCapableDocument extends Document {
+  webkitFullscreenElement?: Element | null;
+  msFullscreenElement?: Element | null;
+  webkitExitFullscreen?: () => Promise<void> | void;
+  msExitFullscreen?: () => Promise<void> | void;
 }
 
 function getCanvasSize(canvas: HTMLCanvasElement) {
@@ -117,10 +131,52 @@ function describeEmptyMessage(
   };
 }
 
+function activeFullscreenElement(doc: FullscreenCapableDocument): Element | null {
+  return doc.fullscreenElement || doc.webkitFullscreenElement || doc.msFullscreenElement || null;
+}
+
+function requestElementFullscreen(element: FullscreenCapableElement): Promise<void> | void {
+  if (typeof element.requestFullscreen === 'function') {
+    return element.requestFullscreen();
+  }
+  if (typeof element.webkitRequestFullscreen === 'function') {
+    return element.webkitRequestFullscreen();
+  }
+  if (typeof element.msRequestFullscreen === 'function') {
+    return element.msRequestFullscreen();
+  }
+}
+
+function exitElementFullscreen(doc: FullscreenCapableDocument): Promise<void> | void {
+  if (typeof doc.exitFullscreen === 'function') {
+    return doc.exitFullscreen();
+  }
+  if (typeof doc.webkitExitFullscreen === 'function') {
+    return doc.webkitExitFullscreen();
+  }
+  if (typeof doc.msExitFullscreen === 'function') {
+    return doc.msExitFullscreen();
+  }
+}
+
+function attachFullscreenPromise(result: Promise<void> | void) {
+  if (result && typeof (result as Promise<void>).catch === 'function') {
+    void (result as Promise<void>).catch((error) => {
+      console.warn('[preview/fullscreen] toggle failed', error);
+    });
+  }
+}
+
+function hasWailsWindowRuntime() {
+  const runtime = (window as Window & { runtime?: Record<string, unknown> }).runtime;
+  return typeof runtime?.WindowFullscreen === 'function' && typeof runtime?.WindowUnfullscreen === 'function';
+}
+
 export default function ScreenPreview({
   frame,
   remoteStream,
   webrtcStats,
+  localStreamStats,
   inRoom,
   sharing,
   selfSharing,
@@ -134,7 +190,12 @@ export default function ScreenPreview({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const [fullscreen, setFullscreen] = useState(false);
-  const showRemoteVideo = Boolean(remoteStream && !selfSharing);
+  const [remoteVideoMetrics, setRemoteVideoMetrics] = useState<{
+    width: number;
+    height: number;
+    frameRate: number | null;
+  }>({ width: 0, height: 0, frameRate: null });
+  const showRemoteVideo = Boolean(remoteStream);
 
   const frameDataURL = useMemo(() => {
     if (!frame) {
@@ -244,54 +305,148 @@ export default function ScreenPreview({
   }, [remoteStream]);
 
   useEffect(() => {
+    if (!hasWailsWindowRuntime()) {
+      return;
+    }
+
+    let cancelled = false;
+    const syncWindowFullscreen = () => {
+      void WindowIsFullscreen()
+        .then((isFullscreen) => {
+          if (!cancelled) {
+            setFullscreen(isFullscreen);
+          }
+        })
+        .catch(() => undefined);
+    };
+
+    syncWindowFullscreen();
+    window.addEventListener('resize', syncWindowFullscreen);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('resize', syncWindowFullscreen);
+    };
+  }, []);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !remoteStream) {
+      setRemoteVideoMetrics({ width: 0, height: 0, frameRate: null });
+      return;
+    }
+
+    const updateMetrics = () => {
+      const track = remoteStream.getVideoTracks()[0];
+      const settings = track?.getSettings?.() || {};
+      const nextWidth = video.videoWidth || (typeof settings.width === 'number' ? settings.width : 0);
+      const nextHeight = video.videoHeight || (typeof settings.height === 'number' ? settings.height : 0);
+      const nextFrameRate = typeof settings.frameRate === 'number' && Number.isFinite(settings.frameRate)
+        ? settings.frameRate
+        : null;
+      setRemoteVideoMetrics((current) =>
+        current.width === nextWidth && current.height === nextHeight && current.frameRate === nextFrameRate
+          ? current
+          : { width: nextWidth, height: nextHeight, frameRate: nextFrameRate },
+      );
+    };
+
+    updateMetrics();
+    video.addEventListener('loadedmetadata', updateMetrics);
+    video.addEventListener('resize', updateMetrics);
+    const timer = window.setInterval(updateMetrics, 1000);
+    return () => {
+      video.removeEventListener('loadedmetadata', updateMetrics);
+      video.removeEventListener('resize', updateMetrics);
+      window.clearInterval(timer);
+    };
+  }, [remoteStream]);
+
+  useEffect(() => {
     const onFullscreenChange = () => {
       const root = containerRef.current;
-      setFullscreen(Boolean(root && document.fullscreenElement === root));
+      const doc = document as FullscreenCapableDocument;
+      setFullscreen(Boolean(root && activeFullscreenElement(doc) === root));
     };
 
     document.addEventListener('fullscreenchange', onFullscreenChange);
+    document.addEventListener('webkitfullscreenchange', onFullscreenChange);
+    document.addEventListener('MSFullscreenChange', onFullscreenChange);
     return () => {
       document.removeEventListener('fullscreenchange', onFullscreenChange);
+      document.removeEventListener('webkitfullscreenchange', onFullscreenChange);
+      document.removeEventListener('MSFullscreenChange', onFullscreenChange);
     };
   }, []);
 
   const toggleFullscreen = async () => {
-    const root = containerRef.current;
+    if (hasWailsWindowRuntime()) {
+      const isFullscreen = await WindowIsFullscreen().catch(() => fullscreen);
+      if (isFullscreen) {
+        WindowUnfullscreen();
+        setFullscreen(false);
+      } else {
+        WindowFullscreen();
+        setFullscreen(true);
+      }
+      return;
+    }
+
+    const root = containerRef.current as FullscreenCapableElement | null;
     if (!root) {
       return;
     }
+    const doc = document as FullscreenCapableDocument;
 
-    if (document.fullscreenElement === root) {
-      await document.exitFullscreen();
+    if (activeFullscreenElement(doc) === root) {
+      attachFullscreenPromise(exitElementFullscreen(doc));
       return;
     }
 
-    try {
-      await root.requestFullscreen();
-    } catch {
-      // Ignore unsupported fullscreen API errors.
-    }
+    attachFullscreenPromise(requestElementFullscreen(root));
   };
 
   const streamMode = selfSharing ? t('preview.localPreview') : sharing ? t('preview.watching') : t('preview.ready');
   const decodedResolution = frame
     ? `${frame.width}x${frame.height}`
+    : selfSharing && localStreamStats && localStreamStats.width > 0 && localStreamStats.height > 0
+      ? `${localStreamStats.width}x${localStreamStats.height}`
+    : remoteVideoMetrics.width > 0 && remoteVideoMetrics.height > 0
+      ? `${remoteVideoMetrics.width}x${remoteVideoMetrics.height}`
     : showRemoteVideo && streamSettings
       ? `${streamSettings.width}x${streamSettings.height}`
       : '--';
   const realDecodedFPS =
     frame && typeof frame.decodedFps === 'number' && Number.isFinite(frame.decodedFps)
       ? `${frame.decodedFps.toFixed(1)}fps`
+      : selfSharing &&
+          localStreamStats &&
+          typeof localStreamStats.encodedFps === 'number' &&
+          Number.isFinite(localStreamStats.encodedFps)
+        ? `${localStreamStats.encodedFps.toFixed(1)}fps`
       : webrtcStats && typeof webrtcStats.decodedFps === 'number' && Number.isFinite(webrtcStats.decodedFps)
         ? `${webrtcStats.decodedFps.toFixed(1)}fps`
         : '--';
   const realSourceFPS =
     frame && typeof frame.estimatedSourceFps === 'number' && Number.isFinite(frame.estimatedSourceFps)
       ? `${frame.estimatedSourceFps.toFixed(1)}fps`
+      : selfSharing &&
+          localStreamStats &&
+          typeof localStreamStats.estimatedSourceFps === 'number' &&
+          Number.isFinite(localStreamStats.estimatedSourceFps)
+        ? `${localStreamStats.estimatedSourceFps.toFixed(1)}fps`
+      : remoteVideoMetrics.frameRate !== null
+        ? `${remoteVideoMetrics.frameRate.toFixed(1)}fps`
+        : streamSettings && streamSettings.fps > 0
+          ? `${streamSettings.fps.toFixed(1)}fps`
       : '--';
   const realBitrate =
     frame && typeof frame.incomingBitrateKbps === 'number' && Number.isFinite(frame.incomingBitrateKbps)
       ? `${frame.incomingBitrateKbps.toFixed(0)}kbps`
+      : selfSharing &&
+          localStreamStats &&
+          typeof localStreamStats.bitrateKbps === 'number' &&
+          Number.isFinite(localStreamStats.bitrateKbps)
+        ? `${localStreamStats.bitrateKbps.toFixed(0)}kbps`
       : webrtcStats &&
           typeof webrtcStats.incomingBitrateKbps === 'number' &&
           Number.isFinite(webrtcStats.incomingBitrateKbps)
@@ -325,7 +480,8 @@ export default function ScreenPreview({
           <button
             type="button"
             className="fullscreen-btn"
-            onClick={() => {
+            onClick={(event) => {
+              event.stopPropagation();
               void toggleFullscreen();
             }}
           >
@@ -335,7 +491,7 @@ export default function ScreenPreview({
       </div>
       <div className="screen-stage">
         {showRemoteVideo ? (
-          <video ref={videoRef} className="screen-video" autoPlay playsInline />
+          <video ref={videoRef} className="screen-video" autoPlay playsInline muted={selfSharing} />
         ) : (
           <canvas ref={canvasRef} className="screen-canvas" />
         )}

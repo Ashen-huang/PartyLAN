@@ -119,3 +119,24 @@
 - 网页房内客户端发起共享存在稳定可用路径
 - 网页端原有共享和观看能力不回退
 - 失败时错误提示清晰，房间状态不被破坏
+
+## 8. 执行状态（2026-07-10）
+
+- P1 已完成：客户端显式记录 `local-created` / `web-joined-viewer` 房间入口。
+- P2 已完成：客户端自建房选择 `native`，网页房 viewer 选择 `web-compat`。
+- P3 已完成：`GameCastHost` 已接入网页房兼容共享，停止共享不退出房间。
+- P4 代码已完成：
+  - 区分 host 路径选择、原生启动、兼容启动、viewer 重连四类失败。
+  - compat/native 启动失败都会回写 `sharing=false` 并保留当前房间。
+  - viewer 重连在 compat host 活跃时禁用，失败重试最多三次。
+  - compat 共享事件使用实际 viewer peer ID，避免成员列表误标原主机正在共享。
+  - 仅房间失效错误会清空共享状态，普通能力或网络错误不再破坏房间状态。
+
+自动验证已通过：
+
+- `node --test --experimental-strip-types tests/gamecastOrchestrator.test.mjs`
+- `npm run build`
+- `go test .`
+- `go test ./internal/gamecast/...`
+
+仍需手工验收网页 viewer、原生 viewer 的停止、重新共享和再次观看流程。

@@ -6,13 +6,11 @@ interface MemberListProps {
   selfMember: Member;
   otherMembers: Member[];
   t: Translator;
-  voiceLabel?: string;
-  voiceActive?: boolean;
-  voiceMuted?: boolean;
-  onOpenVoice?: () => void;
 }
 
 function MemberRow({ member, t, isSelf = false }: { member: Member; t: Translator; isSelf?: boolean }) {
+  const statusLabel = member.statusLabel || (member.sharing ? t('members.sharing') : member.muted ? t('members.muted') : t('members.connected'));
+  const clientLabel = member.clientType ? t(member.clientType === 'client' ? 'members.clientTypeClient' : 'members.clientTypeWeb') : '';
   return (
     <li className={`member-item ${isSelf ? 'is-self' : ''}`}>
       <span className={`member-status ${member.online ? 'online' : 'offline'}`}>
@@ -24,8 +22,7 @@ function MemberRow({ member, t, isSelf = false }: { member: Member; t: Translato
           {isSelf && <span className="member-self-pill">{t('members.self')}</span>}
         </span>
         <span className="member-icons">
-          {member.muted ? t('members.muted') : t('members.speaking')}
-          {member.sharing ? ` · ${t('members.sharing')}` : ''}
+          {clientLabel ? `${clientLabel} · ${statusLabel}` : statusLabel}
         </span>
       </div>
     </li>
@@ -36,10 +33,6 @@ export default function MemberList({
   selfMember,
   otherMembers,
   t,
-  voiceLabel,
-  voiceActive = false,
-  voiceMuted = false,
-  onOpenVoice,
 }: MemberListProps) {
   return (
     <div className="member-list">
@@ -62,17 +55,6 @@ export default function MemberList({
           </ul>
         )}
       </div>
-      {onOpenVoice && (
-        <div className="member-actions">
-          <button
-            className={`member-voice-btn ${voiceActive ? 'active' : ''} ${voiceMuted ? 'muted' : ''}`}
-            onClick={onOpenVoice}
-            type="button"
-          >
-            {voiceLabel || t('members.voiceChat')}
-          </button>
-        </div>
-      )}
     </div>
   );
 }

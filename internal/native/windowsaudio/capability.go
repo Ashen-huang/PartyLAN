@@ -27,6 +27,7 @@ type CaptureMode int
 const (
 	CaptureIncludeProcessTree CaptureMode = iota
 	CaptureExcludeProcessTree
+	CaptureSystemMix
 )
 
 type SessionConfig struct {

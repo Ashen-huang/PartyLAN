@@ -1,6 +1,6 @@
 # Windows Build Prerequisites
 
-PartyLAN uses the Wails Windows packaging path and optional native build tags.
+partylan 使用 Wails Windows 打包路径和可选的原生构建标签。
 
 ## Required Tooling
 

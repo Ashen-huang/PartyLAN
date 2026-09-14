@@ -1,0 +1,526 @@
+diff --git a/ui/src/Room.native-ui.test.mjs b/ui/src/Room.native-ui.test.mjs
+index 5bca7a9..288809f 100644
+--- a/ui/src/Room.native-ui.test.mjs
++++ b/ui/src/Room.native-ui.test.mjs
+@@ -56,12 +56,13 @@ test('Room no longer renders the legacy bottom control toolbar', () => {
+     );
+ });
+ 
+-test('desktop side panels stay hidden until their edge is hovered or focused', () => {
++test('desktop room tools follow player-style mouse movement visibility', () => {
+     assert.match(roomSource, /'& \[data-partylan-side-content\]': \{\r?\n\s+opacity: 0/);
+-    assert.match(roomSource, /'&:hover \[data-partylan-side-content\]'/);
+-    assert.match(roomSource, /'&:focus-within \[data-partylan-side-content\]'/);
+-    assert.match(roomSource, /'&::before': \{/);
+-    assert.match(roomSource, /width: 24/);
++    assert.match(roomSource, /data-controls-visible=\{controlVisible \? 'true' : 'false'\}/);
++    assert.match(roomSource, /data-partylan-fullscreen-control/);
++    assert.match(roomSource, /CONTROL_HIDE_DELAY_MS = 2200/);
++    assert.match(roomSource, /window\.addEventListener\('mousemove', update\)/);
++    assert.doesNotMatch(roomSource, /'&::before': \{|width: 24/);
+     assert.match(roomSource, /pointerEvents: 'none'/);
+ });
+ 
+@@ -78,6 +79,10 @@ test('web theme and entry screens use the PartyLAN light theme and Chinese copy'
+     assert.match(htmlSource, /lang="zh-CN"/);
+     assert.match(htmlSource, /<title>PartyLAN<\/title>/);
+     assert.match(manageSource, /创建我的房间/);
++    assert.match(manageSource, /用户名显示：/);
++    assert.match(manageSource, /aria-label="用户名显示"/);
++    assert.match(manageSource, /useSettings/);
++    assert.match(manageSource, /maxLength: 64/);
+     assert.match(manageSource, /width: 'min\(100%, 720px\)'/);
+     assert.match(manageSource, /sx=\{\{minHeight: 48/);
+     assert.match(manageSource, /minHeight: 56/);
+@@ -106,7 +111,7 @@ test('web theme and entry screens use the PartyLAN light theme and Chinese copy'
+     assert.match(settingSource, /<DialogTitle>设置<\/DialogTitle>/);
+     assert.match(settingSource, /首选编码器/);
+     assert.match(settingSource, /显示模式/);
+-    assert.match(settingSource, /帧率/);
++    assert.doesNotMatch(settingSource, /用户名|帧率|NumberField|updateName/);
+     assert.match(settingSource, /取消/);
+     assert.match(settingSource, /保存/);
+ });
+diff --git a/ui/src/Room.tsx b/ui/src/Room.tsx
+index 85958ae..17f2e90 100644
+--- a/ui/src/Room.tsx
++++ b/ui/src/Room.tsx
+@@ -162,13 +162,11 @@ export const Room = ({
+     state,
+     share,
+     stopShare,
+-    setName,
+     leave,
+ }: {
+     state: ConnectedRoom;
+     share: () => void;
+     stopShare: () => void;
+-    setName: (name: string) => void;
+     leave: () => void;
+ }) => {
+     const {classes} = useStyles();
+@@ -372,7 +370,12 @@ export const Room = ({
+                 </Typography>
+             )}
+ 
+-            <Box className={classes.sideRail} data-partylan-native-tools>
++            <Box
++                className={classes.sideRail}
++                data-partylan-native-tools
++                data-controls-visible={controlVisible ? 'true' : 'false'}
++                {...setHoverState}
++            >
+                 <Box
+                     className={`${classes.sidePanel} ${classes.sidePanelLeft}`}
+                     data-partylan-side="left"
+@@ -432,7 +435,11 @@ export const Room = ({
+                     </Paper>
+                 </Box>
+ 
+-                <Paper className={classes.fullscreenControl} elevation={10}>
++                <Paper
++                    className={classes.fullscreenControl}
++                    data-partylan-fullscreen-control
++                    elevation={10}
++                >
+                     <Tooltip title={fullscreen ? '退出全屏' : '全屏'} placement="top" arrow>
+                         <IconButton
+                             aria-label={fullscreen ? '退出全屏' : '全屏'}
+@@ -658,45 +665,37 @@ export const Room = ({
+                         </Typography>
+                     </Paper>
+                 )}
+-                <SettingDialog
+-                    open={open}
+-                    setOpen={setOpen}
+-                    updateName={setName}
+-                    saveSettings={setSettings}
+-                />
++                <SettingDialog open={open} setOpen={setOpen} saveSettings={setSettings} />
+             </div>
+         </div>
+     );
+ };
+ 
++const CONTROL_HIDE_DELAY_MS = 2200;
++
+ const useShowOnMouseMovement = (doShow: (s: boolean) => void) => {
+     const timeoutHandle = React.useRef(0);
+ 
+     React.useEffect(() => {
+-        const update = () => {
+-            if (timeoutHandle.current === 0) {
+-                doShow(true);
+-            }
+-
++        const hideAfterDelay = () => {
+             clearTimeout(timeoutHandle.current);
+             timeoutHandle.current = window.setTimeout(() => {
+                 timeoutHandle.current = 0;
+                 doShow(false);
+-            }, 1000);
++            }, CONTROL_HIDE_DELAY_MS);
++        };
++        const update = () => {
++            doShow(true);
++            hideAfterDelay();
+         };
++
++        hideAfterDelay();
+         window.addEventListener('mousemove', update);
+-        return () => window.removeEventListener('mousemove', update);
++        return () => {
++            window.removeEventListener('mousemove', update);
++            clearTimeout(timeoutHandle.current);
++        };
+     }, [doShow]);
+-
+-    React.useEffect(
+-        () =>
+-            void (timeoutHandle.current = window.setTimeout(() => {
+-                timeoutHandle.current = 0;
+-                doShow(false);
+-            }, 1000)),
+-        // eslint-disable-next-line react-hooks/exhaustive-deps
+-        []
+-    );
+ };
+ 
+ const AudioControl = ({video}: {video: FullScreenHTMLVideoElement}) => {
+@@ -825,6 +824,18 @@ const useStyles = makeStyles()(() => ({
+         zIndex: 40,
+         pointerEvents: 'none',
+         color: '#0a3043',
++        '@media (min-width: 701px) and (hover: hover)': {
++            '&[data-controls-visible="true"] [data-partylan-side-content]': {
++                opacity: 1,
++                pointerEvents: 'auto',
++                transform: 'translate(0, -50%)',
++            },
++            '&[data-controls-visible="true"] [data-partylan-fullscreen-control]': {
++                opacity: 1,
++                pointerEvents: 'auto',
++                transform: 'translateX(-50%) translateY(0)',
++            },
++        },
+     },
+     sidePanel: {
+         position: 'fixed',
+@@ -836,25 +847,7 @@ const useStyles = makeStyles()(() => ({
+             opacity: 0,
+             pointerEvents: 'none',
+         },
+-        '&[data-panel-active="true"] [data-partylan-side-content]': {
+-            opacity: 1,
+-            pointerEvents: 'auto',
+-            transform: 'translate(0, -50%)',
+-        },
+         '@media (min-width: 701px) and (hover: hover)': {
+-            '&::before': {
+-                content: '""',
+-                position: 'absolute',
+-                top: 0,
+-                bottom: 0,
+-                width: 24,
+-                pointerEvents: 'auto',
+-            },
+-            '&:hover [data-partylan-side-content]': {
+-                opacity: 1,
+-                pointerEvents: 'auto',
+-                transform: 'translate(0, -50%)',
+-            },
+             '&:focus-within [data-partylan-side-content]': {
+                 opacity: 1,
+                 pointerEvents: 'auto',
+@@ -888,19 +881,9 @@ const useStyles = makeStyles()(() => ({
+     },
+     sidePanelLeft: {
+         left: 0,
+-        '@media (min-width: 701px) and (hover: hover)': {
+-            '&::before': {
+-                left: 0,
+-            },
+-        },
+     },
+     sidePanelRight: {
+         right: 0,
+-        '@media (min-width: 701px) and (hover: hover)': {
+-            '&::before': {
+-                right: 0,
+-            },
+-        },
+     },
+     sideRailHandle: {
+         position: 'absolute',
+@@ -953,9 +936,10 @@ const useStyles = makeStyles()(() => ({
+         position: 'fixed',
+         left: '50%',
+         bottom: 24,
+-        transform: 'translateX(-50%)',
++        transform: 'translateX(-50%) translateY(12px)',
+         zIndex: 42,
+-        pointerEvents: 'auto',
++        opacity: 0,
++        pointerEvents: 'none',
+         display: 'flex',
+         padding: 4,
+         background: 'linear-gradient(180deg, rgba(239, 252, 255, .96), rgba(216, 241, 247, .94))',
+@@ -963,11 +947,18 @@ const useStyles = makeStyles()(() => ({
+         borderRadius: 8,
+         boxShadow: '0 14px 32px rgba(18, 102, 124, .18)',
+         backdropFilter: 'blur(12px)',
++        transition: 'transform .2s ease, opacity .16s ease',
+         '& .MuiIconButton-root': {
+             color: '#08758e',
+         },
+         '@media (max-width: 700px), (hover: none), (pointer: coarse)': {
+             bottom: 'calc(8px + env(safe-area-inset-bottom))',
++            opacity: 1,
++            pointerEvents: 'auto',
++            transform: 'translateX(-50%)',
++        },
++        '@media (prefers-reduced-motion: reduce)': {
++            transition: 'none',
+         },
+     },
+     sideDrawer: {
+diff --git a/ui/src/RoomManage.tsx b/ui/src/RoomManage.tsx
+index efd6b88..a040c6d 100644
+--- a/ui/src/RoomManage.tsx
++++ b/ui/src/RoomManage.tsx
+@@ -18,6 +18,7 @@ import {RoomMode} from './message';
+ import {FCreateRoom} from './useRoom';
+ import {authModeToRoomMode, UseConfig} from './useConfig';
+ import {getRoomFromURL} from './useRoomID';
++import {useSettings} from './settings';
+ 
+ interface JoinableRoom {
+     room: string;
+@@ -90,11 +91,21 @@ const useJoinableRooms = (currentUser: string) => {
+ const Lobby = ({room, config}: {room: FCreateRoom; config: UseConfig}) => {
+     const [moreOpen, setMoreOpen] = React.useState(false);
+     const [manualRoom, setManualRoom] = React.useState(() => getRoomFromURL() ?? '');
++    const [settings, setSettings] = useSettings();
+     const mode = authModeToRoomMode(config.authMode, config.loggedIn);
+     const ownRoom = config.loggedIn && config.user ? config.user : config.roomName;
+     const {rooms, initialLoading, refreshing, error, refresh} = useJoinableRooms(config.user);
+ 
+-    const createOwnRoom = () =>
++    const prepareDisplayName = () => {
++        const name = settings.name?.trim() || config.user || '';
++        if (name !== settings.name) {
++            setSettings({...settings, name});
++        }
++        return name;
++    };
++
++    const createOwnRoom = () => {
++        prepareDisplayName();
+         room({
+             type: 'create',
+             payload: {
+@@ -103,8 +114,12 @@ const Lobby = ({room, config}: {room: FCreateRoom; config: UseConfig}) => {
+                 id: ownRoom || undefined,
+             },
+         });
++    };
+ 
+-    const joinRoom = (id: string) => room({type: 'join', payload: {id}});
++    const joinRoom = (id: string) => {
++        prepareDisplayName();
++        room({type: 'join', payload: {id}});
++    };
+ 
+     return (
+         <Paper
+@@ -128,13 +143,32 @@ const Lobby = ({room, config}: {room: FCreateRoom; config: UseConfig}) => {
+                     borderBottom: '1px solid rgba(41, 130, 157, .22)',
+                 }}
+             >
+-                <Box sx={{minWidth: 0}}>
+-                    <Typography variant="h6" component="h1" sx={{fontWeight: 800}}>
+-                        你好，{config.user || '访客'}！
+-                    </Typography>
+-                    <Typography variant="body2" color="text.secondary">
+-                        创建自己的共享房间，或加入正在进行的活动房间
++                <Box
++                    sx={{
++                        minWidth: 0,
++                        flex: 1,
++                        display: 'grid',
++                        gridTemplateColumns: {xs: '1fr', sm: 'auto minmax(180px, 320px)'},
++                        alignItems: 'center',
++                        gap: {xs: 0.75, sm: 1.5},
++                    }}
++                >
++                    <Typography
++                        component="label"
++                        htmlFor="partylan-display-name"
++                        sx={{fontWeight: 800}}
++                    >
++                        用户名显示：
+                     </Typography>
++                    <TextField
++                        id="partylan-display-name"
++                        aria-label="用户名显示"
++                        value={settings.name ?? config.user ?? ''}
++                        onChange={(event) => setSettings({...settings, name: event.target.value})}
++                        size="small"
++                        slotProps={{htmlInput: {maxLength: 64}}}
++                        fullWidth
++                    />
+                 </Box>
+                 {config.loggedIn && (
+                     <Button variant="outlined" onClick={config.logout} sx={{flex: '0 0 auto'}}>
+diff --git a/ui/src/SettingDialog.tsx b/ui/src/SettingDialog.tsx
+index 92fb116..a91466a 100644
+--- a/ui/src/SettingDialog.tsx
++++ b/ui/src/SettingDialog.tsx
+@@ -18,12 +18,10 @@ import {
+     Settings,
+     VideoDisplayMode,
+ } from './settings';
+-import {NumberField} from './NumberField';
+ 
+ export interface SettingDialogProps {
+     open: boolean;
+     setOpen: (open: boolean) => void;
+-    updateName: (s: string) => void;
+     saveSettings: (s: Settings) => void;
+ }
+ 
+@@ -54,34 +52,21 @@ const codecLabel = ({mimeType, sdpFmtpLine}: PreferredCodec): string => {
+     return translated + (sdpFmtpLine ? ` (${sdpFmtpLine})` : '');
+ };
+ 
+-export const SettingDialog = ({open, setOpen, updateName, saveSettings}: SettingDialogProps) => {
++export const SettingDialog = ({open, setOpen, saveSettings}: SettingDialogProps) => {
+     const [settingsInput, setSettingsInput] = React.useState(loadSettings);
+ 
+     const doSubmit = () => {
+         saveSettings(settingsInput);
+-        updateName(settingsInput.name ?? '');
+         setOpen(false);
+     };
+ 
+-    const {name, preferCodec, displayMode, framerate} = settingsInput;
++    const {preferCodec, displayMode} = settingsInput;
+ 
+     return (
+         <Dialog open={open} onClose={() => setOpen(false)} maxWidth={'xs'} fullWidth>
+             <DialogTitle>设置</DialogTitle>
+             <DialogContent dividers>
+                 <form onSubmit={doSubmit}>
+-                    <Box sx={{paddingBottom: 1}}>
+-                        <TextField
+-                            autoFocus
+-                            margin="dense"
+-                            label="用户名"
+-                            value={name}
+-                            onChange={(e) =>
+-                                setSettingsInput((c) => ({...c, name: e.target.value}))
+-                            }
+-                            fullWidth
+-                        />
+-                    </Box>
+                     {NativeCodecs.length > 0 ? (
+                         <Box sx={{paddingY: 1}}>
+                             <Autocomplete<PreferredCodec>
+@@ -119,15 +104,6 @@ export const SettingDialog = ({open, setOpen, updateName, saveSettings}: Setting
+                             renderInput={(params) => <TextField {...params} label="显示模式" />}
+                         />
+                     </Box>
+-                    <Box sx={{paddingTop: 1}}>
+-                        <NumberField
+-                            label="帧率"
+-                            min={1}
+-                            onChange={(framerate) => setSettingsInput((c) => ({...c, framerate}))}
+-                            value={framerate}
+-                            fullWidth
+-                        />
+-                    </Box>
+                 </form>
+             </DialogContent>
+             <DialogActions>
+diff --git a/ui/src/useRoom.ts b/ui/src/useRoom.ts
+index ebc8e4b..e2b0af5 100644
+--- a/ui/src/useRoom.ts
++++ b/ui/src/useRoom.ts
+@@ -436,7 +436,7 @@ export const useRoom = (config: UIConfig): UseRoom => {
+                 };
+                 ws.onopen = () => {
+                     leaving.current = false;
+-                    create.payload.username = loadSettings().name;
++                    create.payload.username = loadSettings().name?.trim() || undefined;
+                     send(create);
+                 };
+             });
+diff --git a/ws/event_create.go b/ws/event_create.go
+index bef6d8d..29ca71f 100644
+--- a/ws/event_create.go
++++ b/ws/event_create.go
+@@ -3,6 +3,7 @@ package ws
+ import (
+ 	"errors"
+ 	"fmt"
++	"strings"
+ 
+ 	"github.com/rs/xid"
+ 	"github.com/screego/server/config"
+@@ -36,8 +37,8 @@ func (e *Create) Execute(rooms *Rooms, current ClientInfo) error {
+ 		return fmt.Errorf("room with id %s does already exist", e.ID)
+ 	}
+ 
+-	name := e.UserName
+-	if current.Authenticated {
++	name := strings.TrimSpace(e.UserName)
++	if name == "" && current.Authenticated {
+ 		name = current.AuthenticatedUser
+ 	}
+ 	if name == "" {
+diff --git a/ws/event_join.go b/ws/event_join.go
+index 86bf1a3..e340f57 100644
+--- a/ws/event_join.go
++++ b/ws/event_join.go
+@@ -2,6 +2,7 @@ package ws
+ 
+ import (
+ 	"fmt"
++	"strings"
+ )
+ 
+ func init() {
+@@ -24,8 +25,8 @@ func (e *Join) Execute(rooms *Rooms, current ClientInfo) error {
+ 	if !ok {
+ 		return fmt.Errorf("room with id %s does not exist", e.ID)
+ 	}
+-	name := e.UserName
+-	if current.Authenticated {
++	name := strings.TrimSpace(e.UserName)
++	if name == "" && current.Authenticated {
+ 		name = current.AuthenticatedUser
+ 	}
+ 	if name == "" {
+diff --git a/ws/room_lifecycle_test.go b/ws/room_lifecycle_test.go
+index b1489c6..be6f0ba 100644
+--- a/ws/room_lifecycle_test.go
++++ b/ws/room_lifecycle_test.go
+@@ -7,6 +7,7 @@ import (
+ 	"github.com/gorilla/websocket"
+ 	"github.com/rs/xid"
+ 	"github.com/screego/server/config"
++	"github.com/screego/server/config/ipdns"
+ 	"github.com/screego/server/ws/outgoing"
+ )
+ 
+@@ -65,3 +66,50 @@ func TestRoomStaysOpenUntilLastMemberLeaves(t *testing.T) {
+ 		t.Fatal("empty room must be closed")
+ 	}
+ }
++
++func TestAuthenticatedUsersCanChooseDisplayNames(t *testing.T) {
++	rooms := &Rooms{
++		Rooms:     map[string]*Room{},
++		connected: map[xid.ID]string{},
++		config: config.Config{
++			AuthMode:       config.AuthModeAll,
++			TurnIPProvider: &ipdns.Static{V4: net.ParseIP("127.0.0.1")},
++		},
++	}
++	creator := lifecycleClient("alice-account")
++	member := lifecycleClient("bob-account")
++
++	if err := (&Create{
++		ID: "alice-account", Mode: ConnectionTURN, UserName: "  Alice Display  ",
++	}).Execute(rooms, creator); err != nil {
++		t.Fatalf("create room: %v", err)
++	}
++	if got := rooms.Rooms["alice-account"].Users[creator.ID].Name; got != "Alice Display" {
++		t.Fatalf("creator display name = %q, want %q", got, "Alice Display")
++	}
++
++	if err := (&Join{ID: "alice-account", UserName: "Bob Display"}).Execute(rooms, member); err != nil {
++		t.Fatalf("join room: %v", err)
++	}
++	if got := rooms.Rooms["alice-account"].Users[member.ID].Name; got != "Bob Display" {
++		t.Fatalf("member display name = %q, want %q", got, "Bob Display")
++	}
++}
++
++func TestAuthenticatedDisplayNameFallsBackToAccount(t *testing.T) {
++	rooms := &Rooms{
++		Rooms:     map[string]*Room{},
++		connected: map[xid.ID]string{},
++		config:    config.Config{AuthMode: config.AuthModeAll},
++	}
++	creator := lifecycleClient("alice-account")
++
++	if err := (&Create{
++		ID: "alice-account", Mode: ConnectionTURN, UserName: "   ",
++	}).Execute(rooms, creator); err != nil {
++		t.Fatalf("create room: %v", err)
++	}
++	if got := rooms.Rooms["alice-account"].Users[creator.ID].Name; got != "alice-account" {
++		t.Fatalf("creator fallback name = %q, want %q", got, "alice-account")
++	}
++}

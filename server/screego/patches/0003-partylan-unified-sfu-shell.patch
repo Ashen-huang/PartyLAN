@@ -1,0 +1,137 @@
+diff --git a/ui/src/useRoom.ts b/ui/src/useRoom.ts
+index a03d4f3..62bf95d 100644
+--- a/ui/src/useRoom.ts
++++ b/ui/src/useRoom.ts
+@@ -23,6 +23,7 @@ import {
+     requestHostIceRestart,
+     setRemoteDescriptionForSession,
+ } from './iceSession';
++import {shouldHandleScreegoPeerSession, shouldSignalScreegoShare} from './partylanMode';
+ 
+ export type RoomState = false | ConnectedRoom;
+ export type ConnectedRoom = {
+@@ -257,6 +258,9 @@ export const useRoom = (config: UIConfig): UseRoom => {
+                             );
+                             return;
+                         case 'hostsession':
++                            if (!shouldHandleScreegoPeerSession()) {
++                                return;
++                            }
+                             if (!stream.current) {
+                                 return;
+                             }
+@@ -272,6 +276,9 @@ export const useRoom = (config: UIConfig): UseRoom => {
+                             );
+                             return;
+                         case 'clientsession':
++                            if (!shouldHandleScreegoPeerSession()) {
++                                return;
++                            }
+                             const {id: sid, peer} = event.payload;
+                             client.current.register(
+                                 clientSession({
+@@ -458,14 +465,18 @@ export const useRoom = (config: UIConfig): UseRoom => {
+         stream.current?.getVideoTracks()[0].addEventListener('ended', () => stopShare());
+         setState((current) => (current ? {...current, hostStream: stream.current} : current));
+ 
+-        conn.current?.send(JSON.stringify({type: 'share', payload: {}}));
++        if (shouldSignalScreegoShare()) {
++            conn.current?.send(JSON.stringify({type: 'share', payload: {}}));
++        }
+     };
+ 
+     const stopShare = async () => {
+         host.current.closeAll();
+         stream.current?.getTracks().forEach((track) => track.stop());
+         stream.current = undefined;
+-        conn.current?.send(JSON.stringify({type: 'stopshare', payload: {}}));
++        if (shouldSignalScreegoShare()) {
++            conn.current?.send(JSON.stringify({type: 'stopshare', payload: {}}));
++        }
+         setState((current) => (current ? {...current, hostStream: undefined} : current));
+     };
+ 
+diff --git a/ui/src/Room.tsx b/ui/src/Room.tsx
+index fa96762..b2ce09b 100644
+--- a/ui/src/Room.tsx
++++ b/ui/src/Room.tsx
+@@ -319,11 +319,14 @@ export const Room = ({
+                             title={
+                                 <div>
+                                     <Typography variant="h5">Member List</Typography>
+-                                    {state.users.map((user) => (
+-                                        <Typography key={user.id}>
+-                                            {user.name} {flags(user)}
+-                                        </Typography>
+-                                    ))}
++                                    <div id="partylan-presence-roster" />
++                                    <div data-partylan-legacy-roster>
++                                        {state.users.map((user) => (
++                                            <Typography key={user.id}>
++                                                {user.name} {flags(user)}
++                                            </Typography>
++                                        ))}
++                                    </div>
+                                 </div>
+                             }
+                             arrow
+diff --git a/ui/src/partylanMode.ts b/ui/src/partylanMode.ts
+new file mode 100644
+index 0000000..b163911
+--- /dev/null
++++ b/ui/src/partylanMode.ts
+@@ -0,0 +1,17 @@
++export type PartyLANModeHost = {
++    __PARTYLAN_SFU_ONLY__?: unknown;
++};
++
++const currentHost = (): PartyLANModeHost | undefined =>
++    typeof window === 'undefined' ? undefined : (window as unknown as PartyLANModeHost);
++
++export const isPartyLANSFUOnly = (host: PartyLANModeHost | undefined = currentHost()): boolean =>
++    host?.__PARTYLAN_SFU_ONLY__ === true;
++
++export const shouldHandleScreegoPeerSession = (
++    host: PartyLANModeHost | undefined = currentHost()
++): boolean => !isPartyLANSFUOnly(host);
++
++export const shouldSignalScreegoShare = (
++    host: PartyLANModeHost | undefined = currentHost()
++): boolean => !isPartyLANSFUOnly(host);
+diff --git a/ui/src/partylanMode.test.mjs b/ui/src/partylanMode.test.mjs
+new file mode 100644
+index 0000000..db14e8b
+--- /dev/null
++++ b/ui/src/partylanMode.test.mjs
+@@ -0,0 +1,31 @@
++import assert from 'node:assert/strict';
++import {readFile} from 'node:fs/promises';
++import test from 'node:test';
++
++import {
++    isPartyLANSFUOnly,
++    shouldHandleScreegoPeerSession,
++    shouldSignalScreegoShare,
++} from './partylanMode.ts';
++
++test('PartyLAN SFU-only mode requires an explicit true flag', () => {
++    assert.equal(isPartyLANSFUOnly({__PARTYLAN_SFU_ONLY__: true}), true);
++    assert.equal(isPartyLANSFUOnly({__PARTYLAN_SFU_ONLY__: false}), false);
++    assert.equal(isPartyLANSFUOnly({}), false);
++    assert.equal(isPartyLANSFUOnly(undefined), false);
++});
++
++test('SFU-only rooms suppress Screego peer sessions and share signaling', () => {
++    const unified = {__PARTYLAN_SFU_ONLY__: true};
++    const legacy = {__PARTYLAN_SFU_ONLY__: false};
++    assert.equal(shouldHandleScreegoPeerSession(unified), false);
++    assert.equal(shouldSignalScreegoShare(unified), false);
++    assert.equal(shouldHandleScreegoPeerSession(legacy), true);
++    assert.equal(shouldSignalScreegoShare(legacy), true);
++});
++
++test('Room member tooltip exposes a stable PartyLAN roster anchor and rollback list', async () => {
++    const roomSource = await readFile(new URL('./Room.tsx', import.meta.url), 'utf8');
++    assert.match(roomSource, /id="partylan-presence-roster"/);
++    assert.match(roomSource, /data-partylan-legacy-roster/);
++});

@@ -1,7 +1,7 @@
 .settings-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(236, 246, 251, 0.62);
+  background: rgba(198, 236, 242, 0.68);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -12,13 +12,16 @@
 
 .settings-panel {
   width: min(920px, 100%);
+  height: min(760px, calc(100vh - 48px));
   max-height: calc(100vh - 48px);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   border-radius: 24px;
   border: 1px solid var(--border-color);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(240, 248, 252, 0.84)),
+    linear-gradient(180deg, rgba(240, 253, 255, 0.96), rgba(215, 241, 247, 0.92)),
     var(--panel-bg);
-  box-shadow: 0 24px 52px rgba(22, 69, 96, 0.14);
+  box-shadow: 0 24px 52px rgba(18, 102, 124, 0.18), 0 0 0 1px rgba(44, 226, 196, 0.1);
   color: var(--text-primary);
   overflow: hidden;
   backdrop-filter: blur(14px);
@@ -46,8 +49,8 @@
 }
 
 .settings-close {
-  width: 32px;
-  height: 32px;
+  width: 44px;
+  height: 44px;
   border: none;
   border-radius: 10px;
   background: transparent;
@@ -67,6 +70,8 @@
   gap: 18px;
   padding: 18px 20px 20px;
   overflow: auto;
+  min-height: 0;
+  overscroll-behavior: contain;
 }
 
 .settings-section {
@@ -78,6 +83,10 @@
 
 .settings-section-wide {
   grid-column: 1 / -1;
+}
+
+.settings-section-gamecast {
+  grid-row: 2;
 }
 
 .settings-section-title {
@@ -114,6 +123,13 @@
   border-color: var(--highlight);
 }
 
+.settings-input:focus-visible,
+.settings-close:focus-visible,
+.settings-btn:focus-visible {
+  outline: 3px solid rgba(57, 208, 183, 0.32);
+  outline-offset: 2px;
+}
+
 .settings-note {
   color: var(--text-muted);
   font-size: 12px;
@@ -127,7 +143,7 @@
   padding: 10px 12px;
   border: 1px solid rgba(92, 138, 173, 0.18);
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.54);
+  background: var(--surface-muted);
   color: var(--text-secondary);
   font-size: 12px;
 }
@@ -158,9 +174,49 @@
   gap: 10px;
   padding: 18px 20px 20px;
   border-top: 1px solid rgba(95, 134, 160, 0.12);
+  background: var(--surface-muted);
+}
+
+.settings-server-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.settings-server-status {
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.settings-server-message {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(15, 107, 134, 0.08);
+}
+
+.settings-certificate {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid rgba(217, 93, 87, 0.24);
+  border-radius: 8px;
+  background: var(--danger-bg);
+  color: #9c3f3b;
+  font-size: 12px;
+}
+
+.settings-certificate code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-primary);
 }
 
 .settings-btn {
+  min-height: 44px;
   padding: 10px 16px;
   border: none;
   border-radius: 12px;
@@ -168,14 +224,23 @@
   font-weight: 600;
 }
 
+.settings-btn.outline {
+  border: 1px solid var(--border-color);
+  background: var(--surface-raised);
+  color: var(--accent-strong);
+}
+
 .settings-btn.secondary {
-  background: var(--accent-bg);
-  color: #f5ffff;
+  border: 1px solid var(--border-color);
+  background: var(--surface-muted);
+  color: var(--text-secondary);
 }
 
 .settings-btn.primary {
-  background: linear-gradient(135deg, var(--accent-strong), var(--accent-soft));
-  color: #f5ffff;
+  border: 1px solid var(--border-highlight);
+  background: var(--accent-bg);
+  color: var(--on-accent);
+  box-shadow: 0 8px 22px var(--highlight-glow);
 }
 
 .settings-btn:disabled {
@@ -190,5 +255,41 @@
 
   .settings-section-wide {
     grid-column: auto;
+  }
+
+  .settings-section-gamecast {
+    grid-row: auto;
+  }
+}
+
+@media (max-width: 620px), (max-height: 620px) {
+  .settings-overlay {
+    padding: 8px;
+  }
+
+  .settings-panel {
+    height: calc(100vh - 16px);
+    max-height: calc(100vh - 16px);
+    border-radius: 8px;
+  }
+
+  .settings-header,
+  .settings-actions {
+    padding-inline: 16px;
+  }
+
+  .settings-body {
+    padding: 16px;
+  }
+
+  .settings-server-row,
+  .settings-certificate {
+    align-items: stretch;
+    grid-template-columns: 1fr;
+    flex-direction: column;
+  }
+
+  .settings-actions .settings-btn {
+    flex: 1 1 0;
   }
 }

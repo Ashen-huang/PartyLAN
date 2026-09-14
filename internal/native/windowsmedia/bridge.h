@@ -12,7 +12,8 @@ typedef enum PartyLANMediaStatus {
     PARTYLAN_MEDIA_STATUS_UNAVAILABLE = 1,
     PARTYLAN_MEDIA_STATUS_UNSUPPORTED_GPU = 2,
     PARTYLAN_MEDIA_STATUS_NOT_IMPLEMENTED = 3,
-    PARTYLAN_MEDIA_STATUS_INTERNAL_ERROR = 4
+    PARTYLAN_MEDIA_STATUS_INTERNAL_ERROR = 4,
+    PARTYLAN_MEDIA_STATUS_RETRYABLE = 5
 } PartyLANMediaStatus;
 
 typedef struct PartyLANMediaCapability {
@@ -39,6 +40,7 @@ typedef struct PartyLANMediaEncoderConfig {
     uint32_t bitrate_kbps;
     uint32_t pixel_format; /* 0 = RGBA, 1 = BGRA */
     uint64_t capturer_handle; /* optional PartyLANCapturer* for native direct path */
+    uint32_t compatibility_mode; /* retry with conservative NVENC parameters */
 } PartyLANMediaEncoderConfig;
 
 typedef struct PartyLANMediaDecoderConfig {
@@ -51,6 +53,23 @@ typedef struct PartyLANMediaPacket {
     uint32_t data_len;
     int64_t timestamp_us;
 } PartyLANMediaPacket;
+
+typedef enum PartyLANWindowCaptureStatus {
+    PARTYLAN_WINDOW_CAPTURE_STATUS_OK = 0,
+    PARTYLAN_WINDOW_CAPTURE_STATUS_UNAVAILABLE = 1,
+    PARTYLAN_WINDOW_CAPTURE_STATUS_WINDOW_CLOSED = 2,
+    PARTYLAN_WINDOW_CAPTURE_STATUS_FRAME_UNAVAILABLE = 3,
+    PARTYLAN_WINDOW_CAPTURE_STATUS_INTERNAL_ERROR = 4
+} PartyLANWindowCaptureStatus;
+
+typedef struct PartyLANWindowCaptureFrame {
+    uint8_t* data;
+    uint32_t data_len;
+    uint32_t width;
+    uint32_t height;
+    uint32_t stride;
+    int64_t timestamp_us;
+} PartyLANWindowCaptureFrame;
 
 PartyLANMediaStatus PartyLAN_QueryMediaCapability(PartyLANMediaCapability* capability);
 const char* PartyLAN_GetLastMediaReason(void);
@@ -79,6 +98,20 @@ void PartyLAN_DecoderClose(void* handle);
 void PartyLAN_DestroyCapturer(void* handle);
 void PartyLAN_DestroyEncoder(void* handle);
 void PartyLAN_DestroyDecoder(void* handle);
+
+void* PartyLAN_CreateWindowCapturer(void);
+PartyLANWindowCaptureStatus PartyLAN_WindowCapturerStart(void* handle, uint64_t window_handle);
+PartyLANWindowCaptureStatus PartyLAN_WindowCapturerBounds(uint64_t window_handle, uint32_t* width, uint32_t* height);
+PartyLANWindowCaptureStatus PartyLAN_WindowCapturerPrepareBounds(
+    uint64_t window_handle,
+    uint32_t timeout_ms,
+    uint32_t* width,
+    uint32_t* height);
+PartyLANWindowCaptureStatus PartyLAN_WindowCapturerGrabFrame(void* handle, int timeout_ms, PartyLANWindowCaptureFrame* frame);
+void PartyLAN_WindowCapturerReleaseFrame(void* handle, PartyLANWindowCaptureFrame* frame);
+void PartyLAN_WindowCapturerStop(void* handle);
+void PartyLAN_DestroyWindowCapturer(void* handle);
+const char* PartyLAN_GetWindowCaptureReason(void* handle);
 
 #ifdef __cplusplus
 }

@@ -1,0 +1,731 @@
+diff --git a/auth/auth.go b/auth/auth.go
+index 03a859f..265ef57 100644
+--- a/auth/auth.go
++++ b/auth/auth.go
+@@ -7,6 +7,7 @@ import (
+ 	"io"
+ 	"net/http"
+ 	"os"
++	"strings"
+ 	"sync"
+ 
+ 	"github.com/gorilla/sessions"
+@@ -151,6 +152,7 @@ func (u *Users) CurrentUser(r *http.Request) (string, bool) {
+ func (u *Users) Logout(w http.ResponseWriter, r *http.Request) {
+ 	session := sessions.NewSession(u.store, "user")
+ 	session.IsNew = true
++	session.Options = deviceSessionOptions(r, -1)
+ 	if err := u.store.Save(r, w, session); err != nil {
+ 		w.WriteHeader(500)
+ 		_ = json.NewEncoder(w).Encode(&Response{
+@@ -175,7 +177,7 @@ func (u *Users) Authenticate(w http.ResponseWriter, r *http.Request) {
+ 
+ 	session := sessions.NewSession(u.store, "user")
+ 	session.IsNew = true
+-	session.Options.MaxAge = u.sessionTimeout
++	session.Options = deviceSessionOptions(r, u.sessionTimeout)
+ 	session.Values["user"] = user
+ 	if err := u.store.Save(r, w, session); err != nil {
+ 		w.WriteHeader(500)
+@@ -190,6 +192,29 @@ func (u *Users) Authenticate(w http.ResponseWriter, r *http.Request) {
+ 	})
+ }
+ 
++func (u *Users) RefreshSession(w http.ResponseWriter, r *http.Request) error {
++	session, err := u.store.Get(r, "user")
++	if err != nil {
++		return err
++	}
++	if _, ok := session.Values["user"].(string); !ok {
++		return nil
++	}
++	session.Options = deviceSessionOptions(r, u.sessionTimeout)
++	return u.store.Save(r, w, session)
++}
++
++func deviceSessionOptions(r *http.Request, maxAge int) *sessions.Options {
++	forwardedProto := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0])
++	return &sessions.Options{
++		Path:     "/",
++		MaxAge:   maxAge,
++		HttpOnly: true,
++		Secure:   r.TLS != nil || strings.EqualFold(forwardedProto, "https"),
++		SameSite: http.SameSiteLaxMode,
++	}
++}
++
+ func (u *Users) Validate(user, password string) bool {
+ 	u.reloadPasswordsFileIfChanged()
+ 	u.mu.RLock()
+diff --git a/auth/auth_session_test.go b/auth/auth_session_test.go
+new file mode 100644
+index 0000000..49861a3
+--- /dev/null
++++ b/auth/auth_session_test.go
+@@ -0,0 +1,87 @@
++package auth
++
++import (
++	"net/http"
++	"net/http/httptest"
++	"net/url"
++	"path/filepath"
++	"strings"
++	"testing"
++
++	"github.com/gorilla/sessions"
++)
++
++func TestAuthenticateCreatesPersistentDeviceCookie(t *testing.T) {
++	path := filepath.Join(t.TempDir(), "users.htpasswd")
++	writePasswordFile(t, path, passwordRecord(t, "device-user", "device-pass"))
++	users, err := ReadPasswordsFile(path, []byte("01234567890123456789012345678901"), 3600)
++	if err != nil {
++		t.Fatalf("read passwords file: %v", err)
++	}
++
++	form := url.Values{"user": {"device-user"}, "pass": {"device-pass"}}
++	request := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
++	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
++	request.Header.Set("X-Forwarded-Proto", "https")
++	response := httptest.NewRecorder()
++	users.Authenticate(response, request)
++
++	if response.Code != http.StatusOK {
++		t.Fatalf("authenticate status = %d, want %d", response.Code, http.StatusOK)
++	}
++	cookies := response.Result().Cookies()
++	if len(cookies) != 1 {
++		t.Fatalf("cookie count = %d, want 1", len(cookies))
++	}
++	cookie := cookies[0]
++	if cookie.MaxAge != 3600 {
++		t.Fatalf("cookie MaxAge = %d, want 3600", cookie.MaxAge)
++	}
++	if !cookie.HttpOnly || !cookie.Secure || cookie.SameSite != http.SameSiteLaxMode {
++		t.Fatalf("cookie flags = HttpOnly:%t Secure:%t SameSite:%d", cookie.HttpOnly, cookie.Secure, cookie.SameSite)
++	}
++}
++
++func TestRefreshSessionUpgradesSessionOnlyCookie(t *testing.T) {
++	users, err := ReadPasswordsFile("", []byte("01234567890123456789012345678901"), 3600)
++	if err != nil {
++		t.Fatalf("create users: %v", err)
++	}
++
++	oldRequest := httptest.NewRequest(http.MethodGet, "/config", nil)
++	oldResponse := httptest.NewRecorder()
++	oldSession := sessions.NewSession(users.store, "user")
++	oldSession.Options = &sessions.Options{Path: "/"}
++	oldSession.Values["user"] = "device-user"
++	if err := users.store.Save(oldRequest, oldResponse, oldSession); err != nil {
++		t.Fatalf("save session-only cookie: %v", err)
++	}
++
++	request := httptest.NewRequest(http.MethodGet, "/config", nil)
++	request.Header.Set("X-Forwarded-Proto", "https")
++	request.AddCookie(oldResponse.Result().Cookies()[0])
++	response := httptest.NewRecorder()
++	if err := users.RefreshSession(response, request); err != nil {
++		t.Fatalf("refresh session: %v", err)
++	}
++
++	cookies := response.Result().Cookies()
++	if len(cookies) != 1 || cookies[0].MaxAge != 3600 || !cookies[0].Secure {
++		t.Fatalf("refreshed cookie is not persistent: %#v", cookies)
++	}
++}
++
++func TestLogoutExpiresPersistentDeviceCookie(t *testing.T) {
++	users, err := ReadPasswordsFile("", []byte("01234567890123456789012345678901"), 3600)
++	if err != nil {
++		t.Fatalf("create users: %v", err)
++	}
++	request := httptest.NewRequest(http.MethodPost, "/logout", nil)
++	response := httptest.NewRecorder()
++	users.Logout(response, request)
++
++	cookies := response.Result().Cookies()
++	if len(cookies) != 1 || cookies[0].MaxAge >= 0 {
++		t.Fatalf("logout cookie must expire immediately: %#v", cookies)
++	}
++}
+diff --git a/router/router.go b/router/router.go
+index 99eaabb..c549a91 100644
+--- a/router/router.go
++++ b/router/router.go
+@@ -44,6 +44,11 @@ func Router(conf config.Config, rooms *ws.Rooms, users *auth.Users, version stri
+ 	router.Methods("POST").Path("/logout").HandlerFunc(users.Logout)
+ 	router.Methods("GET").Path("/config").HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+ 		user, loggedIn := users.CurrentUser(r)
++		if loggedIn {
++			if err := users.RefreshSession(w, r); err != nil {
++				log.Warn().Err(err).Msg("Could not refresh persistent login session")
++			}
++		}
+ 		_ = json.NewEncoder(w).Encode(&UIConfig{
+ 			AuthMode:                 conf.AuthMode,
+ 			LoggedIn:                 loggedIn,
+diff --git a/ui/src/Room.native-ui.test.mjs b/ui/src/Room.native-ui.test.mjs
+index 753a68b..84f4cf0 100644
+--- a/ui/src/Room.native-ui.test.mjs
++++ b/ui/src/Room.native-ui.test.mjs
+@@ -4,6 +4,7 @@ import test from 'node:test';
+ 
+ const roomSource = await readFile(new URL('./Room.tsx', import.meta.url), 'utf8');
+ const useRoomSource = await readFile(new URL('./useRoom.ts', import.meta.url), 'utf8');
++const useRoomIDSource = await readFile(new URL('./useRoomID.ts', import.meta.url), 'utf8');
+ const indexSource = await readFile(new URL('./index.tsx', import.meta.url), 'utf8');
+ const htmlSource = await readFile(new URL('../index.html', import.meta.url), 'utf8');
+ const manageSource = await readFile(new URL('./RoomManage.tsx', import.meta.url), 'utf8');
+@@ -31,7 +32,7 @@ test('Room renders the native PartyLAN side rail and stable action hooks', () =>
+     assert.match(roomSource, /停止共享/);
+     assert.match(roomSource, /暂无共享画面/);
+     assert.match(roomSource, /result\.push\('你'\)/);
+-    assert.match(roomSource, /result\.push\('房主'\)/);
++    assert.doesNotMatch(roomSource, /user\.owner|房主/);
+     assert.match(roomSource, /result\.push\('共享中'\)/);
+ });
+ 
+@@ -71,7 +72,19 @@ test('web theme and entry screens use the PartyLAN light theme and Chinese copy'
+     assert.match(manageSource, /\/api\/rooms/);
+     assert.match(manageSource, /5000/);
+     assert.match(manageSource, /手动输入房间 ID/);
+-    assert.doesNotMatch(manageSource, /Create or Join a Room|Close Room after you leave|Nat Traversal/);
++    assert.match(
++        manageSource,
++        /const ownRoom = config\.loggedIn && config\.user \? config\.user : config\.roomName/
++    );
++    assert.match(manageSource, /initialLoading/);
++    assert.match(manageSource, /refresh\('background'\)/);
++    assert.doesNotMatch(manageSource, /closeOnOwnerLeave|离开后关闭自己创建的房间/);
++    assert.doesNotMatch(useRoomSource, /getFromURL\('closeOnOwnerLeave'\)/);
++    assert.match(useRoomIDSource, /new URLSearchParams/);
++    assert.doesNotMatch(
++        manageSource,
++        /Create or Join a Room|Close Room after you leave|Nat Traversal/
++    );
+     assert.match(loginSource, /登录 PartyLAN/);
+     assert.match(loginSource, /用户名/);
+     assert.match(loginSource, /密码/);
+diff --git a/ui/src/Room.tsx b/ui/src/Room.tsx
+index 473d236..c00307f 100644
+--- a/ui/src/Room.tsx
++++ b/ui/src/Room.tsx
+@@ -101,9 +101,6 @@ const flags = (user: RoomUser) => {
+     if (user.you) {
+         result.push('你');
+     }
+-    if (user.owner) {
+-        result.push('房主');
+-    }
+     if (user.streaming) {
+         result.push('共享中');
+     }
+diff --git a/ui/src/RoomManage.tsx b/ui/src/RoomManage.tsx
+index 94c2d57..03e2da0 100644
+--- a/ui/src/RoomManage.tsx
++++ b/ui/src/RoomManage.tsx
+@@ -3,10 +3,8 @@ import RefreshIcon from '@mui/icons-material/Refresh';
+ import {
+     Box,
+     Button,
+-    Checkbox,
+     CircularProgress,
+     Collapse,
+-    FormControlLabel,
+     IconButton,
+     Link,
+     Paper,
+@@ -25,8 +23,6 @@ interface JoinableRoom {
+     room: string;
+     active: boolean;
+     origin?: string;
+-    ownerName?: string;
+-    user?: string;
+     sharing?: boolean;
+     participantCount?: number;
+ }
+@@ -45,60 +41,64 @@ const originLabel = (origin?: string): string => {
+ 
+ const useJoinableRooms = (currentUser: string) => {
+     const [rooms, setRooms] = React.useState<JoinableRoom[]>([]);
+-    const [loading, setLoading] = React.useState(true);
++    const [initialLoading, setInitialLoading] = React.useState(true);
++    const [refreshing, setRefreshing] = React.useState(false);
+     const [error, setError] = React.useState('');
++    const requestInFlight = React.useRef(false);
+ 
+-    const refresh = React.useCallback(async () => {
+-        setLoading(true);
+-        try {
+-            const response = await fetch('/api/rooms', {
+-                cache: 'no-store',
+-                credentials: 'same-origin',
+-                headers: {Accept: 'application/json'},
+-            });
+-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+-            const payload = (await response.json()) as RoomsResponse;
+-            if (!payload.ok) throw new Error(payload.error || '房间列表读取失败');
+-            setRooms(
+-                (payload.rooms ?? []).filter(
+-                    (entry) =>
+-                        entry.active &&
+-                        entry.room &&
+-                        entry.user !== currentUser &&
+-                        entry.ownerName !== currentUser
+-                )
+-            );
+-            setError('');
+-        } catch (reason) {
+-            setError(reason instanceof Error ? reason.message : String(reason));
+-        } finally {
+-            setLoading(false);
+-        }
+-    }, [currentUser]);
++    const refresh = React.useCallback(
++        async (mode: 'initial' | 'manual' | 'background' = 'manual') => {
++            if (requestInFlight.current) return;
++            requestInFlight.current = true;
++            if (mode === 'manual') setRefreshing(true);
++            try {
++                const response = await fetch('/api/rooms', {
++                    cache: 'no-store',
++                    credentials: 'same-origin',
++                    headers: {Accept: 'application/json'},
++                });
++                if (!response.ok) throw new Error(`HTTP ${response.status}`);
++                const payload = (await response.json()) as RoomsResponse;
++                if (!payload.ok) throw new Error(payload.error || '房间列表读取失败');
++                const nextRooms = (payload.rooms ?? []).filter(
++                    (entry) => entry.active && entry.room && entry.room !== currentUser
++                );
++                setRooms((current) =>
++                    JSON.stringify(current) === JSON.stringify(nextRooms) ? current : nextRooms
++                );
++                setError('');
++            } catch (reason) {
++                setError(reason instanceof Error ? reason.message : String(reason));
++            } finally {
++                if (mode === 'initial') setInitialLoading(false);
++                if (mode === 'manual') setRefreshing(false);
++                requestInFlight.current = false;
++            }
++        },
++        [currentUser]
++    );
+ 
+     React.useEffect(() => {
+-        void refresh();
+-        const timer = window.setInterval(() => void refresh(), 5000);
++        void refresh('initial');
++        const timer = window.setInterval(() => void refresh('background'), 5000);
+         return () => window.clearInterval(timer);
+     }, [refresh]);
+ 
+-    return {rooms, loading, error, refresh};
++    return {rooms, initialLoading, refreshing, error, refresh};
+ };
+ 
+ const Lobby = ({room, config}: {room: FCreateRoom; config: UseConfig}) => {
+     const [moreOpen, setMoreOpen] = React.useState(false);
+     const [manualRoom, setManualRoom] = React.useState(() => getRoomFromURL() ?? '');
+-    const [ownerLeave, setOwnerLeave] = React.useState(config.closeRoomWhenOwnerLeaves);
+     const mode = authModeToRoomMode(config.authMode, config.loggedIn);
+-    const ownRoom = config.roomName;
+-    const {rooms, loading, error, refresh} = useJoinableRooms(config.user);
++    const ownRoom = config.loggedIn && config.user ? config.user : config.roomName;
++    const {rooms, initialLoading, refreshing, error, refresh} = useJoinableRooms(config.user);
+ 
+     const createOwnRoom = () =>
+         room({
+             type: 'create',
+             payload: {
+                 mode,
+-                closeOnOwnerLeave: ownerLeave,
+                 joinIfExist: true,
+                 id: ownRoom || undefined,
+             },
+@@ -177,14 +177,19 @@ const Lobby = ({room, config}: {room: FCreateRoom; config: UseConfig}) => {
+                         <Typography variant="body2" color="text.secondary">
+                             {rooms.length} 个
+                         </Typography>
+-                        <Tooltip title="刷新房间列表">
++                        <Tooltip title={error ? '刷新失败，当前显示上次数据' : '刷新房间列表'}>
+                             <IconButton
+                                 aria-label="刷新房间列表"
+-                                onClick={() => void refresh()}
+-                                disabled={loading}
++                                onClick={() => void refresh('manual')}
++                                disabled={initialLoading || refreshing}
++                                color={error ? 'error' : 'primary'}
+                                 size="small"
+                             >
+-                                {loading ? <CircularProgress size={20} /> : <RefreshIcon />}
++                                {initialLoading || refreshing ? (
++                                    <CircularProgress size={20} color="inherit" />
++                                ) : (
++                                    <RefreshIcon />
++                                )}
+                             </IconButton>
+                         </Tooltip>
+                     </Box>
+@@ -194,13 +199,23 @@ const Lobby = ({room, config}: {room: FCreateRoom; config: UseConfig}) => {
+                     aria-live="polite"
+                     sx={{
+                         maxHeight: 284,
++                        minHeight: 78,
+                         overflowY: 'auto',
+                         border: '1px solid rgba(41, 130, 157, .28)',
+                         borderRadius: 2,
+                         backgroundColor: 'rgba(231, 249, 252, .72)',
+                     }}
+                 >
+-                    {!loading && rooms.length === 0 && !error && (
++                    {initialLoading && rooms.length === 0 && (
++                        <Box
++                            role="status"
++                            aria-label="正在读取房间列表"
++                            sx={{minHeight: 76, display: 'grid', placeItems: 'center'}}
++                        >
++                            <CircularProgress size={24} />
++                        </Box>
++                    )}
++                    {!initialLoading && rooms.length === 0 && !error && (
+                         <Typography
+                             color="text.secondary"
+                             align="center"
+@@ -209,12 +224,16 @@ const Lobby = ({room, config}: {room: FCreateRoom; config: UseConfig}) => {
+                             暂无其他用户创建的活动房间
+                         </Typography>
+                     )}
+-                    {error && (
++                    {error && rooms.length === 0 && !initialLoading && (
+                         <Box sx={{padding: 2, textAlign: 'center'}}>
+                             <Typography color="error" variant="body2" sx={{mb: 1}}>
+                                 房间列表读取失败：{error}
+                             </Typography>
+-                            <Button variant="outlined" size="small" onClick={() => void refresh()}>
++                            <Button
++                                variant="outlined"
++                                size="small"
++                                onClick={() => void refresh('manual')}
++                            >
+                                 重试
+                             </Button>
+                         </Box>
+@@ -247,7 +266,6 @@ const Lobby = ({room, config}: {room: FCreateRoom; config: UseConfig}) => {
+                                     color="text.secondary"
+                                     noWrap
+                                 >
+-                                    {entry.ownerName || entry.user || '远程主机'} ·{' '}
+                                     {originLabel(entry.origin)} · {entry.participantCount ?? 1} 人
+                                 </Typography>
+                             </Box>
+@@ -345,15 +363,6 @@ const Lobby = ({room, config}: {room: FCreateRoom; config: UseConfig}) => {
+                             </Button>
+                         </Box>
+ 
+-                        <FormControlLabel
+-                            control={
+-                                <Checkbox
+-                                    checked={ownerLeave}
+-                                    onChange={(_, checked) => setOwnerLeave(checked)}
+-                                />
+-                            }
+-                            label="离开后关闭自己创建的房间"
+-                        />
+                         <Link
+                             href="https://github.com/screego/server/"
+                             target="_blank"
+diff --git a/ui/src/message.ts b/ui/src/message.ts
+index 1ad7bdc..3f3a987 100644
+--- a/ui/src/message.ts
++++ b/ui/src/message.ts
+@@ -61,7 +61,6 @@ export interface RoomUser {
+     name: string;
+     streaming: boolean;
+     you: boolean;
+-    owner: boolean;
+ }
+ 
+ export interface P2PMessage<T> {
+diff --git a/ui/src/useRoom.ts b/ui/src/useRoom.ts
+index d925203..ebc8e4b 100644
+--- a/ui/src/useRoom.ts
++++ b/ui/src/useRoom.ts
+@@ -473,14 +473,17 @@ export const useRoom = (config: UIConfig): UseRoom => {
+             nativeShareWindow.__PARTYLAN_NATIVE_UI_SHARE__ = true;
+             stream.current = await navigator.mediaDevices.getDisplayMedia({
+                 video,
+-                audio: shareSettings.audioMode === 'off' ? false : {
+-                    echoCancellation: false,
+-                    autoGainControl: false,
+-                    noiseSuppression: false,
+-                    // https://medium.com/@trystonperry/why-is-getdisplaymedias-audio-quality-so-bad-b49ba9cfaa83
+-                    // @ts-expect-error
+-                    googAutoGainControl: false,
+-                },
++                audio:
++                    shareSettings.audioMode === 'off'
++                        ? false
++                        : {
++                              echoCancellation: false,
++                              autoGainControl: false,
++                              noiseSuppression: false,
++                              // https://medium.com/@trystonperry/why-is-getdisplaymedias-audio-quality-so-bad-b49ba9cfaa83
++                              // @ts-expect-error
++                              googAutoGainControl: false,
++                          },
+             });
+             nativeShareWindow.__PARTYLAN_NATIVE_UI_SHARE__ = false;
+         } catch (e) {
+@@ -528,16 +531,10 @@ export const useRoom = (config: UIConfig): UseRoom => {
+         if (roomID) {
+             const create = getFromURL('create') === 'true';
+             if (create) {
+-                const closeOnOwnerLeaveString = getFromURL('closeOnOwnerLeave');
+-                const closeOnOwnerLeave =
+-                    closeOnOwnerLeaveString === undefined
+-                        ? config.closeRoomWhenOwnerLeaves
+-                        : closeOnOwnerLeaveString === 'true';
+                 room({
+                     type: 'create',
+                     payload: {
+                         joinIfExist: true,
+-                        closeOnOwnerLeave,
+                         id: roomID,
+                         mode: authModeToRoomMode(config.authMode, config.loggedIn),
+                     },
+diff --git a/ui/src/useRoomID.ts b/ui/src/useRoomID.ts
+index d2acec0..6cff1f9 100644
+--- a/ui/src/useRoomID.ts
++++ b/ui/src/useRoomID.ts
+@@ -5,12 +5,7 @@ export const getRoomFromURL = (): string | undefined => getFromURL('room');
+ export const getFromURL = (
+     key: string,
+     search: string = window.location.search
+-): string | undefined =>
+-    search
+-        .slice(1)
+-        .split('&')
+-        .find((param) => param.startsWith(`${key}=`))
+-        ?.split('=')[1];
++): string | undefined => new URLSearchParams(search).get(key) ?? undefined;
+ 
+ export const useRoomID = (): [string | undefined, (v?: string) => void] => {
+     const [state, setState] = React.useState<string | undefined>(() => getRoomFromURL());
+@@ -25,7 +20,10 @@ export const useRoomID = (): [string | undefined, (v?: string) => void] => {
+             (id) =>
+                 setState((oldId?: string) => {
+                     if (oldId !== id) {
+-                        window.history.pushState({roomId: id}, '', id ? `?room=${id}` : '?');
++                        const search = new URLSearchParams();
++                        if (id) search.set('room', id);
++                        const target = search.toString();
++                        window.history.pushState({roomId: id}, '', target ? `?${target}` : '?');
+                     }
+                     return id;
+                 }),
+diff --git a/ws/event_create.go b/ws/event_create.go
+index 2c10b5a..bef6d8d 100644
+--- a/ws/event_create.go
++++ b/ws/event_create.go
+@@ -59,16 +59,14 @@ func (e *Create) Execute(rooms *Rooms, current ClientInfo) error {
+ 	}
+ 
+ 	room := &Room{
+-		ID:                e.ID,
+-		CloseOnOwnerLeave: e.CloseOnOwnerLeave,
+-		Mode:              e.Mode,
+-		Sessions:          map[xid.ID]*RoomSession{},
++		ID:       e.ID,
++		Mode:     e.Mode,
++		Sessions: map[xid.ID]*RoomSession{},
+ 		Users: map[xid.ID]*User{
+ 			current.ID: {
+ 				ID:        current.ID,
+ 				Name:      name,
+ 				Streaming: false,
+-				Owner:     true,
+ 				Addr:      current.Addr,
+ 				_write:    current.Write,
+ 			},
+diff --git a/ws/event_disconnected.go b/ws/event_disconnected.go
+index 67b236e..59cc69b 100644
+--- a/ws/event_disconnected.go
++++ b/ws/event_disconnected.go
+@@ -3,7 +3,6 @@ package ws
+ import (
+ 	"bytes"
+ 
+-	"github.com/gorilla/websocket"
+ 	"github.com/screego/server/ws/outgoing"
+ )
+ 
+@@ -32,9 +31,7 @@ func (e *Disconnected) executeNoError(rooms *Rooms, current ClientInfo) {
+ 		return
+ 	}
+ 
+-	user, ok := room.Users[current.ID]
+-
+-	if !ok {
++	if _, ok := room.Users[current.ID]; !ok {
+ 		// room may already be removed
+ 		return
+ 	}
+@@ -59,15 +56,6 @@ func (e *Disconnected) executeNoError(rooms *Rooms, current ClientInfo) {
+ 		}
+ 	}
+ 
+-	if user.Owner && room.CloseOnOwnerLeave {
+-		for _, member := range room.Users {
+-			delete(rooms.connected, member.ID)
+-			member.WriteTimeout(outgoing.CloseWriter{Code: websocket.CloseNormalClosure, Reason: CloseOwnerLeft})
+-		}
+-		rooms.closeRoom(roomID)
+-		return
+-	}
+-
+ 	if len(room.Users) == 0 {
+ 		rooms.closeRoom(roomID)
+ 		return
+diff --git a/ws/event_join.go b/ws/event_join.go
+index 8e14f0b..86bf1a3 100644
+--- a/ws/event_join.go
++++ b/ws/event_join.go
+@@ -36,7 +36,6 @@ func (e *Join) Execute(rooms *Rooms, current ClientInfo) error {
+ 		ID:        current.ID,
+ 		Name:      name,
+ 		Streaming: false,
+-		Owner:     false,
+ 		Addr:      current.Addr,
+ 		_write:    current.Write,
+ 	}
+diff --git a/ws/room.go b/ws/room.go
+index 11a9367..1312a35 100644
+--- a/ws/room.go
++++ b/ws/room.go
+@@ -21,18 +21,12 @@ const (
+ )
+ 
+ type Room struct {
+-	ID                string
+-	CloseOnOwnerLeave bool
+-	Mode              ConnectionMode
+-	Users             map[xid.ID]*User
+-	Sessions          map[xid.ID]*RoomSession
++	ID       string
++	Mode     ConnectionMode
++	Users    map[xid.ID]*User
++	Sessions map[xid.ID]*RoomSession
+ }
+ 
+-const (
+-	CloseOwnerLeft = "Owner Left"
+-	CloseDone      = "Read End"
+-)
+-
+ func (r *Room) newSession(host, client xid.ID, rooms *Rooms, v4, v6 net.IP) {
+ 	id := xid.New()
+ 	r.Sessions[id] = &RoomSession{
+@@ -105,7 +99,6 @@ func (r *Room) notifyInfoChanged() {
+ 				Name:      user.Name,
+ 				Streaming: user.Streaming,
+ 				You:       current == user,
+-				Owner:     user.Owner,
+ 			})
+ 		}
+ 
+@@ -113,10 +106,6 @@ func (r *Room) notifyInfoChanged() {
+ 			left := users[i]
+ 			right := users[j]
+ 
+-			if left.Owner != right.Owner {
+-				return left.Owner
+-			}
+-
+ 			if left.Streaming != right.Streaming {
+ 				return left.Streaming
+ 			}
+@@ -136,7 +125,6 @@ type User struct {
+ 	Addr      net.IP
+ 	Name      string
+ 	Streaming bool
+-	Owner     bool
+ 	_write    chan<- outgoing.Message
+ }
+ 
+diff --git a/ws/room_lifecycle_test.go b/ws/room_lifecycle_test.go
+new file mode 100644
+index 0000000..b1489c6
+--- /dev/null
++++ b/ws/room_lifecycle_test.go
+@@ -0,0 +1,67 @@
++package ws
++
++import (
++	"net"
++	"testing"
++
++	"github.com/gorilla/websocket"
++	"github.com/rs/xid"
++	"github.com/screego/server/config"
++	"github.com/screego/server/ws/outgoing"
++)
++
++func lifecycleClient(name string) ClientInfo {
++	return ClientInfo{
++		ID:                xid.New(),
++		Authenticated:     true,
++		AuthenticatedUser: name,
++		Write:             make(chan outgoing.Message, 8),
++		Addr:              net.ParseIP("127.0.0.1"),
++	}
++}
++
++func TestRoomStaysOpenUntilLastMemberLeaves(t *testing.T) {
++	rooms := &Rooms{
++		Rooms:     map[string]*Room{},
++		connected: map[xid.ID]string{},
++		config:    config.Config{AuthMode: config.AuthModeAll},
++	}
++	creator := lifecycleClient("alice")
++	member := lifecycleClient("bob")
++
++	if err := (&Create{
++		ID:                "alice",
++		Mode:              ConnectionTURN,
++		CloseOnOwnerLeave: true,
++	}).Execute(rooms, creator); err != nil {
++		t.Fatalf("create room: %v", err)
++	}
++
++	created := <-creator.Write
++	roomMessage, ok := created.(outgoing.Room)
++	if !ok || len(roomMessage.Users) != 1 {
++		t.Fatalf("unexpected room message: %#v", created)
++	}
++	if roomMessage.Users[0].Owner {
++		t.Fatal("room protocol must not expose an owner")
++	}
++
++	room := rooms.Rooms["alice"]
++	room.Users[member.ID] = &User{
++		ID: member.ID, Addr: member.Addr, Name: member.AuthenticatedUser, _write: member.Write,
++	}
++	rooms.connected[member.ID] = room.ID
++
++	(&Disconnected{Code: websocket.CloseNormalClosure, Reason: "creator left"}).executeNoError(rooms, creator)
++	if _, ok := rooms.Rooms[room.ID]; !ok {
++		t.Fatal("room closed while another member was still connected")
++	}
++	if _, ok := room.Users[member.ID]; !ok {
++		t.Fatal("remaining member was removed with the creator")
++	}
++
++	(&Disconnected{Code: websocket.CloseNormalClosure, Reason: "last member left"}).executeNoError(rooms, member)
++	if _, ok := rooms.Rooms[room.ID]; ok {
++		t.Fatal("empty room must be closed")
++	}
++}

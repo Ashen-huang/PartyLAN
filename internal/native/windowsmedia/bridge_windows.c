@@ -1284,15 +1284,17 @@ PartyLANMediaStatus PartyLAN_EncoderConfigure(void* handle, const PartyLANMediaE
     bitrate_bps = config->bitrate_kbps > 0 ? config->bitrate_kbps * 1000U : 2000000U;
     encode_config.rcParams.averageBitRate = bitrate_bps;
     encode_config.rcParams.maxBitRate = bitrate_bps;
-    encode_config.rcParams.vbvBufferSize = bitrate_bps;
-    encode_config.rcParams.vbvInitialDelay = bitrate_bps / 2U;
-    encode_config.rcParams.zeroReorderDelay = 1;
     encode_config.encodeCodecConfig.h264Config.idrPeriod = keyframe_interval;
-    encode_config.encodeCodecConfig.h264Config.level = NV_ENC_LEVEL_H264_31;
+    encode_config.encodeCodecConfig.h264Config.level = NV_ENC_LEVEL_AUTOSELECT;
     encode_config.encodeCodecConfig.h264Config.chromaFormatIDC = 1;
     encode_config.encodeCodecConfig.h264Config.disableSPSPPS = 0;
-    encode_config.encodeCodecConfig.h264Config.outputAUD = 1;
     encode_config.encodeCodecConfig.h264Config.repeatSPSPPS = 1;
+    if (!config->compatibility_mode) {
+        encode_config.rcParams.vbvBufferSize = bitrate_bps;
+        encode_config.rcParams.vbvInitialDelay = bitrate_bps / 2U;
+        encode_config.rcParams.zeroReorderDelay = 1;
+        encode_config.encodeCodecConfig.h264Config.outputAUD = 1;
+    }
 
     memset(&init_params, 0, sizeof(init_params));
     init_params.version = partylan_nvenc_struct_version_ex(encoder->api_version, 7);
@@ -1308,13 +1310,33 @@ PartyLANMediaStatus PartyLAN_EncoderConfigure(void* handle, const PartyLANMediaE
     init_params.enablePTD = 1;
     init_params.tuningInfo = NV_ENC_TUNING_INFO_LOW_LATENCY;
     init_params.encodeConfig = &encode_config;
-    init_params.maxEncodeWidth = config->width;
-    init_params.maxEncodeHeight = config->height;
+    if (!config->compatibility_mode) {
+        init_params.maxEncodeWidth = config->width;
+        init_params.maxEncodeHeight = config->height;
+    }
 
     nv_status = encoder->api.nvEncInitializeEncoder(encoder->session, &init_params);
     if (nv_status != NV_ENC_SUCCESS) {
-        partylan_set_nv_reason("nvEncInitializeEncoder", nv_status);
+        char reason_buf[256];
+        snprintf(
+            reason_buf,
+            sizeof(reason_buf),
+            "nvEncInitializeEncoder failed: %d (%ux%u@%u %ukbps compatibility=%u)",
+            (int)nv_status,
+            config->width,
+            config->height,
+            config->fps,
+            config->bitrate_kbps,
+            config->compatibility_mode ? 1U : 0U);
+        partylan_append_api_version_reason(reason_buf, sizeof(reason_buf), encoder->api_version, max_supported_version);
+        partylan_set_reason(reason_buf);
         partylan_encoder_cleanup_runtime(encoder);
+        if (nv_status == NV_ENC_ERR_INVALID_PARAM && !config->compatibility_mode) {
+            return PARTYLAN_MEDIA_STATUS_RETRYABLE;
+        }
+        if (nv_status == NV_ENC_ERR_INVALID_PARAM) {
+            return PARTYLAN_MEDIA_STATUS_UNAVAILABLE;
+        }
         return PARTYLAN_MEDIA_STATUS_UNSUPPORTED_GPU;
     }
 

@@ -3,21 +3,26 @@ package app
 type Event string
 
 const (
-	EventPeerJoined      Event = "peer:joined"
-	EventPeerLeft        Event = "peer:left"
-	EventPeerVoiceState  Event = "peer:voice-state"
-	EventStreamStarted   Event = "stream:started"
-	EventStreamStopped   Event = "stream:stopped"
-	EventStreamFrame     Event = "stream:frame"
-	EventMediaSignal     Event = "media:signal"
-	EventRoomCreated     Event = "room:created"
-	EventRoomJoined      Event = "room:joined"
-	EventRoomLeft        Event = "room:left"
-	EventNetworkStatus   Event = "network:status"
-	EventVideoCapability Event = "video:capability"
-	EventAudioCapability Event = "audio:capability"
-	EventRuntimeStatus   Event = "runtime:status"
-	EventError           Event = "error"
+	EventPeerJoined           Event = "peer:joined"
+	EventPeerLeft             Event = "peer:left"
+	EventPeerVoiceState       Event = "peer:voice-state"
+	EventStreamStarted        Event = "stream:started"
+	EventStreamStopped        Event = "stream:stopped"
+	EventStreamFrame          Event = "stream:frame"
+	EventStreamStats          Event = "stream:stats"
+	EventMediaSignal          Event = "media:signal"
+	EventRoomCreated          Event = "room:created"
+	EventRoomJoined           Event = "room:joined"
+	EventRoomLeft             Event = "room:left"
+	EventNetworkStatus        Event = "network:status"
+	EventVideoCapability      Event = "video:capability"
+	EventAudioCapability      Event = "audio:capability"
+	EventRuntimeStatus        Event = "runtime:status"
+	EventGameCastSignal       Event = "gamecast:signal"
+	EventGameCastStatus       Event = "gamecast:status"
+	EventGameCastShareRuntime Event = "gamecast:share-runtime"
+	EventGameCastVoiceState   Event = "gamecast:voice-state"
+	EventError                Event = "error"
 )
 
 type PeerEvent struct {
@@ -35,6 +40,33 @@ type StreamEvent struct {
 	Width  int    `json:"width"`
 	Height int    `json:"height"`
 	FPS    int    `json:"fps"`
+}
+
+type StreamStatsEvent struct {
+	PeerID             string  `json:"peerId"`
+	Width              int     `json:"width"`
+	Height             int     `json:"height"`
+	Mode               string  `json:"mode"`
+	EncodedFPS         float64 `json:"encodedFps"`
+	EstimatedSourceFPS float64 `json:"estimatedSourceFps"`
+	BitrateKbps        float64 `json:"bitrateKbps"`
+	Sessions           int     `json:"sessions"`
+	RequestedWidth     int     `json:"requestedWidth,omitempty"`
+	RequestedHeight    int     `json:"requestedHeight,omitempty"`
+	RequestedFPS       int     `json:"requestedFps,omitempty"`
+	ActualFPS          int     `json:"actualFps,omitempty"`
+	FreshFPS           float64 `json:"freshFps,omitempty"`
+	RepeatedRatio      float64 `json:"repeatedRatio,omitempty"`
+	EncodeBudgetRatio  float64 `json:"encodeBudgetRatio,omitempty"`
+	AdaptiveState      string  `json:"adaptiveState,omitempty"`
+	AdaptiveReason     string  `json:"adaptiveReason,omitempty"`
+	AdaptivePolicy     string  `json:"adaptivePolicy,omitempty"`
+	AdaptiveLevel      int     `json:"adaptiveLevel,omitempty"`
+	AdaptiveLevels     int     `json:"adaptiveLevels,omitempty"`
+	WeakViewers        int     `json:"weakViewers,omitempty"`
+	ActiveLayers       int     `json:"activeLayers,omitempty"`
+	ConstrainedViewers int     `json:"constrainedViewers,omitempty"`
+	LayerSummary       string  `json:"layerSummary,omitempty"`
 }
 
 type NetworkStatusEvent struct {
@@ -77,4 +109,12 @@ type RuntimeStatusEvent struct {
 type ErrorEvent struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
+}
+
+type GameCastShareRuntimeEvent struct {
+	Kind      string `json:"kind"`
+	RoomID    string `json:"roomId"`
+	PeerID    string `json:"peerId"`
+	AudioMode string `json:"audioMode,omitempty"`
+	Message   string `json:"message"`
 }

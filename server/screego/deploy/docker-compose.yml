@@ -1,0 +1,33 @@
+services:
+  screego:
+    image: gamecast-sfu:native-web-ui-v14-20260827
+    container_name: screego
+    restart: unless-stopped
+    network_mode: "host"
+    volumes:
+      - ${SCREEGO_USERS_DIR_HOST:-/etc/gamecast-sfu/users}:/app/users:ro
+    environment:
+      SCREEGO_AUTH_MODE: "all"
+      SCREEGO_SESSION_TIMEOUT_SECONDS: "2592000"
+      SCREEGO_CLOSE_ROOM_WHEN_OWNER_LEAVES: "false"
+      SCREEGO_USERS_FILE: /app/users/users.htpasswd
+      SCREEGO_EXTERNAL_IP: "${SCREEGO_EXTERNAL_IP}"
+      SCREEGO_TURN_PORT_RANGE: "50000:50200"
+      SCREEGO_TURN_ENABLE_TCP: "false"
+      SCREEGO_SECRET: "${SCREEGO_SECRET}"
+      SCREEGO_FORCE_RELAY: "false"
+      SCREEGO_SERVER_ADDRESS: ":5060"
+    command: ["serve"]
+
+  voice-sfu:
+    image: partylan-voice-sfu:v1-20260731
+    container_name: partylan-voice-sfu
+    restart: unless-stopped
+    network_mode: "host"
+    environment:
+      GAMECAST_VOICE_SECRET: "${GAMECAST_VOICE_SECRET}"
+      VOICE_SFU_LISTEN_ADDR: "127.0.0.1:5054"
+      VOICE_SFU_UDP_ADDR: "0.0.0.0:5054"
+      VOICE_SFU_PUBLIC_IP: "${VOICE_SFU_PUBLIC_IP}"
+      VOICE_SFU_ROOM_LIMIT: "20"
+      VOICE_SFU_ICE_SERVERS_JSON: "${VOICE_SFU_ICE_SERVERS_JSON:-[]}"

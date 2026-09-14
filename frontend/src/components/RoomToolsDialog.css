@@ -19,7 +19,7 @@
   border: 1px solid var(--border-color);
   border-radius: 22px;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.93), rgba(239, 248, 252, 0.88)),
+    linear-gradient(180deg, rgba(240, 253, 255, 0.96), rgba(215, 241, 247, 0.92)),
     var(--panel-bg);
   box-shadow: 0 28px 64px rgba(16, 61, 88, 0.18);
   color: var(--text-primary);
@@ -61,29 +61,6 @@
   color: var(--text-primary);
 }
 
-.room-tools-tabs {
-  display: flex;
-  gap: 8px;
-  padding: 12px 20px 0;
-}
-
-.room-tools-tab {
-  padding: 8px 12px;
-  border: 1px solid rgba(88, 130, 164, 0.18);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.56);
-  color: var(--text-secondary);
-  font-size: 12px;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.room-tools-tab.active {
-  border-color: rgba(57, 208, 183, 0.36);
-  background: rgba(57, 208, 183, 0.14);
-  color: var(--accent-strong);
-}
-
 .room-tools-body {
   min-height: 0;
   overflow: auto;
@@ -96,10 +73,138 @@
   gap: 14px;
 }
 
+.room-tools-source-toggle {
+  display: flex;
+  gap: 8px;
+}
+
+.room-tools-source-btn {
+  padding: 8px 12px;
+  border: 1px solid rgba(88, 130, 164, 0.18);
+  border-radius: 10px;
+  background: var(--surface-muted);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.room-tools-source-btn.active {
+  border-color: rgba(57, 208, 183, 0.36);
+  background: rgba(57, 208, 183, 0.14);
+  color: var(--accent-strong);
+}
+
 .room-tools-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
+}
+
+.room-tools-field-wide {
+  grid-column: 1 / -1;
+}
+
+.room-tools-source-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+  max-height: 420px;
+  overflow: auto;
+}
+
+.room-tools-source-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid rgba(88, 130, 164, 0.18);
+  border-radius: 16px;
+  background: var(--surface-raised);
+  text-align: left;
+  cursor: pointer;
+  color: var(--text-primary);
+  overflow: hidden;
+}
+
+.room-tools-source-card.selected {
+  border-color: rgba(57, 208, 183, 0.36);
+  background: rgba(57, 208, 183, 0.12);
+}
+
+.room-tools-source-card:disabled {
+  opacity: 0.62;
+  cursor: not-allowed;
+}
+
+.room-tools-source-preview {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(7, 15, 28, 0.92), rgba(10, 21, 38, 0.98));
+  overflow: hidden;
+}
+
+.room-tools-source-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.room-tools-source-icon {
+  width: 52px;
+  height: 52px;
+  display: grid;
+  place-items: center;
+  border-radius: 14px;
+  background: rgba(95, 134, 160, 0.16);
+  overflow: hidden;
+}
+
+.room-tools-source-icon img {
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+}
+
+.room-tools-source-icon-fallback {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  color: var(--accent-strong);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.room-tools-source-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  padding: 0 2px 2px;
+}
+
+.room-tools-source-name {
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.35;
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.room-tools-source-subtitle {
+  color: var(--text-muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .room-tools-field {
@@ -128,14 +233,13 @@
   padding: 10px 12px;
   border: 1px solid rgba(88, 130, 164, 0.18);
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.56);
+  background: var(--surface-muted);
   color: var(--text-muted);
   font-size: 12px;
   line-height: 1.5;
 }
 
-.room-tools-primary,
-.room-tools-secondary {
+.room-tools-primary {
   padding: 10px 14px;
   border: none;
   border-radius: 12px;
@@ -145,102 +249,16 @@
 }
 
 .room-tools-primary {
-  background: linear-gradient(135deg, var(--accent-strong), var(--accent-soft));
-  color: #f5ffff;
-  box-shadow: 0 14px 28px rgba(19, 110, 135, 0.18);
+  background: var(--accent-bg);
+  color: var(--on-accent);
+  border: 1px solid var(--border-highlight);
+  box-shadow: 0 10px 24px var(--highlight-glow);
 }
 
-.room-tools-secondary {
-  border: 1px solid rgba(88, 130, 164, 0.2);
-  background: rgba(255, 255, 255, 0.72);
-  color: var(--text-primary);
-}
-
-.room-tools-primary:disabled,
-.room-tools-secondary:disabled {
+.room-tools-primary:disabled {
   opacity: 0.5;
   cursor: not-allowed;
   box-shadow: none;
-}
-
-.room-tools-dialog .audio-panel {
-  box-shadow: none;
-}
-
-.voice-tools-section {
-  max-width: 560px;
-}
-
-.voice-state-card {
-  padding: 12px;
-  border: 1px solid rgba(88, 130, 164, 0.18);
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.58);
-}
-
-.voice-state-card.status-active,
-.voice-state-card.status-muted {
-  border-color: rgba(57, 208, 183, 0.34);
-  background: rgba(57, 208, 183, 0.1);
-}
-
-.voice-state-card.status-error {
-  border-color: rgba(255, 131, 112, 0.32);
-  background: rgba(255, 131, 112, 0.1);
-}
-
-.voice-state-main {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  align-items: center;
-}
-
-.voice-state-label {
-  color: var(--text-muted);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-}
-
-.voice-state-value {
-  color: var(--text-primary);
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.voice-state-detail,
-.voice-state-error {
-  margin-top: 8px;
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.voice-state-detail {
-  color: var(--text-muted);
-}
-
-.voice-state-error {
-  color: var(--danger-strong);
-}
-
-.voice-actions {
-  display: flex;
-  gap: 10px;
-}
-
-.voice-volume-control {
-  display: grid;
-  grid-template-columns: auto minmax(120px, 1fr) 44px;
-  gap: 10px;
-  align-items: center;
-  color: var(--text-secondary);
-  font-size: 12px;
-}
-
-.voice-volume-control input {
-  width: 100%;
 }
 
 .room-tools-error {
@@ -258,18 +276,7 @@
     padding: 12px;
   }
 
-  .room-tools-tabs {
-    flex-wrap: wrap;
-  }
-
   .room-tools-grid {
     grid-template-columns: 1fr;
-  }
-
-  .voice-actions,
-  .voice-volume-control {
-    display: flex;
-    flex-direction: column;
-    align-items: stretch;
   }
 }

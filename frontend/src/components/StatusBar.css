@@ -4,15 +4,21 @@
   flex-wrap: wrap;
   gap: 8px;
   padding: 8px 12px;
-  background: rgba(247, 252, 255, 0.74);
-  border: 1px solid rgba(98, 137, 167, 0.18);
+  background: linear-gradient(135deg, rgba(232, 250, 252, 0.94), rgba(203, 239, 245, 0.86));
+  border: 1px solid var(--border-highlight);
   border-radius: 18px;
-  box-shadow: var(--panel-shadow);
+  box-shadow: 0 6px 18px rgba(18, 102, 124, 0.1), 0 0 14px rgba(44, 226, 196, 0.12);
   font-size: 11px;
-  color: var(--text-secondary);
+  color: var(--accent-strong);
   backdrop-filter: blur(14px);
 }
 
 .status-sep {
-  color: rgba(98, 137, 167, 0.36);
+  color: rgba(8, 127, 112, 0.42);
+}
+
+@media (max-width: 620px) {
+  .status-bar > span:nth-child(n + 6) {
+    display: none;
+  }
 }

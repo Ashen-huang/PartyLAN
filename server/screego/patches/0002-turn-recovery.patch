@@ -1,0 +1,487 @@
+diff --git a/ui/src/iceSession.test.mjs b/ui/src/iceSession.test.mjs
+index 1d2a793a617a03141e5d2a2166cfb33afe483614..1c112539c34a1ef15ac4a9f06127ba8854407026 100644
+--- a/ui/src/iceSession.test.mjs
++++ b/ui/src/iceSession.test.mjs
+@@ -7,6 +7,7 @@ import {
+     createPeerSessionRegistry,
+     flushRemoteCandidates,
+     queueRemoteCandidate,
++    requestHostIceRestart,
+     setRemoteDescriptionForSession,
+ } from './iceSession.ts';
+ 
+@@ -15,6 +16,8 @@ class FakePeerConnection {
+     descriptions = [];
+     closed = false;
+     addFailures = [];
++    offers = [];
++    localDescriptions = [];
+ 
+     async addIceCandidate(candidate) {
+         const failure = this.addFailures.shift();
+@@ -26,6 +29,15 @@ class FakePeerConnection {
+         this.descriptions.push(description);
+     }
+ 
++    async createOffer(options) {
++        this.offers.push(options);
++        return {type: 'offer', sdp: 'v=0\r\na=ice-ufrag:local-restart\r\n'};
++    }
++
++    async setLocalDescription(description) {
++        this.localDescriptions.push(description);
++    }
++
+     close() {
+         this.closed = true;
+     }
+@@ -105,6 +117,7 @@ test('a new remote username fragment advances generation and drops stale candida
+     });
+ 
+     assert.equal(session.generation, 1);
++    assert.equal(pc._gcIceGeneration, 1);
+     assert.deepEqual(pc.added, []);
+     assert.equal(events.at(-1).type, 'ice_candidate_stale');
+ });
+@@ -119,3 +132,28 @@ test('closing a session clears queued candidates and ignores late candidates', a
+     assert.equal(session.pendingRemoteCandidates.length, 0);
+     assert.deepEqual(pc.added, []);
+ });
++
++test('a host ICE restart is coalesced and completes on the new answer', async () => {
++    const events = [];
++    const sent = [];
++    const {pc, session} = makeSession((event) => events.push(event));
++    session.role = 'host';
++
++    const first = requestHostIceRestart(session, (offer) => sent.push(offer), {timeoutMs: 1000});
++    const second = requestHostIceRestart(session, (offer) => sent.push(offer), {timeoutMs: 1000});
++    assert.equal(first, second);
++    await new Promise((resolve) => setTimeout(resolve, 0));
++    assert.deepEqual(pc.offers, [{offerToReceiveVideo: true, iceRestart: true}]);
++    assert.equal(sent.length, 1);
++    assert.equal(session.recoveryCount, 1);
++
++    await setRemoteDescriptionForSession(session, {
++        type: 'answer',
++        sdp: 'v=0\r\na=ice-ufrag:remote-restart\r\n',
++    });
++    assert.equal(await first, true);
++    assert.equal(events.some((event) => event.type === 'ice_restart_completed'), true);
++
++    assert.equal(await requestHostIceRestart(session, () => undefined, {timeoutMs: 1000}), false);
++    assert.equal(pc.offers.length, 1);
++});
+diff --git a/ui/src/iceSession.ts b/ui/src/iceSession.ts
+index 8d3d2f7955eaf99ee7c49d186bd4d4cee80d33be..a09b528ebde41c706ea607f7893beae196b04223 100644
+--- a/ui/src/iceSession.ts
++++ b/ui/src/iceSession.ts
+@@ -20,6 +20,9 @@ export type PeerSession = {
+     closed: boolean;
+     recoveryCount: number;
+     cooldownUntil: number;
++    restartPromise?: Promise<boolean>;
++    restartResolve?: (completed: boolean) => void;
++    restartTimer?: ReturnType<typeof setTimeout>;
+     report: (event: IceDiagnostic) => void;
+ };
+ 
+@@ -202,7 +205,12 @@ export const setRemoteDescriptionForSession = async (
+         }
+         session.remoteUsernameFragment = nextUsernameFragment;
+         session.remoteDescriptionReady = true;
++        (session.pc as RTCPeerConnection & {_gcIceGeneration?: number})._gcIceGeneration =
++            session.generation;
+         await flushRemoteCandidates(session);
++        if (session.role === 'host' && description.type === 'answer' && session.restartPromise) {
++            settleIceRestart(session, true, 'ice_restart_completed');
++        }
+     } catch (error) {
+         session.report({
+             type: 'remote_description_failed',
+@@ -215,8 +223,83 @@ export const setRemoteDescriptionForSession = async (
+     }
+ };
+ 
++const settleIceRestart = (
++    session: PeerSession,
++    completed: boolean,
++    eventType: string
++): void => {
++    if (!session.restartPromise) return;
++    if (session.restartTimer) clearTimeout(session.restartTimer);
++    session.restartTimer = undefined;
++    const resolve = session.restartResolve;
++    session.restartPromise = undefined;
++    session.restartResolve = undefined;
++    session.report({
++        type: eventType,
++        sid: session.sid,
++        role: session.role,
++        generation: session.generation,
++    });
++    resolve?.(completed);
++};
++
++export const requestHostIceRestart = (
++    session: PeerSession,
++    sendOffer: (offer: RTCSessionDescriptionInit) => void | Promise<void>,
++    {timeoutMs = 10000}: {timeoutMs?: number} = {}
++): Promise<boolean> => {
++    if (session.restartPromise) return session.restartPromise;
++    if (session.closed || session.role !== 'host' || session.recoveryCount >= 1) {
++        session.report({
++            type: 'ice_restart_rejected',
++            sid: session.sid,
++            role: session.role,
++            generation: session.generation,
++        });
++        return Promise.resolve(false);
++    }
++
++    session.recoveryCount += 1;
++    session.remoteDescriptionReady = false;
++    session.pendingRemoteCandidates.length = 0;
++    session.restartPromise = new Promise<boolean>((resolve) => {
++        session.restartResolve = resolve;
++    });
++    session.restartTimer = setTimeout(
++        () => settleIceRestart(session, false, 'ice_restart_timeout'),
++        Math.max(1, timeoutMs)
++    );
++    session.report({
++        type: 'ice_restart_started',
++        sid: session.sid,
++        role: session.role,
++        generation: session.generation,
++    });
++
++    void (async () => {
++        const offer = await session.pc.createOffer({
++            offerToReceiveVideo: true,
++            iceRestart: true,
++        });
++        await session.pc.setLocalDescription(offer);
++        await sendOffer(offer);
++    })().catch((error) => {
++        session.report({
++            type: 'ice_restart_failed',
++            sid: session.sid,
++            role: session.role,
++            generation: session.generation,
++            error: errorName(error),
++        });
++        settleIceRestart(session, false, 'ice_restart_finished');
++    });
++
++    return session.restartPromise;
++};
++
+ export const closePeerSession = (session: PeerSession): void => {
+     if (session.closed) return;
++    settleIceRestart(session, false, 'ice_restart_cancelled');
+     session.closed = true;
+     session.pendingRemoteCandidates.length = 0;
+     session.pc.close();
+diff --git a/ui/src/message.ts b/ui/src/message.ts
+index c15f1c7bcd1cfb447d1b096df590bc9a53cd9d07..1ad7bdcf7759a48c1fdc9a4570c9ccfd9b9f8023 100644
+--- a/ui/src/message.ts
++++ b/ui/src/message.ts
+@@ -69,6 +69,11 @@ export interface P2PMessage<T> {
+     value: T;
+ }
+ 
++export interface IceRecoveryRequestPayload {
++    sid: string;
++    action: 'restart' | 'protect' | 'recover';
++}
++
+ export type Room = Typed<RoomInfo, 'room'>;
+ export type Error = Typed<StringMessage, 'Error'>;
+ export type HostSession = Typed<P2PSession, 'hostsession'>;
+@@ -78,6 +83,7 @@ export type HostICECandidate = Typed<P2PMessage<RTCIceCandidate>, 'hostice'>;
+ export type ClientICECandidate = Typed<P2PMessage<RTCIceCandidate>, 'clientice'>;
+ export type HostOffer = Typed<P2PMessage<RTCSessionDescriptionInit>, 'hostoffer'>;
+ export type ClientAnswer = Typed<P2PMessage<RTCSessionDescriptionInit>, 'clientanswer'>;
++export type IceRecoveryRequest = Typed<IceRecoveryRequestPayload, 'icerestartrequest'>;
+ export type StartSharing = Typed<{}, 'share'>;
+ export type StopShare = Typed<{}, 'stopshare'>;
+ export type RoomCreate = Typed<RoomConfiguration & {joinIfExist?: boolean}, 'create'>;
+@@ -92,6 +98,7 @@ export type IncomingMessage =
+     | HostICECandidate
+     | ClientICECandidate
+     | HostOffer
++    | IceRecoveryRequest
+     | EndShare
+     | ClientAnswer;
+ 
+@@ -104,4 +111,5 @@ export type OutgoingMessage =
+     | HostOffer
+     | StopShare
+     | ClientAnswer
++    | IceRecoveryRequest
+     | StartSharing;
+diff --git a/ui/src/useRoom.ts b/ui/src/useRoom.ts
+index dbd15cf39596d17a6562eafdda88868152098807..a03d4f3552d8b7be5dc7ba8454bc7b7b5e53c87d 100644
+--- a/ui/src/useRoom.ts
++++ b/ui/src/useRoom.ts
+@@ -20,6 +20,7 @@ import {
+     createPeerSessionRegistry,
+     PeerSession,
+     queueRemoteCandidate,
++    requestHostIceRestart,
+     setRemoteDescriptionForSession,
+ } from './iceSession';
+ 
+@@ -47,6 +48,15 @@ export interface UseRoom {
+ const relayConfig: Partial<RTCConfiguration> =
+     window.location.search.indexOf('forceTurn=true') !== -1 ? {iceTransportPolicy: 'relay'} : {};
+ 
++type RecoveryPeerConnection = RTCPeerConnection & {
++    __gamecastRestartIce?: () => Promise<boolean>;
++    __gamecastRequestIceRecovery?: (action: 'restart' | 'protect' | 'recover') => boolean;
++    __gamecastHandleIceRecoveryRequest?: (
++        action: 'restart' | 'protect' | 'recover'
++    ) => Promise<boolean>;
++    __gamecastRecoveryRequestedUntil?: number;
++};
++
+ const hostSession = ({
+     sid,
+     peerId,
+@@ -70,6 +80,11 @@ const hostSession = ({
+         pc: peer,
+         report: (event) => console.warn('ICE session diagnostic', event),
+     });
++    const recoveryPeer = peer as RecoveryPeerConnection;
++    recoveryPeer.__gamecastRestartIce = () =>
++        requestHostIceRestart(session, (offer) => {
++            send({type: 'hostoffer', payload: {value: offer, sid: sid}});
++        });
+     peer.onicecandidate = (event) => {
+         if (!event.candidate) {
+             return;
+@@ -81,7 +96,7 @@ const hostSession = ({
+         console.log('host change', event);
+         if (
+             peer.connectionState === 'closed' ||
+-            peer.connectionState === 'disconnected' ||
++            (peer.connectionState === 'disconnected' && !session.restartPromise) ||
+             peer.connectionState === 'failed'
+         ) {
+             closePeerSession(session);
+@@ -156,6 +171,15 @@ const clientSession = ({
+         pc: peer,
+         report: (event) => console.warn('ICE session diagnostic', event),
+     });
++    const recoveryPeer = peer as RecoveryPeerConnection;
++    recoveryPeer.__gamecastRequestIceRecovery = (action) => {
++        if (session.closed) return false;
++        if (action === 'restart') {
++            recoveryPeer.__gamecastRecoveryRequestedUntil = Date.now() + 10000;
++        }
++        send({type: 'icerestartrequest', payload: {sid, action}});
++        return true;
++    };
+     peer.onicecandidate = (event) => {
+         if (!event.candidate) {
+             return;
+@@ -166,7 +190,8 @@ const clientSession = ({
+         console.log('client change', event);
+         if (
+             peer.connectionState === 'closed' ||
+-            peer.connectionState === 'disconnected' ||
++            (peer.connectionState === 'disconnected' &&
++                Date.now() >= (recoveryPeer.__gamecastRecoveryRequestedUntil || 0)) ||
+             peer.connectionState === 'failed'
+         ) {
+             closePeerSession(session);
+@@ -324,6 +349,31 @@ export const useRoom = (config: UIConfig): UseRoom => {
+                                     })
+                                 );
+                             return;
++                        case 'icerestartrequest':
++                            void host.current
++                                .run(event.payload.sid, async (session) => {
++                                    const recoveryPeer = session.pc as RecoveryPeerConnection;
++                                    if (recoveryPeer.__gamecastHandleIceRecoveryRequest) {
++                                        await recoveryPeer.__gamecastHandleIceRecoveryRequest(
++                                            event.payload.action
++                                        );
++                                        return;
++                                    }
++                                    if (
++                                        event.payload.action === 'restart' &&
++                                        recoveryPeer.__gamecastRestartIce
++                                    ) {
++                                        await recoveryPeer.__gamecastRestartIce();
++                                    }
++                                })
++                                .catch((error) =>
++                                    console.error('ICE recovery request failed', {
++                                        sid: event.payload.sid,
++                                        action: event.payload.action,
++                                        error: String(error),
++                                    })
++                                );
++                            return;
+                         case 'hostice':
+                             void client.current.run(event.payload.sid, (session) =>
+                                 queueRemoteCandidate(session, event.payload.value)
+diff --git a/ws/event_ice_restart_request.go b/ws/event_ice_restart_request.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..62de54361fed7caddaeae4262ab21638affb34b9
+--- /dev/null
++++ b/ws/event_ice_restart_request.go
+@@ -0,0 +1,42 @@
++package ws
++
++import (
++	"fmt"
++
++	"github.com/rs/zerolog/log"
++	"github.com/screego/server/ws/outgoing"
++)
++
++func init() {
++	register("icerestartrequest", func() Event {
++		return &IceRestartRequest{}
++	})
++}
++
++type IceRestartRequest outgoing.IceRecoveryRequest
++
++func (e *IceRestartRequest) Execute(rooms *Rooms, current ClientInfo) error {
++	room, err := rooms.CurrentRoom(current)
++	if err != nil {
++		return err
++	}
++
++	session, ok := room.Sessions[e.SID]
++	if !ok {
++		log.Debug().Str("id", e.SID.String()).Msg("unknown session")
++		return nil
++	}
++	if session.Client != current.ID {
++		return fmt.Errorf("permission denied for session %s", e.SID)
++	}
++	if e.Action != "restart" && e.Action != "protect" && e.Action != "recover" {
++		return fmt.Errorf("invalid ICE recovery action %q", e.Action)
++	}
++
++	host, ok := room.Users[session.Host]
++	if !ok {
++		return fmt.Errorf("host unavailable for session %s", e.SID)
++	}
++	host.WriteTimeout(outgoing.IceRecoveryRequest(*e))
++	return nil
++}
+diff --git a/ws/event_ice_restart_request_test.go b/ws/event_ice_restart_request_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..f89f529bd26519c95bec7a0afbfe2b3ebb958474
+--- /dev/null
++++ b/ws/event_ice_restart_request_test.go
+@@ -0,0 +1,52 @@
++package ws
++
++import (
++	"testing"
++
++	"github.com/rs/xid"
++	"github.com/screego/server/ws/outgoing"
++)
++
++func TestIceRestartRequestOnlyClientCanForwardToSessionHost(t *testing.T) {
++	roomID := "room-1"
++	hostID := xid.New()
++	clientID := xid.New()
++	sessionID := xid.New()
++	hostWrites := make(chan outgoing.Message, 1)
++	clientWrites := make(chan outgoing.Message, 1)
++	room := &Room{
++		ID: roomID,
++		Users: map[xid.ID]*User{
++			hostID:   {ID: hostID, _write: hostWrites},
++			clientID: {ID: clientID, _write: clientWrites},
++		},
++		Sessions: map[xid.ID]*RoomSession{
++			sessionID: {Host: hostID, Client: clientID},
++		},
++	}
++	rooms := &Rooms{
++		Rooms: map[string]*Room{roomID: room},
++		connected: map[xid.ID]string{
++			hostID:   roomID,
++			clientID: roomID,
++		},
++	}
++
++	request := &IceRestartRequest{SID: sessionID, Action: "restart"}
++	if err := request.Execute(rooms, ClientInfo{ID: clientID}); err != nil {
++		t.Fatalf("client recovery request: %v", err)
++	}
++	select {
++	case message := <-hostWrites:
++		forwarded, ok := message.(outgoing.IceRecoveryRequest)
++		if !ok || forwarded.SID != sessionID || forwarded.Action != "restart" {
++			t.Fatalf("forwarded message = %#v", message)
++		}
++	default:
++		t.Fatal("host did not receive recovery request")
++	}
++
++	if err := request.Execute(rooms, ClientInfo{ID: hostID}); err == nil {
++		t.Fatal("host must not impersonate the session client")
++	}
++}
+diff --git a/ws/outgoing/messages.go b/ws/outgoing/messages.go
+index bb66a6bc6379919d8f5a36bab7795826d353729b..831c99c6e3a0f505187e4fb1642972d960f3eeda 100644
+--- a/ws/outgoing/messages.go
++++ b/ws/outgoing/messages.go
+@@ -83,6 +83,15 @@ func (HostOffer) Type() string {
+ 	return "hostoffer"
+ }
+ 
++type IceRecoveryRequest struct {
++	SID    xid.ID `json:"sid"`
++	Action string `json:"action"`
++}
++
++func (IceRecoveryRequest) Type() string {
++	return "icerestartrequest"
++}
++
+ type EndShare xid.ID
+ 
+ func (EndShare) Type() string {
+diff --git a/ws/rooms_test.go b/ws/rooms_test.go
+index ff5bdbb89d4af2695e9ddb7db49726acf11a4f43..5e1f6b2002f436b801d266e7c38c38e33dd12645 100644
+--- a/ws/rooms_test.go
++++ b/ws/rooms_test.go
+@@ -1,6 +1,7 @@
+ package ws
+ 
+ import (
++	"bytes"
+ 	"encoding/json"
+ 	"fmt"
+ 	"math/rand"
+@@ -40,6 +41,18 @@ func TestMultipleClients(t *testing.T) {
+ 	wg.Wait()
+ }
+ 
++func TestIceRestartRequestMessageIsRegistered(t *testing.T) {
++	sid := xid.New()
++	payload := []byte(fmt.Sprintf(`{"type":"icerestartrequest","payload":{"sid":"%s","action":"restart"}}`, sid.String()))
++	event, err := ReadTypedIncoming(bytes.NewReader(payload))
++	if err != nil {
++		t.Fatalf("read ICE restart request: %v", err)
++	}
++	if got := fmt.Sprintf("%T", event); got != "*ws.IceRestartRequest" {
++		t.Fatalf("event type = %s, want *ws.IceRestartRequest", got)
++	}
++}
++
+ func testClient(i int64, room string) {
+ 	r := rand.New(rand.NewSource(i))
+ 	conn, _, err := websocket.DefaultDialer.Dial(SERVER, nil)
