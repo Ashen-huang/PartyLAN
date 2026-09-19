@@ -5,8 +5,6 @@ import json
 import os
 import sys
 import re
-import stat
-import tempfile
 import threading
 import time
 from collections import deque
@@ -15,14 +13,18 @@ from urllib.parse import urlparse, parse_qs
 import urllib.request
 import urllib.error
 
-import bcrypt
-
+from credential_store import (
+    CREATE_CREATED,
+    CREATE_EXISTS,
+    CredentialStoreError,
+    create_user as create_credential_user,
+)
 from gamecast_control import ControlError, ControlPlane, issue_voice_token
 
 HTPASSWD_FILE = os.environ.get('SCREEGO_USERS_FILE_HOST', '/etc/gamecast-sfu/users.htpasswd')
-HISTORY_DIR = '/root/screego/history'
-STATS_DIR = '/root/screego/stats'
-LISTEN_PORT = 5052
+HISTORY_DIR = os.environ.get('GAMECAST_HISTORY_DIR', '/root/screego/history')
+STATS_DIR = os.environ.get('GAMECAST_STATS_DIR', '/root/screego/stats')
+LISTEN_PORT = int(os.environ.get('GAMECAST_CONTROL_PORT', '5052'))
 ROOM_STATE_TTL = 15
 VOICE_TOKEN_TTL = 15
 GAMECAST_VOICE_SECRET = os.environ.get('GAMECAST_VOICE_SECRET', '').strip()
@@ -40,7 +42,9 @@ GAMECAST_LEGACY_P2P_ALLOWED = os.environ.get(
 MAX_POST_BODY = 256 * 1024
 USERNAME_RE = re.compile(r'^[a-zA-Z0-9_\-]{2,20}$')
 QUALITY_SESSION_RE = re.compile(r'^[a-zA-Z0-9._:\-]{1,128}$')
-BACKEND_CONFIG_URL = 'http://127.0.0.1:5060/config'
+BACKEND_CONFIG_URL = os.environ.get(
+    'GAMECAST_BACKEND_CONFIG_URL', 'http://127.0.0.1:5060/config'
+)
 SFU_SESSIONS_URL = os.environ.get('GAMECAST_SFU_SESSIONS_URL', 'http://127.0.0.1:5053/sessions')
 SFU_SESSIONS_TIMEOUT = float(os.environ.get('GAMECAST_SFU_SESSIONS_TIMEOUT', '1.0'))
 QUALITY_ACTIVE_TTL = 8.0
@@ -50,6 +54,34 @@ try:
 except (TypeError, ValueError):
     SAFE_VIDEO_EGRESS_KBPS = 0
 ROOM_STATE_AUDIO_MODES = set(['app', 'off', 'system'])
+CONTROL_ERROR_MESSAGES = {
+    'not_authenticated': '请先登录后再操作',
+    'share_locked': '已有用户正在共享，请在对方停止共享后重试',
+    'share_lease_expired': '共享状态已过期，请重新开始共享',
+    'share_lease_invalid': '共享状态已失效，请重新开始共享',
+    'share_phase_invalid': '共享状态异常，请停止后重新开始共享',
+    'room_not_found': '房间不存在或已经结束',
+    'participant_not_found': '当前成员状态已失效，请重新加入房间',
+    'room_origin_conflict': '房间状态发生冲突，请刷新后重试',
+    'media_protocol_unsupported': '当前浏览器或房间不支持这种共享方式',
+    'quality_sample_invalid': '共享质量数据无效',
+    'quality_report_forbidden': '当前成员不能提交这份共享质量数据',
+    'quality_snapshot_forbidden': '当前成员不能读取共享质量数据',
+    'voice_unavailable': '语音服务暂时不可用',
+    'voice_token_invalid': '语音连接凭据无效，请重新加入房间',
+    'voice_token_expired': '语音连接已过期，正在重新连接',
+    'voice_client_required': '当前客户端不支持房间语音',
+    'http_400': '请求内容不正确，请刷新后重试',
+    'http_401': '登录状态已失效，请重新登录',
+    'http_403': '当前账号没有执行此操作的权限',
+    'http_404': '请求的内容不存在或已经结束',
+    'http_409': '当前状态发生冲突，请刷新后重试',
+    'http_429': '操作过于频繁，请稍后重试',
+    'http_500': '服务器处理失败，请稍后重试',
+    'http_502': '服务器连接异常，请稍后重试',
+    'http_503': '服务暂时不可用，请稍后重试',
+    'http_504': '服务器响应超时，请稍后重试',
+}
 STATS_STRING_FIELDS = set([
     'event', 'policyVersion', 'user', 'room', 'peer', 'mode', 'conn', 'path',
     'transport', 'localCandidateType', 'remoteCandidateType',
@@ -57,16 +89,24 @@ STATS_STRING_FIELDS = set([
     'qualityStatus', 'shadowAction', 'invalidReason', 'telemetryResetReason',
     'resolution', 'fps',
     'codec', 'kbps', 'loss', 'jitter', 'pcState', 'targetKbps', 'adaptive',
-    'adaptivePolicyVersion', 'adaptiveDecision', 'adaptiveStatus',
+    'adaptivePolicyVersion', 'adaptiveDecision', 'adaptiveStatus', 'adaptiveContentState',
+    'adaptiveRecoveryGateReason', 'bufferReason', 'receiverBufferReason', 'hostUplinkBand',
+    'hostUplinkQualityReason',
+    'adaptiveTransitionReason',
     'serverLoadKbps', 'serverNote',
     'participantId', 'pairId', 'screegoSessionId', 'receiverState',
     'receiverReason',
+    'captureDisplaySurface', 'captureConstraintStatus', 'captureConstraintAttempt',
 ])
 STATS_NUMBER_FIELDS = set([
     'generation', 'rtt', 'rttMs', 'jitterMs', 'lossPercent', 'upKbps',
     'downKbps', 'availableOutgoingBitrate', 'targetBitrate',
     'packetsReceivedDelta', 'packetsLostDelta', 'packetsSentDelta',
     'framesDecodedDelta', 'framesDroppedDelta', 'framesEncodedDelta',
+    'framesReceivedDelta', 'arrivalFps',
+    'jitterBufferDelayMs', 'jitterBufferDelayDeltaMs',
+    'jitterBufferEmittedCount', 'jitterBufferEmittedCountDelta',
+    'jitterBufferActualMs',
     'framesCaptured', 'framesCapturedDelta', 'capturedFps',
     'framesEncoded', 'encodedFps', 'framesSent', 'framesSentDelta', 'sentFps',
     'keyFramesEncoded', 'keyFramesEncodedDelta',
@@ -80,16 +120,33 @@ STATS_NUMBER_FIELDS = set([
     'averagePacketSendDelayMs',
     'badCount', 'windowSize', 'pcCount', 'estimatedCapacityKbps',
     'estimatedRelayLoadKbps', 'protectionMaxBitrate',
+    'hostUplinkAvailableKbps', 'hostUplinkBudgetKbps',
+    'hostUplinkActiveLayerCount', 'hostUplinkEncodedFps', 'hostUplinkCapturedFps',
     'adaptiveLevel', 'adaptiveScale', 'adaptiveMaxBitrate',
     'adaptiveNominalBitrate', 'adaptiveDegradeFloorBitrate',
+    'adaptiveSafeCapacityKbps',
+    'adaptiveRecoveryCapacityKbps', 'adaptiveRecoveryHealthySamples',
+    'adaptiveRecoveryCapacityAt', 'adaptiveCurrentFloorKbps',
+    'adaptiveRecoveryTargetFloorKbps',
+    'adaptiveTargetBitrateKbps', 'adaptiveSoftProtectionKbps',
+    'adaptiveSoftProtectionUntil', 'adaptiveLastTransitionAt', 'adaptiveTargetLevel',
     'decodedFps', 'incomingBitrateKbps', 'packetsLost', 'framesDropped',
     'receiverReportAgeMs', 'receiverDecodedFps', 'receiverIncomingKbps',
     'receiverLossPercent', 'receiverJitterMs', 'senderCapturedFps',
     'senderEncodedFps', 'senderSentFps',
+    'senderKbitsPerFrame', 'senderPacketSendDelayMs', 'senderRetransmitPercent',
+    'bandwidthLimitedMsDelta', 'senderQpPerFrame', 'senderEncodeMsPerFrame',
     'adaptiveConfiguredFps', 'adaptiveStableMs',
     'adaptiveProbeUntil', 'adaptiveProbeImprovedCount',
+    'bufferTargetMs', 'bufferActualMs',
+    'receiverBufferTargetMs', 'receiverBufferActualMs',
+    'requestedWidth', 'requestedHeight', 'requestedFrameRate',
+    'actualWidth', 'actualHeight', 'actualFrameRate',
 ])
-STATS_BOOL_FIELDS = set(['valid', 'visible', 'receiverBound'])
+STATS_BOOL_FIELDS = set([
+    'valid', 'visible', 'receiverBound', 'flowDeficit', 'receiverFlowDeficit',
+    'hostHalfLayerActive', 'hostFullLayerActive', 'hostLayerVerified',
+])
 
 control_plane = ControlPlane(
     ttl=ROOM_STATE_TTL,
@@ -105,7 +162,6 @@ stats_lock = threading.Lock()
 room_state_lock = threading.Lock()
 viewer_intent_lock = threading.Lock()
 rate_limit_lock = threading.Lock()
-user_store_lock = threading.Lock()
 quality_lock = threading.Lock()
 room_states = {}
 viewer_intents = {}
@@ -127,76 +183,16 @@ def is_valid_username(username):
     return bool(USERNAME_RE.match(username or ''))
 
 
-def _credential_content_has_user(content, username):
-    username_prefix = username.encode('utf-8') + b':'
-    return any(line.startswith(username_prefix) for line in content.splitlines())
-
-
-def _fsync_directory(directory):
-    try:
-        directory_fd = os.open(directory, os.O_RDONLY)
-    except OSError:
-        return
-    try:
-        os.fsync(directory_fd)
-    except OSError:
-        pass
-    finally:
-        os.close(directory_fd)
-
-
 def create_user(username, password):
-    temp_path = None
-    with user_store_lock:
-        try:
-            if os.path.exists(HTPASSWD_FILE):
-                with open(HTPASSWD_FILE, 'rb') as users_file:
-                    content = users_file.read()
-                file_mode = stat.S_IMODE(os.stat(HTPASSWD_FILE).st_mode)
-            else:
-                content = b''
-                file_mode = 0o600
-
-            if _credential_content_has_user(content, username):
-                return REGISTER_EXISTS
-
-            password_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt(rounds=12))
-            separator = b'' if not content or content.endswith(b'\n') else b'\n'
-            updated_content = content + separator + username.encode('utf-8') + b':' + password_hash + b'\n'
-
-            directory = os.path.dirname(os.path.abspath(HTPASSWD_FILE))
-            file_descriptor, temp_path = tempfile.mkstemp(
-                dir=directory,
-                prefix='.%s.' % os.path.basename(HTPASSWD_FILE),
-                suffix='.tmp',
-            )
-            try:
-                if hasattr(os, 'fchmod'):
-                    os.fchmod(file_descriptor, file_mode)
-                with os.fdopen(file_descriptor, 'wb') as temp_file:
-                    file_descriptor = None
-                    temp_file.write(updated_content)
-                    temp_file.flush()
-                    os.fsync(temp_file.fileno())
-            finally:
-                if file_descriptor is not None:
-                    os.close(file_descriptor)
-
-            if not hasattr(os, 'fchmod'):
-                os.chmod(temp_path, file_mode)
-            os.replace(temp_path, HTPASSWD_FILE)
-            temp_path = None
-            _fsync_directory(directory)
+    try:
+        result = create_credential_user(HTPASSWD_FILE, username, password)
+        if result == CREATE_CREATED:
             return REGISTER_CREATED
-        except Exception as error:
-            log('注册存储失败: %s' % type(error).__name__)
-            return REGISTER_FAILED
-        finally:
-            if temp_path:
-                try:
-                    os.unlink(temp_path)
-                except OSError:
-                    pass
+        if result == CREATE_EXISTS:
+            return REGISTER_EXISTS
+    except CredentialStoreError as error:
+        log('注册存储失败: %s' % error)
+    return REGISTER_FAILED
 
 
 def load_history(username):
@@ -280,14 +276,36 @@ def normalize_quality_sample(data):
         value = max(minimum, min(maximum, value))
         return int(value) if integer else float(value)
 
+    def optional_number(name, minimum, maximum, default=0):
+        if data.get(name) is None:
+            return default
+        return bounded_number(name, minimum, maximum)
+
+    def optional_integer(name, minimum, maximum, default=0):
+        if data.get(name) is None:
+            return default
+        return bounded_number(name, minimum, maximum, True)
+
+    def optional_text(name, max_length, default=''):
+        if data.get(name) is None:
+            return default
+        value = str(data.get(name) or '').strip()
+        if len(value) > max_length or any(ch in value for ch in '\r\n\t'):
+            raise ControlError('quality_sample_invalid', 400)
+        return value or default
+
     screego_session_id = str(data.get('screegoSessionId') or '').strip()
     if screego_session_id and not QUALITY_SESSION_RE.fullmatch(screego_session_id):
+        raise ControlError('quality_sample_invalid', 400)
+    layer = str(data.get('layer') or '').strip().lower()
+    if layer not in ('', 'h', 'f'):
         raise ControlError('quality_sample_invalid', 400)
 
     return {
         'room': bounded_text('room', 120),
         'participantId': bounded_text('participantId', 128),
         'screegoSessionId': screego_session_id,
+        'layer': layer,
         'generation': bounded_text('generation', 80),
         'pairId': bounded_text('pairId', 120),
         'packetsReceivedDelta': bounded_number('packetsReceivedDelta', 0, 10000000, True),
@@ -296,6 +314,13 @@ def normalize_quality_sample(data):
         'decodedFps': bounded_number('decodedFps', 0, 240),
         'incomingBitrateKbps': bounded_number('incomingBitrateKbps', 0, 1000000),
         'jitterMs': bounded_number('jitterMs', 0, 60000),
+        'bufferTargetMs': optional_number('bufferTargetMs', 0, 300),
+        'bufferActualMs': optional_number('bufferActualMs', 0, 60000),
+        'bufferReason': optional_text('bufferReason', 64, 'baseline'),
+        'flowDeficit': data.get('flowDeficit') is True,
+        'protocolVersion': optional_integer('protocolVersion', 1, 2, 1),
+        'reportSeq': optional_integer('reportSeq', 0, 9007199254740991, 0),
+        'sampleDurationMs': optional_integer('sampleDurationMs', 0, 4000, 0),
     }
 
 
@@ -303,12 +328,21 @@ def store_quality_sample(data, username):
     sample = normalize_quality_sample(data)
     control_plane.authorize_quality_report(sample['room'], sample['participantId'], username)
     now = quality_clock()
-    sample['reportedAtUnix'] = now
     with quality_lock:
         room = quality_samples.setdefault(sample['room'], {})
-        room[(sample['participantId'], sample['screegoSessionId'])] = sample
+        sample_key = (sample['participantId'], sample['screegoSessionId'])
+        existing = room.get(sample_key)
+        if (
+            sample['protocolVersion'] >= 2 and sample['reportSeq'] > 0 and
+            existing and existing.get('generation') == sample['generation'] and
+            existing.get('protocolVersion', 1) >= 2 and
+            sample['reportSeq'] <= existing.get('reportSeq', 0)
+        ):
+            return existing, False
+        sample['reportedAtUnix'] = now
+        room[sample_key] = sample
         prune_quality_samples_locked(now)
-    return sample
+    return sample, True
 
 
 def prune_quality_samples_locked(now):
@@ -551,9 +585,9 @@ def build_viewer_intent_fingerprint(headers, client_ip, data):
 def set_viewer_intent(data, username, client_fingerprint):
     room_id = normalize_room_id(data.get('room'))
     if not room_id:
-        return False, 'invalid room', 400
+        return False, '房间编号无效', 400
     if not client_fingerprint:
-        return False, 'missing client fingerprint', 400
+        return False, '无法确认当前浏览器会话', 400
 
     active = bool(data.get('active'))
     ttl = clamp_room_ttl(data.get('ttl'))
@@ -617,6 +651,7 @@ def normalize_sfu_room_state(item):
         'ttl': ROOM_STATE_TTL,
         'ageSeconds': 0,
         'viewerCount': viewer_count,
+        'participantCount': viewer_count + (1 if host_connected else 0),
         'hostConnected': bool(host_connected),
         'trackCount': track_count,
         'updatedAt': item.get('updatedAt') or item.get('firstTrackAt'),
@@ -625,6 +660,8 @@ def normalize_sfu_room_state(item):
 
 
 def fetch_sfu_room_states():
+    if not GAMECAST_UNIFIED_SFU_ENABLED and not GAMECAST_UNIFIED_SFU_CANARY_ROOMS:
+        return []
     req = urllib.request.Request(SFU_SESSIONS_URL, headers={'Accept': 'application/json'}, method='GET')
     try:
         with urllib.request.urlopen(req, timeout=SFU_SESSIONS_TIMEOUT) as resp:
@@ -857,7 +894,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 room_id = (params.get('room', [''])[0]).strip()
                 intent = get_viewer_intent(room_id)
                 if not intent:
-                    self.send_json(400, {'ok': False, 'error': '?? room ??'})
+                    self.send_json(400, {'ok': False, 'error': '房间编号无效'})
                     return
                 self.send_json(200, {'ok': True, 'intent': intent})
             elif parsed.path == '/api/presence':
@@ -931,6 +968,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.handle_save_history(data)
             elif request_path == '/api/stats':
                 if not self.enforce_rate_limit('stats:post', 240, 60):
+                    return
+                if not self.require_authenticated_user():
                     return
                 self.handle_stats(data)
             elif request_path == '/api/quality/report':
@@ -1031,12 +1070,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not username:
             return
         try:
-            sample = store_quality_sample(data, username)
+            sample, accepted = store_quality_sample(data, username)
         except ControlError as error:
             self.send_control_error(error)
             return
         self.send_json(200, {
             'ok': True,
+            'accepted': accepted,
             'reportedAtUnix': sample['reportedAtUnix'],
         })
 
@@ -1132,10 +1172,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         })
 
     def send_control_error(self, error):
+        message = CONTROL_ERROR_MESSAGES.get(error.code, '操作失败，请稍后重试')
         self.send_json(error.status, {
             'ok': False,
             'code': error.code,
-            'error': error.code,
+            'error': message,
+            'message': message,
         })
 
     def do_OPTIONS(self):

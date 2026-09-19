@@ -38,6 +38,7 @@
   var lastRoomStatePostAt = 0;
   var roomStateFetchPromise = null;
   var roomStateFetchRoomId = '';
+  var roomStateFetchSequence = 0;
   var lastRoomState = null;
   var lastKnownAuthUser = '';
   var lastKnownLoggedIn = false;
@@ -67,6 +68,8 @@
   var webShareStopPromise = null;
   var webShareAbortPromise = null;
   var activeCaptureAudioMode = 'off';
+  var activeCaptureInfo = null;
+  var pendingCaptureAudioOptions = null;
 
   var QUALITY = {
     quality:  { label: '清晰优先', bitrate: 50000000, desc: '带宽不足时优先保分辨率', pref: 'maintain-resolution' },
@@ -78,8 +81,7 @@
     'auto':      { label: '自动 (推荐)', w: null, h: null },
     '1920x1080': { label: '1080p (1920×1080)', w: 1920, h: 1080 },
     '1280x720':  { label: '720p (1280×720)', w: 1280, h: 720 },
-    '854x480':   { label: '480p (854×480)', w: 854, h: 480 },
-    '640x360':   { label: '360p (640×360)', w: 640, h: 360 }
+    '960x540':   { label: '540p (960×540)', w: 960, h: 540 }
   };
 
   var FPS_OPTIONS = [30, 45, 60];
@@ -111,6 +113,18 @@
     safeNetMbps: 160
   };
 
+  var CAPTURE_FALLBACK_PROFILES = [
+    { name: '1080p60', width: 1920, height: 1080, frameRate: 60 },
+    { name: '1080p45', width: 1920, height: 1080, frameRate: 45 },
+    { name: '1080p30', width: 1920, height: 1080, frameRate: 30 },
+    { name: '720p60', width: 1280, height: 720, frameRate: 60 },
+    { name: '720p45', width: 1280, height: 720, frameRate: 45 },
+    { name: '720p30', width: 1280, height: 720, frameRate: 30 },
+    { name: '540p60', width: 960, height: 540, frameRate: 60 },
+    { name: '540p45', width: 960, height: 540, frameRate: 45 },
+    { name: '540p30', width: 960, height: 540, frameRate: 30 }
+  ];
+
   function loadCfg() {
     try { return JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}') || {}; } catch (e) { return {}; }
   }
@@ -134,21 +148,15 @@
   }
   function normalizeResolutionKey(key) {
     if (key === '3840x2160' || key === '2560x1440') return '1920x1080';
+    if (key === '854x480' || key === '640x360') return '960x540';
     return RESOLUTIONS[key] ? key : 'auto';
   }
   function normalizeFramerateValue(value) {
     var fps = parseInt(value, 10);
     if (isNaN(fps)) return 30;
-    var best = FPS_OPTIONS[0];
-    var bestDiff = Math.abs(fps - best);
-    for (var i = 1; i < FPS_OPTIONS.length; i++) {
-      var diff = Math.abs(fps - FPS_OPTIONS[i]);
-      if (diff < bestDiff) {
-        best = FPS_OPTIONS[i];
-        bestDiff = diff;
-      }
-    }
-    return best;
+    return FPS_OPTIONS.reduce(function (best, candidate) {
+      return Math.abs(candidate - fps) < Math.abs(best - fps) ? candidate : best;
+    }, FPS_OPTIONS[0]);
   }
   function extCfg() {
     var s = loadCfg();
@@ -156,13 +164,74 @@
       res: normalizeResolutionKey(s.resolution || '1280x720'),
       fps: normalizeFramerateValue(s.framerate || 30),
       qm: s.qualityMode || 'balanced',
-      audio: AUDIO_MODES[s.audioMode] ? s.audioMode : 'app'
+      audio: AUDIO_MODES[s.audioMode] ? s.audioMode : 'off'
     };
   }
   function maxBitrate() { return 50000000; }
   function resConstraints() {
     var c = extCfg(), p = RESOLUTIONS[c.res];
-    return (p && p.w) ? { width: { ideal: p.w }, height: { ideal: p.h } } : {};
+    return (p && p.w) ? {
+      width: { ideal: p.w, max: p.w },
+      height: { ideal: p.h, max: p.h }
+    } : {};
+  }
+
+  function normalizeCaptureAudioOptions(value) {
+    if (typeof GameCastWebShareAudioPolicy !== 'undefined' &&
+        GameCastWebShareAudioPolicy.normalizeCaptureOptions) {
+      return GameCastWebShareAudioPolicy.normalizeCaptureOptions(value);
+    }
+    if (typeof value === 'string') {
+      return { windowAudioEnabled: value === 'app', systemAudioEnabled: value === 'system' };
+    }
+    value = value && typeof value === 'object' ? value : {};
+    return {
+      windowAudioEnabled: value.windowAudioEnabled === true,
+      systemAudioEnabled: value.systemAudioEnabled === true
+    };
+  }
+
+  function captureAudioMode(options, surface) {
+    if (typeof GameCastWebShareAudioPolicy !== 'undefined' &&
+        GameCastWebShareAudioPolicy.modeForSurface) {
+      return GameCastWebShareAudioPolicy.modeForSurface(options, surface || '');
+    }
+    options = normalizeCaptureAudioOptions(options);
+    surface = String(surface || '').toLowerCase();
+    if (options.windowAudioEnabled && (surface === 'browser' || surface === 'window')) return 'app';
+    if (options.systemAudioEnabled && surface === 'monitor') return 'system';
+    return 'off';
+  }
+
+  function captureAudioModeName(options) {
+    options = normalizeCaptureAudioOptions(options);
+    if (options.windowAudioEnabled && options.systemAudioEnabled) return 'both';
+    if (options.windowAudioEnabled) return 'app';
+    if (options.systemAudioEnabled) return 'system';
+    return 'off';
+  }
+
+  function captureAudioOptionsFromConstraints(constraints) {
+    var windowOptions = window.__PARTYLAN_CAPTURE_OPTIONS__;
+    if (windowOptions && typeof windowOptions === 'object') {
+      return normalizeCaptureAudioOptions(windowOptions);
+    }
+    constraints = constraints && typeof constraints === 'object' ? constraints : {};
+    if (constraints.audio === false) {
+      return normalizeCaptureAudioOptions({windowAudioEnabled: false, systemAudioEnabled: false});
+    }
+    var systemHint = constraints.systemAudio;
+    var windowHint = constraints.windowAudio;
+    if (systemHint === 'exclude' && windowHint === 'exclude') {
+      return normalizeCaptureAudioOptions({windowAudioEnabled: false, systemAudioEnabled: false});
+    }
+    if (systemHint === 'include' || windowHint === 'window') {
+      return normalizeCaptureAudioOptions({
+        windowAudioEnabled: windowHint === 'window',
+        systemAudioEnabled: systemHint === 'include'
+      });
+    }
+    return normalizeCaptureAudioOptions(extCfg().audio);
   }
 
   function roomIdFromLocation() {
@@ -212,6 +281,9 @@
     pc._gcStatsSnapshot = null;
     pc._gcTelemetryReasonLatch = null;
     pc._gcReceiverParticipantId = '';
+    pc._gcReceiverBufferState = null;
+    pc._gcPrimaryInboundVideoReportId = '';
+    pc._gcLastPresentationMetrics = null;
   }
 
   function resetPeerQualityState(pc) {
@@ -279,6 +351,9 @@
     pc._gcScreegoPeerId = String(metadata.peerId || '').slice(0, 128);
     pc._gcScreegoRole = metadata.role === 'host' ? 'host' : 'viewer';
     screegoPeerSessions[sessionId] = pc;
+    if (pc._gcScreegoRole === 'viewer') {
+      setTimeout(function () { ensureReceiverBufferTarget(pc); }, 0);
+    }
     return true;
   }
 
@@ -612,8 +687,29 @@
     webShareSafetyTimer = 0;
   }
 
+  function invalidateWebShareState() {
+    clearWebShareTimers();
+    activeCaptureAudioMode = 'off';
+    pendingCaptureAudioOptions = null;
+    clearCaptureDiagnostics();
+    var stopPromise = stopWebShare(false, 'share-control-invalid', true);
+    if (stopPromise && typeof stopPromise.catch === 'function') {
+      stopPromise.catch(function (error) {
+        console.warn('[GameCast/control] 共享状态清理失败', error && error.message || error);
+      });
+    }
+    return stopPromise;
+  }
+
   function effectiveWebShareAudioMode() {
     return activeDisplayStream ? activeCaptureAudioMode : 'off';
+  }
+
+  function clearCaptureDiagnostics() {
+    activeCaptureInfo = null;
+    try { delete window.__PARTYLAN_CAPTURE_INFO__; } catch (e) {
+      window.__PARTYLAN_CAPTURE_INFO__ = null;
+    }
   }
 
   function heartbeatWebShare(phase) {
@@ -637,10 +733,14 @@
       if (data.room) rememberRoomState(data.room);
       return data;
     }).catch(function (error) {
-      if (error && (error.code === 'share_lease_expired' || error.code === 'share_lease_invalid')) {
-        clearWebShareTimers();
-        webShareLease = null;
-        if (activeDisplayStream) stopWebShare(false);
+      var controlCode = error && error.code;
+      if (
+        controlCode === 'participant_not_found' ||
+        controlCode === 'share_lease_expired' ||
+        controlCode === 'share_lease_invalid' ||
+        controlCode === 'share_phase_invalid'
+      ) {
+        return invalidateWebShareState().then(function () { return null; });
       }
       return null;
     });
@@ -651,18 +751,22 @@
     webShareHeartbeatTimer = setInterval(heartbeatWebShare, ROOM_STATE_HEARTBEAT_MS);
   }
 
-  function claimWebShare() {
+  function claimWebShare(captureAudioOptions) {
     var roomId = currentRoomId();
     if (!roomId) return Promise.reject(new Error('room_not_found'));
     return ensureWebPresence(roomId).then(function () { return fetchRoomState(roomId, true); }).then(function (state) {
       if (!webCanStartShare(state)) throw new Error('share_locked');
       if (webShareLease && webShareLease.room === roomId) return webShareLease;
       var unified = isUnifiedSfuRoom(state);
+      var requestedAudioMode = captureAudioModeName(
+        captureAudioOptions || pendingCaptureAudioOptions || extCfg().audio
+      );
+      if (requestedAudioMode === 'both') requestedAudioMode = 'app';
       var request = {
         room: roomId,
         participantId: getWebParticipantId(),
         mediaMode: unified ? 'sfu' : 'legacy-p2p',
-        audioMode: extCfg().audio,
+        audioMode: requestedAudioMode,
         ttl: ROOM_STATE_TTL
       };
       if (unified) {
@@ -674,6 +778,7 @@
         body: JSON.stringify(request)
       }).then(function (data) {
         webShareLease = data.lease;
+        clearRoomStateHeartbeat();
         if (data.room) rememberRoomState(data.room);
         startWebShareHeartbeat();
         return webShareLease;
@@ -686,6 +791,8 @@
     clearWebShareTimers();
     webShareLease = null;
     activeCaptureAudioMode = 'off';
+    pendingCaptureAudioOptions = null;
+    clearCaptureDiagnostics();
     if (!lease) return Promise.resolve(null);
     var payload = JSON.stringify({ room: lease.room, participantId: getWebParticipantId(), leaseId: lease.leaseId });
     if (useBeacon && navigator.sendBeacon) {
@@ -712,11 +819,11 @@
     }
   }
 
-  function stopWebShare(useBeacon) {
+  function stopWebShare(useBeacon, closeReason, skipControlHeartbeat) {
     if (webShareStopPromise) return webShareStopPromise;
     var stream = activeDisplayStream;
     var markStopping = Promise.resolve(null);
-    if (webShareLease && (webShareLease.mediaMode === 'sfu' || isUnifiedSfuRoom(lastRoomState))) {
+    if (!skipControlHeartbeat && webShareLease && (webShareLease.mediaMode === 'sfu' || isUnifiedSfuRoom(lastRoomState))) {
       if (useBeacon) sendWebSharePhaseBeacon('stopping');
       else markStopping = heartbeatWebShare('stopping');
     }
@@ -724,10 +831,14 @@
     webShareStopPromise = markStopping.catch(function () { return null; }).then(function () {
       sfuDisconnect();
       stopDisplayStreamTracks(stream);
+      if (closeReason === 'share-control-invalid') notifyDisplayStreamEnded(stream);
       activeDisplayStream = null;
       activeVideoTrack = null;
       activeCaptureAudioMode = 'off';
-      closeActivePeerConnections('share-stop');
+      pendingCaptureAudioOptions = null;
+      clearCaptureDiagnostics();
+      if (closeReason) closeActivePeerConnections(closeReason);
+      else closeActivePeerConnections('share-stop');
       resetAdaptiveStreamingState();
       return releaseWebShare(useBeacon);
     }).finally(function () {
@@ -750,12 +861,14 @@
     activeDisplayStream = null;
     activeVideoTrack = null;
     activeCaptureAudioMode = 'off';
+    pendingCaptureAudioOptions = null;
+    clearCaptureDiagnostics();
     sfuDisconnect();
     stopDisplayStreamTracks(failedStream);
     notifyDisplayStreamEnded(failedStream);
     closeActivePeerConnections('share-abort');
     resetAdaptiveStreamingState();
-    showSfuStatus('错误: ' + (error && error.code || 'sfu_unavailable'));
+    showSfuStatus(localizeSfuStatus(error && error.code || 'sfu_unavailable'));
     webShareAbortPromise = releaseWebShare(false).finally(function () {
       webShareAbortPromise = null;
     });
@@ -767,11 +880,16 @@
   }
 
   function ownsCurrentRoomState(roomId) {
-    return !!roomId && !!currentUser && currentUser !== 'guest';
+    return !!roomId &&
+      !!currentUser &&
+      currentUser !== 'guest' &&
+      webPresenceRole === 'owner' &&
+      sameRoomId(webPresenceRoom, roomId) &&
+      !(webShareLease && sameRoomId(webShareLease.room, roomId));
   }
 
   function canMaintainRoomState(roomId) {
-    return !!roomId && (!!activeDisplayStream || ownsCurrentRoomState(roomId));
+    return ownsCurrentRoomState(roomId);
   }
 
   function currentSfuMode() {
@@ -781,7 +899,7 @@
   function roomStateSfuActive(roomId) {
     return !!(
       lastRoomState &&
-      lastRoomState.room === roomId &&
+      sameRoomId(lastRoomState.room, roomId) &&
       isUnifiedSfuRoom(lastRoomState) &&
       lastRoomState.sharing &&
       lastRoomState.sharePhase === 'live' &&
@@ -831,6 +949,198 @@
   function formatMbps(value) {
     if (value === null || value === undefined || isNaN(value)) return '-';
     return value.toFixed(1) + 'Mbps';
+  }
+
+  function videoTrackSettings(video) {
+    if (!video || !video.srcObject || typeof video.srcObject.getVideoTracks !== 'function') return {};
+    var tracks;
+    try { tracks = video.srcObject.getVideoTracks() || []; } catch (error) { tracks = []; }
+    var track = tracks.find ? tracks.find(function (item) {
+      return item && item.readyState !== 'ended';
+    }) : tracks[0];
+    if (!track || typeof track.getSettings !== 'function') return {};
+    try {
+      var settings = track.getSettings();
+      return settings && typeof settings === 'object' ? settings : {};
+    } catch (error2) {
+      return {};
+    }
+  }
+
+  function getSfuViewerMediaMetrics() {
+    if (!sfuConnection || typeof sfuConnection.getViewerMediaMetrics !== 'function') return null;
+    try {
+      var metrics = sfuConnection.getViewerMediaMetrics();
+      return metrics && typeof metrics === 'object' ? metrics : null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function hasLiveViewerVideo(video) {
+    if (!video || !video.srcObject || typeof video.srcObject.getVideoTracks !== 'function') return false;
+    try {
+      return video.srcObject.getVideoTracks().some(function (track) {
+        return track && track.readyState !== 'ended';
+      });
+    } catch (error) {
+      return false;
+    }
+  }
+
+  // The injected SFU element is normally the presented video, but a browser
+  // can briefly keep the React video element as the only decoded element while
+  // the overlay is being replaced. Pick the live element with the strongest
+  // intrinsic signal so the diagnostics never stay at "-" just because an id
+  // lookup raced the track event.
+  function getPresentedViewerVideo(mode) {
+    if (typeof document === 'undefined') return null;
+    var preferred = document.getElementById('gc-sfu-viewer-video');
+    // In unified SFU mode the injected element is the actual receive path.
+    // Never let a stale Screego video element win the diagnostics race.
+    if (mode === 'sfu-viewer') {
+      return preferred && hasLiveViewerVideo(preferred) ? preferred : (preferred || null);
+    }
+    var candidates = [];
+    if (preferred) candidates.push(preferred);
+    try {
+      var videos = document.querySelectorAll('video');
+      for (var index = 0; index < videos.length; index += 1) {
+        if (candidates.indexOf(videos[index]) < 0) candidates.push(videos[index]);
+      }
+    } catch (error) {}
+    var best = null;
+    var bestScore = -1;
+    candidates.forEach(function (video) {
+      if (!hasLiveViewerVideo(video)) return;
+      var width = Number(video.videoWidth) || 0;
+      var height = Number(video.videoHeight) || 0;
+      var score = (video.readyState >= 2 ? 100000000 : 0) + width * height;
+      if (video.id === 'gc-sfu-viewer-video') score += 1000000;
+      if (score > bestScore) {
+        best = video;
+        bestScore = score;
+      }
+    });
+    return best || preferred || null;
+  }
+
+  function sampleRenderedVideoMetrics(video, now) {
+    if (!video) return null;
+    now = Number(now) || Date.now();
+    var totalFrames = null;
+    try {
+      if (typeof video.getVideoPlaybackQuality === 'function') {
+        var quality = video.getVideoPlaybackQuality();
+        if (quality && Number.isFinite(Number(quality.totalVideoFrames))) {
+          totalFrames = Math.max(0, Number(quality.totalVideoFrames));
+        }
+      }
+    } catch (error) {}
+    if (totalFrames === null && Number.isFinite(Number(video.webkitDecodedFrameCount))) {
+      totalFrames = Math.max(0, Number(video.webkitDecodedFrameCount));
+    }
+    var previous = video._gcRenderedVideoMetrics;
+    var state = previous && typeof previous === 'object'
+      ? previous
+      : {frames: totalFrames, timestamp: now, fps: 0, width: 0, height: 0, trackFps: 0};
+    var settings = videoTrackSettings(video);
+    state.width = Number(video.videoWidth) || Number(settings.width) || Number(state.width) || 0;
+    state.height = Number(video.videoHeight) || Number(settings.height) || Number(state.height) || 0;
+    state.trackFps = Number(settings.frameRate) || Number(state.trackFps) || 0;
+    if (totalFrames !== null) {
+      var elapsed = now - Number(state.timestamp || now);
+      var delta = totalFrames - Number(state.frames || 0);
+      if (previous && elapsed >= 250 && delta >= 0) {
+        state.fps = delta * 1000 / elapsed;
+      }
+      state.frames = totalFrames;
+      state.timestamp = now;
+    }
+    video._gcRenderedVideoMetrics = state;
+    return state;
+  }
+
+  function resolveVideoPresentationMetrics(mode, report, diagnosticSample, video, viewerTrackMetrics) {
+    if ((mode === 'sfu-viewer') && !viewerTrackMetrics) {
+      viewerTrackMetrics = getSfuViewerMediaMetrics();
+    }
+    var isViewer = mode === 'native-viewer' || mode === 'sfu-viewer';
+    var width = 0;
+    var height = 0;
+    // For a viewer, the rendered SFU element describes what the user actually
+    // sees. Prefer it over a stale RTP report left behind by a layer switch.
+    if (isViewer && video) {
+      var rendered = video._gcRenderedVideoMetrics || {};
+      width = Number(rendered.width) || Number(video.videoWidth) || 0;
+      height = Number(rendered.height) || Number(video.videoHeight) || 0;
+      if (!(width > 0) || !(height > 0)) {
+        var settings = videoTrackSettings(video);
+        if (!(width > 0)) width = Number(settings.width) || 0;
+        if (!(height > 0)) height = Number(settings.height) || 0;
+      }
+    }
+    if (!(width > 0) || !(height > 0)) {
+      width = report && Number(report.frameWidth || report.width) || 0;
+      height = report && Number(report.frameHeight || report.height) || 0;
+    }
+    if (isViewer && viewerTrackMetrics) {
+      if (!(width > 0)) width = Number(viewerTrackMetrics.width) || 0;
+      if (!(height > 0)) height = Number(viewerTrackMetrics.height) || 0;
+    }
+    if (!isViewer && report) {
+      width = Number(report.frameWidth || report.width) || 0;
+      height = Number(report.frameHeight || report.height) || 0;
+    }
+
+    var fps = report && Number(report.framesPerSecond) || 0;
+    if (isViewer && video &&
+        video._gcRenderedVideoMetrics && Number(video._gcRenderedVideoMetrics.fps) > 0) {
+      fps = Number(video._gcRenderedVideoMetrics.fps);
+    }
+    if (!(fps > 0) && diagnosticSample) {
+      fps = Number(diagnosticSample.decodedFps) || Number(diagnosticSample.arrivalFps) || 0;
+    }
+    if (!(fps > 0) && video && video._gcRenderedVideoMetrics) {
+      fps = Number(video._gcRenderedVideoMetrics.fps) || Number(video._gcRenderedVideoMetrics.trackFps) || 0;
+    }
+    if (!(fps > 0) && viewerTrackMetrics) {
+      fps = Number(viewerTrackMetrics.fps || viewerTrackMetrics.frameRate) || 0;
+    }
+
+    return {
+      resolution: width > 0 && height > 0 ? width + '×' + height : '-',
+      fps: fps > 0 ? Math.round(fps) + 'fps' : '-'
+    };
+  }
+
+  // getStats can briefly omit frame dimensions while an SFU offer is being
+  // replaced. Keep the last independently observed value for a short window
+  // so the compact panel does not flicker to '-' during a healthy reconnect.
+  var PRESENTATION_METRICS_CACHE_MS = 8000;
+  function retainPresentationMetrics(pc, metrics, now) {
+    metrics = metrics && typeof metrics === 'object' ? metrics : {};
+    now = Number(now) || Date.now();
+    var cache = pc && pc._gcLastPresentationMetrics &&
+      typeof pc._gcLastPresentationMetrics === 'object'
+      ? pc._gcLastPresentationMetrics
+      : {};
+    var resolution = String(metrics.resolution || '-');
+    var fps = String(metrics.fps || '-');
+    if (resolution !== '-') {
+      cache.resolution = resolution;
+      cache.resolutionAt = now;
+    } else if (cache.resolution && now - Number(cache.resolutionAt || 0) <= PRESENTATION_METRICS_CACHE_MS) {
+      resolution = cache.resolution;
+    }
+    if (fps !== '-') {
+      cache.fps = fps;
+      cache.fpsAt = now;
+    } else if (cache.fps && now - Number(cache.fpsAt || 0) <= PRESENTATION_METRICS_CACHE_MS) {
+      fps = cache.fps;
+    }
+    if (pc) pc._gcLastPresentationMetrics = cache;
+    return {resolution: resolution, fps: fps};
   }
 
   function getMemberCountEstimate() {
@@ -1133,7 +1443,8 @@
     var roomId = currentRoomId();
     if (
       !activeDisplayStream || !webShareLease ||
-      webShareLease.mediaMode !== 'legacy-p2p' || !roomId || !canSendProtectedControl() ||
+      (webShareLease.mediaMode !== 'legacy-p2p' && webShareLease.mediaMode !== 'sfu') ||
+      !roomId || !canSendProtectedControl() ||
       webPresenceRecoveryPromise
     ) {
       clearAdaptiveQualitySnapshot();
@@ -1148,9 +1459,9 @@
       var fetchedAt = Date.now();
       (data && Array.isArray(data.samples) ? data.samples : []).forEach(function (sample) {
         var sessionId = normalizeScreegoSessionId(sample && sample.screegoSessionId);
-        if (!sessionId) return;
         sample._gcSnapshotFetchedAt = fetchedAt;
-        next[sessionId] = sample;
+        if (sessionId) next[sessionId] = sample;
+        else if (sample && sample.participantId) next['sfu:' + sample.participantId] = sample;
       });
       adaptiveQualitySnapshot = next;
       return data;
@@ -1165,8 +1476,25 @@
 
   function receiverQualityForPeer(pc, now) {
     var sessionId = normalizeScreegoSessionId(pc && pc._gcScreegoSessionId);
-    if (!sessionId || pc._gcScreegoRole !== 'host') return null;
-    var sample = adaptiveQualitySnapshot[sessionId];
+    var sample = sessionId && pc._gcScreegoRole === 'host'
+      ? adaptiveQualitySnapshot[sessionId]
+      : null;
+    if (!sample && pc === getSfuPeerConnection() && getSfuRole() === 'host' &&
+        typeof GC_SFU.getViewerSessions === 'function') {
+      var viewerSessions = GC_SFU.getViewerSessions();
+      viewerSessions.forEach(function (viewerSession) {
+        var candidate = adaptiveQualitySnapshot[viewerSession.id];
+        if (!candidate) return;
+        if (!sample || Number(candidate.decodedFps || 0) < Number(sample.decodedFps || 0)) {
+          sample = candidate;
+        }
+      });
+      if (!sample && viewerSessions.length === 1) {
+        var legacyViewer = viewerSessions[0];
+        var legacyKey = legacyViewer.participantId ? 'sfu:' + legacyViewer.participantId : '';
+        if (legacyKey) sample = adaptiveQualitySnapshot[legacyKey] || null;
+      }
+    }
     if (!sample) return null;
     var ageMs = Math.max(0, Number(sample.ageSeconds || 0) * 1000) +
       Math.max(0, now - Number(sample._gcSnapshotFetchedAt || now));
@@ -1178,20 +1506,33 @@
       participantId: String(sample.participantId || ''),
       ageMs: ageMs,
       reportedAtUnix: Math.max(0, Number(sample.reportedAtUnix || 0)),
+      reportId: Number(sample.protocolVersion || 1) >= 2 && Number(sample.reportSeq || 0) > 0
+        ? String(sample.generation || '') + ':' + String(Math.floor(Number(sample.reportSeq)))
+        : String(sample.reportedAtUnix || ''),
+      decisionFresh: Number(sample.protocolVersion || 1) >= 2 &&
+        Number(sample.reportSeq || 0) > 0 &&
+        Number(sample.sampleDurationMs || 0) > 0 &&
+        Number(sample.sampleDurationMs || 0) <= 4000 && ageMs < 4000,
       decodedFps: Math.max(0, Number(sample.decodedFps || 0)),
       incomingKbps: Math.max(0, Number(sample.incomingBitrateKbps || 0)),
       lossPercent: totalPackets > 0
         ? Math.max(0, Number(sample.packetsLostDelta || 0)) * 100 / totalPackets
         : 0,
       jitterMs: Math.max(0, Number(sample.jitterMs || 0)),
-      framesDroppedDelta: Math.max(0, Number(sample.framesDroppedDelta || 0))
+      framesDroppedDelta: Math.max(0, Number(sample.framesDroppedDelta || 0)),
+      bufferTargetMs: Math.max(0, Math.min(300, Number(sample.bufferTargetMs || 0))),
+      bufferActualMs: Math.max(0, Math.min(60000, Number(sample.bufferActualMs || 0))),
+      bufferReason: String(sample.bufferReason || 'baseline'),
+      flowDeficit: sample.flowDeficit === true
     };
   }
 
   function sampleAdaptiveStreamingPeer(descriptor) {
     var pc = descriptor && descriptor.pc;
+    var mode = descriptor && descriptor.mode || 'native-host';
     if (!shouldUseAdaptiveStreaming(pc) || pc._gcAdaptiveFetchPromise || webPresenceRecoveryPromise) return;
     var adaptiveState = pc._gcAdaptiveState || createCurrentAdaptiveState(Date.now());
+    var previousSoftProtectionKbps = Number(adaptiveState.softProtectionKbps) || 0;
     var adaptiveProfile = computePeerAdaptiveProfile(pc);
     var nextAdaptiveProfile = adaptiveState && adaptiveState.level > 0
       ? computePeerAdaptiveProfile(pc, adaptiveState.level - 1)
@@ -1213,6 +1554,12 @@
       var capturedFramesTotal = 0;
       var outboundFramesEncodedTotal = 0;
       var outboundFramesSentTotal = 0;
+      var outboundPacketSendDelayMsTotal = 0;
+      var outboundRetransmittedPacketsTotal = 0;
+      var outboundQpSumTotal = 0;
+      var outboundEncodeTimeMsTotal = 0;
+      var outboundBandwidthLimitedMsTotal = 0;
+      var outboundVideoLayerCount = 0;
       var captureReportedFps = 0;
       var senderReportedFps = 0;
       var qualityReason = 'none';
@@ -1230,10 +1577,17 @@
           remoteJitterMs = Math.max(remoteJitterMs, (report.jitter || 0) * 1000);
         }
         if (report.type === 'outbound-rtp' && (report.kind === 'video' || report.mediaType === 'video')) {
+          outboundVideoLayerCount += 1;
           outboundBytesTotal += report.bytesSent || 0;
           outboundPacketsSentTotal += report.packetsSent || 0;
           outboundFramesEncodedTotal += report.framesEncoded || 0;
           outboundFramesSentTotal += report.framesSent || 0;
+          outboundPacketSendDelayMsTotal += Math.max(0, Number(report.totalPacketSendDelay || 0)) * 1000;
+          outboundRetransmittedPacketsTotal += Math.max(0, Number(report.retransmittedPacketsSent || 0));
+          outboundQpSumTotal += Math.max(0, Number(report.qpSum || 0));
+          outboundEncodeTimeMsTotal += Math.max(0, Number(report.totalEncodeTime || 0)) * 1000;
+          var limitationDurations = report.qualityLimitationDurations || {};
+          outboundBandwidthLimitedMsTotal += Math.max(0, Number(limitationDurations.bandwidth || 0)) * 1000;
           senderReportedFps = Math.max(senderReportedFps, Number(report.framesPerSecond || 0));
           if (report.qualityLimitationReason) qualityReason = report.qualityLimitationReason;
         }
@@ -1268,20 +1622,38 @@
         nextNominalKbps: nextAdaptiveProfile
           ? nextAdaptiveProfile.nominalBitrate / 1000
           : computeTargetBitrate() / 1000,
-        maxLevel: adaptiveProfile ? adaptiveProfile.maxLevel : 6,
+        nextDegradeFloorKbps: nextAdaptiveProfile
+          ? nextAdaptiveProfile.degradeFloorBitrate / 1000
+          : computeTargetBitrate() / 1000,
+        profileMaxFramerate: adaptiveProfile ? adaptiveProfile.maxFramerate : (extCfg().fps || 30),
+        maxLevel: adaptiveProfile ? adaptiveProfile.maxLevel : 5,
         levelDegradeFloorsKbps: adaptiveFloorsKbps,
         receiverBound: !!receiverQuality,
+        recoveryReceiverOptional: mode === 'sfu-host' && !receiverQuality,
         receiverReportAgeMs: receiverQuality ? receiverQuality.ageMs : 0,
         receiverReportedAtUnix: receiverQuality ? receiverQuality.reportedAtUnix : 0,
+        receiverReportId: receiverQuality ? receiverQuality.reportId : '',
+        receiverDecisionFresh: receiverQuality ? receiverQuality.decisionFresh : false,
         receiverParticipantId: receiverQuality ? receiverQuality.participantId : '',
         receiverDecodedFps: receiverQuality ? receiverQuality.decodedFps : 0,
         receiverIncomingKbps: receiverQuality ? receiverQuality.incomingKbps : 0,
         receiverLossPercent: receiverQuality ? receiverQuality.lossPercent : 0,
         receiverJitterMs: receiverQuality ? receiverQuality.jitterMs : 0,
         receiverFramesDroppedDelta: receiverQuality ? receiverQuality.framesDroppedDelta : 0,
+        receiverBufferTargetMs: receiverQuality ? receiverQuality.bufferTargetMs : 0,
+        receiverBufferActualMs: receiverQuality ? receiverQuality.bufferActualMs : 0,
+        receiverBufferReason: receiverQuality ? receiverQuality.bufferReason : 'baseline',
+        receiverFlowDeficit: receiverQuality ? receiverQuality.flowDeficit : false,
         senderCapturedFps: captureReportedFps,
         senderEncodedFps: senderReportedFps,
         senderSentFps: senderReportedFps,
+        senderKbitsPerFrame: 0,
+        senderPacketSendDelayMs: 0,
+        senderRetransmitPercent: 0,
+        bandwidthLimitedMsDelta: 0,
+        senderQpPerFrame: 0,
+        senderEncodeMsPerFrame: 0,
+        stabilityLab: window.__PARTYLAN_STABILITY_LAB__ === true,
         availableOutgoingBitrate: pair.availableOutgoingBitrate || 0,
         qualityLimitationReason: qualityReason
       };
@@ -1310,9 +1682,16 @@
             adaptiveSample.outboundKbps = deltas.outboundKbps;
             adaptiveSample.lossPercent = deltas.lossPercent;
             var elapsedSeconds = (now - prev.ts) / 1000;
+            var outboundBytesDelta = outboundBytesTotal - Number(prev.bytesSent || 0);
+            var outboundPacketsDelta = outboundPacketsSentTotal - Number(prev.packetsSent || 0);
             var capturedFramesDelta = capturedFramesTotal - Number(prev.framesCaptured || 0);
             var framesEncodedDelta = outboundFramesEncodedTotal - Number(prev.framesEncoded || 0);
             var framesSentDelta = outboundFramesSentTotal - Number(prev.framesSent || 0);
+            var packetSendDelayDeltaMs = outboundPacketSendDelayMsTotal - Number(prev.packetSendDelayMs || 0);
+            var retransmittedPacketsDelta = outboundRetransmittedPacketsTotal - Number(prev.retransmittedPackets || 0);
+            var qpSumDelta = outboundQpSumTotal - Number(prev.qpSum || 0);
+            var encodeTimeDeltaMs = outboundEncodeTimeMsTotal - Number(prev.encodeTimeMs || 0);
+            var bandwidthLimitedDeltaMs = outboundBandwidthLimitedMsTotal - Number(prev.bandwidthLimitedMs || 0);
             if (elapsedSeconds > 0) {
               if (capturedFramesDelta >= 0) {
                 adaptiveSample.senderCapturedFps = Math.max(
@@ -1321,17 +1700,39 @@
                 );
               }
               if (framesEncodedDelta >= 0) {
+                var encodedLayerCount = Math.max(1, outboundVideoLayerCount);
                 adaptiveSample.senderEncodedFps = Math.max(
                   adaptiveSample.senderEncodedFps,
-                  framesEncodedDelta / elapsedSeconds
+                  framesEncodedDelta / elapsedSeconds / encodedLayerCount
                 );
+                if (outboundBytesDelta >= 0 && framesEncodedDelta > 0) {
+                  adaptiveSample.senderKbitsPerFrame = outboundBytesDelta * 8 / framesEncodedDelta / 1000;
+                }
+                if (qpSumDelta >= 0 && framesEncodedDelta > 0) {
+                  adaptiveSample.senderQpPerFrame = qpSumDelta / framesEncodedDelta;
+                }
+                if (encodeTimeDeltaMs >= 0 && framesEncodedDelta > 0) {
+                  adaptiveSample.senderEncodeMsPerFrame = encodeTimeDeltaMs / framesEncodedDelta;
+                }
               }
             }
             if (elapsedSeconds > 0 && framesSentDelta >= 0) {
+              var sentLayerCount = Math.max(1, outboundVideoLayerCount);
               adaptiveSample.senderSentFps = Math.max(
                 adaptiveSample.senderSentFps,
-                framesSentDelta / elapsedSeconds
-              );
+                framesSentDelta / elapsedSeconds / sentLayerCount
+                );
+            }
+            if (outboundPacketsDelta > 0) {
+              if (packetSendDelayDeltaMs >= 0) {
+                adaptiveSample.senderPacketSendDelayMs = packetSendDelayDeltaMs / outboundPacketsDelta;
+              }
+              if (retransmittedPacketsDelta >= 0) {
+                adaptiveSample.senderRetransmitPercent = retransmittedPacketsDelta * 100 / outboundPacketsDelta;
+              }
+            }
+            if (bandwidthLimitedDeltaMs >= 0) {
+              adaptiveSample.bandwidthLimitedMsDelta = bandwidthLimitedDeltaMs;
             }
           }
         }
@@ -1344,6 +1745,11 @@
         framesCaptured: capturedFramesTotal,
         framesEncoded: outboundFramesEncodedTotal,
         framesSent: outboundFramesSentTotal,
+        packetSendDelayMs: outboundPacketSendDelayMsTotal,
+        retransmittedPackets: outboundRetransmittedPacketsTotal,
+        qpSum: outboundQpSumTotal,
+        encodeTimeMs: outboundEncodeTimeMsTotal,
+        bandwidthLimitedMs: outboundBandwidthLimitedMsTotal,
         pairId: adaptiveSample.pairId,
         ts: now
       };
@@ -1357,6 +1763,11 @@
           evaluation.decision.fromLevel + '->' + evaluation.decision.toLevel;
         pc._gcAdaptivePendingDecision = adaptiveDecision;
         applyAdaptiveProfile(pc, adaptiveDecision);
+      } else if (
+        Number(adaptiveState.softProtectionKbps || 0) !== previousSoftProtectionKbps ||
+        /^soft-/.test(String(adaptiveState.transitionReason || ''))
+      ) {
+        applyAdaptiveProfile(pc, 'soft:' + (adaptiveState.transitionReason || 'protect'));
       } else if (pathChanged) {
         applyAdaptiveProfile(pc, 'path:' + previousAdaptivePath + '->' + adaptiveSample.path);
       }
@@ -1417,7 +1828,12 @@
 
   function postRoomState(active, roomOverride) {
     var roomId = roomOverride || currentRoomId();
-    if (!roomId || !canSendProtectedControl()) return Promise.resolve(null);
+    if (
+      !roomId ||
+      !canSendProtectedControl() ||
+      !canMaintainRoomState(roomId) ||
+      (webShareLease && sameRoomId(webShareLease.room, roomId))
+    ) return Promise.resolve(null);
     var unified = isUnifiedSfuRoom(lastRoomState);
     var payload = {
       room: roomId,
@@ -1448,7 +1864,13 @@
 
   function sendRoomStateBeacon(active, roomOverride) {
     var roomId = roomOverride || currentRoomId();
-    if (!roomId || !navigator.sendBeacon || !canSendProtectedControl()) return;
+    if (
+      !roomId ||
+      !navigator.sendBeacon ||
+      !canSendProtectedControl() ||
+      !canMaintainRoomState(roomId) ||
+      (webShareLease && sameRoomId(webShareLease.room, roomId))
+    ) return;
     var unified = isUnifiedSfuRoom(lastRoomState);
     try {
       navigator.sendBeacon(ROOM_STATE_URL, JSON.stringify({
@@ -1464,7 +1886,10 @@
 
   function startRoomStateHeartbeat() {
     var roomId = currentRoomId();
-    if (!canMaintainRoomState(roomId)) return;
+    if (!canMaintainRoomState(roomId)) {
+      clearRoomStateHeartbeat();
+      return;
+    }
     clearRoomStateHeartbeat();
     roomStateHeartbeatRoomId = roomId;
     postRoomState(true, roomId);
@@ -1488,30 +1913,31 @@
 
   function fetchRoomState(roomId, force) {
     if (!roomId) return Promise.resolve(null);
-    if (roomStateFetchPromise && !force && roomStateFetchRoomId === roomId) return roomStateFetchPromise;
+    if (roomStateFetchPromise && !force && sameRoomId(roomStateFetchRoomId, roomId)) return roomStateFetchPromise;
 
+    var requestSequence = ++roomStateFetchSequence;
     roomStateFetchRoomId = roomId;
     roomStateFetchPromise = fetch(ROOM_STATE_URL + '?room=' + encodeURIComponent(roomId), {
       credentials: 'same-origin',
       cache: 'no-store'
-    }).then(function (r) { return r.json(); }).then(function (data) {
+    }).then(function (response) {
+      if (!response || !response.ok) throw new Error('room_state_http_error');
+      return response.json();
+    }).then(function (data) {
+      if (requestSequence !== roomStateFetchSequence) {
+        return lastRoomState && sameRoomId(lastRoomState.room, roomId) ? lastRoomState : null;
+      }
       if (data && data.ok && data.state) {
         return rememberRoomState(data.state);
       }
-      return rememberRoomState({
-        room: roomId,
-        active: false,
-        mediaMode: '',
-        mediaProtocolVersion: 0,
-        sharing: false,
-        sharePhase: 'idle',
-        sfu: false
-      });
+      throw new Error('room_state_invalid_response');
     }).catch(function () {
-      return lastRoomState && lastRoomState.room === roomId ? lastRoomState : null;
+      return lastRoomState && sameRoomId(lastRoomState.room, roomId) ? lastRoomState : null;
     }).finally(function () {
-      roomStateFetchPromise = null;
-      roomStateFetchRoomId = '';
+      if (requestSequence === roomStateFetchSequence) {
+        roomStateFetchPromise = null;
+        roomStateFetchRoomId = '';
+      }
     });
 
     return roomStateFetchPromise;
@@ -1834,9 +2260,10 @@
     }
     if (sfuConnection) sfuDisconnect();
     return Promise.resolve().then(function () {
-      if (stream && role === 'host') GC_SFU.shareScreen(stream);
+      if (stream && role === 'host') GC_SFU.shareScreen(stream, extCfg());
       GC_SFU.connect(roomId, role, {
         name: currentUser || loadCfg().name || role,
+        participantId: getWebParticipantId(),
         onRemoteStream: function (remoteStream) {
           showSfuViewer(remoteStream);
           showSfuStatus('连接成功，正在接收画面');
@@ -1862,7 +2289,7 @@
         return heartbeatWebShare('live');
       });
     }).catch(function (error) {
-      showSfuStatus('错误: ' + (error && error.code || 'sfu_unavailable'));
+      showSfuStatus(localizeSfuStatus(error && error.code || 'sfu_unavailable'));
       return role === 'host' ? abortWebShare(error).then(function () { return null; }) : null;
     });
   }
@@ -1875,14 +2302,82 @@
     hideSfuViewer();
   }
 
+  function localizeSfuStatus(value) {
+    var text = String(value || '');
+    var code = text.replace(/^错误:\s*/, '').trim();
+    var messages = {
+      codec_unavailable: '浏览器不支持所需的共享编解码格式',
+      sfu_unavailable: '共享服务器暂时不可用',
+      share_start_timeout: '共享连接建立超时，请稍后重试',
+      share_locked: '已有用户正在共享，请在对方停止共享后重试',
+      share_lease_expired: '共享状态已过期，请重新开始共享',
+      share_lease_invalid: '共享状态已失效，请重新开始共享',
+      media_protocol_unsupported: '当前房间不支持这种共享方式'
+    };
+    return messages[code] || (text.indexOf('错误:') === 0 ? '共享连接异常，请稍后重试' : text);
+  }
+
   function showSfuStatus(msg) {
-    sfuStatusText = msg || '未知';
+    sfuStatusText = localizeSfuStatus(msg || '未知');
+  }
+
+  // Chromium may reject the first autoplay attempt when a received stream
+  // contains audio.  We mute only that automatic fallback; the marker is
+  // deliberately retried from a real user gesture so a viewer is never left
+  // permanently muted after clicking or otherwise interacting with the page.
+  function retrySfuViewerAudio(video, reason) {
+    if (!video || !video.srcObject ||
+        video.getAttribute('data-partylan-autoplay-muted') !== 'true') return false;
+    var hasLiveTrack = true;
+    try {
+      var tracks = typeof video.srcObject.getTracks === 'function'
+        ? video.srcObject.getTracks() : [];
+      hasLiveTrack = tracks.length === 0 || tracks.some(function (track) {
+        return track && track.readyState !== 'ended';
+      });
+    } catch (error) {}
+    if (!hasLiveTrack) return false;
+
+    video.muted = false;
+    var playback;
+    try { playback = video.play(); } catch (error2) { playback = null; }
+    if (!playback || typeof playback.then !== 'function') {
+      video.removeAttribute('data-partylan-autoplay-muted');
+      return true;
+    }
+    playback.then(function () {
+      video.muted = false;
+      video.removeAttribute('data-partylan-autoplay-muted');
+      if (reason) console.log('[SFU] 已在用户操作后恢复共享音频:', reason);
+    }).catch(function () {
+      video.muted = true;
+      video.setAttribute('data-partylan-autoplay-muted', 'true');
+    });
+    return true;
+  }
+
+  function installSfuViewerAudioRecovery(video) {
+    if (!video || video._gcSfuAudioRecoveryInstalled) return;
+    video._gcSfuAudioRecoveryInstalled = true;
+    var retry = function (event) {
+      retrySfuViewerAudio(video, event && event.type || 'user-gesture');
+    };
+    var target = typeof window !== 'undefined' && window && window.addEventListener
+      ? window : document;
+    if (!target || typeof target.addEventListener !== 'function') return;
+    ['pointerdown', 'keydown', 'touchstart', 'click'].forEach(function (type) {
+      target.addEventListener(type, retry, { passive: true });
+    });
   }
 
   function ensureSfuViewer() {
     var shell = document.getElementById('gc-sfu-viewer-shell');
     var video = document.getElementById('gc-sfu-viewer-video');
-    if (shell && video) return { shell: shell, video: video };
+    if (shell && video) {
+      installSfuViewerAudioRecovery(video);
+      installSfuViewerRecoveryHandlers(video);
+      return { shell: shell, video: video };
+    }
 
     shell = document.createElement('div');
     shell.id = 'gc-sfu-viewer-shell';
@@ -1892,29 +2387,226 @@
     video.id = 'gc-sfu-viewer-video';
     video.autoplay = true;
     video.playsInline = true;
+    video.setAttribute('playsinline', '');
+    video.setAttribute('webkit-playsinline', '');
     video.controls = false;
     video.style.cssText = 'width:100%;height:100%;object-fit:contain;background:#000';
+    video.addEventListener('click', function () {
+      retrySfuViewerAudio(video, 'video-click');
+    });
 
     shell.appendChild(video);
     document.body.appendChild(shell);
+    installSfuViewerAudioRecovery(video);
+    installSfuViewerRecoveryHandlers(video);
     return { shell: shell, video: video };
   }
 
+  function notifySfuViewerState(active, video) {
+    try {
+      window.dispatchEvent(new CustomEvent('partylan:sfu-viewer-state', {
+        detail: {
+          active: active === true,
+          videoId: video && video.id || 'gc-sfu-viewer-video'
+        }
+      }));
+    } catch (e) {}
+  }
+
+  function clearSfuViewerStallTimer(video) {
+    if (!video || !video._gcViewerStallTimer) return;
+    clearTimeout(video._gcViewerStallTimer);
+    video._gcViewerStallTimer = 0;
+  }
+
+  function clearSfuViewerRevealTimer(video) {
+    if (!video || !video._gcViewerRevealTimer) return;
+    clearTimeout(video._gcViewerRevealTimer);
+    video._gcViewerRevealTimer = 0;
+  }
+
+  // A live MediaStreamTrack can outlive the decoder attached to a video
+  // element after a transient SFU renegotiation. Detach/reattach the same
+  // stream once before asking the SFU for a new offer.
+  function resetSfuViewerDecoder(viewer, stream, reason) {
+    if (!viewer || !viewer.video || viewer.video.srcObject !== stream) return false;
+    var video = viewer.video;
+    var now = Date.now();
+    if (now - Number(video._gcSfuDecoderResetAt || 0) < 3500) return false;
+    video._gcSfuDecoderResetAt = now;
+    video._gcSfuBoundAt = now;
+    clearSfuViewerStallTimer(video);
+    clearSfuViewerRevealTimer(video);
+    try { video.pause(); } catch (e) {}
+    try { video.srcObject = null; } catch (error) {}
+    try { if (typeof video.load === 'function') video.load(); } catch (error2) {}
+    try { video.srcObject = stream; } catch (error3) { return false; }
+    viewer.shell.style.display = 'none';
+    notifySfuViewerState(false, video);
+    if (reason) console.log('[SFU] 重置接收解码器:', reason);
+    return true;
+  }
+
+  function installSfuViewerRecoveryHandlers(video) {
+    if (!video || video._gcViewerRecoveryHandlersInstalled) return;
+    video._gcViewerRecoveryHandlersInstalled = true;
+    var schedule = function (eventName) {
+      clearSfuViewerStallTimer(video);
+      video._gcViewerStallTimer = setTimeout(function () {
+        video._gcViewerStallTimer = 0;
+        if (!video.srcObject) return;
+        var hasLiveTrack = false;
+        try {
+          hasLiveTrack = typeof video.srcObject.getVideoTracks !== 'function' ||
+            video.srcObject.getVideoTracks().some(function (track) {
+              return track && track.readyState !== 'ended';
+            });
+        } catch (error) {
+          hasLiveTrack = true;
+        }
+        if (!hasLiveTrack) return;
+        if (sfuConnection && typeof sfuConnection.notifyViewerMediaStall === 'function') {
+          sfuConnection.notifyViewerMediaStall('video-' + eventName);
+        }
+      }, 2200);
+    };
+    video.addEventListener('waiting', function () { schedule('waiting'); });
+    video.addEventListener('stalled', function () { schedule('stalled'); });
+    video.addEventListener('emptied', function () { schedule('emptied'); });
+    video.addEventListener('error', function () { schedule('error'); });
+    video.addEventListener('playing', function () {
+      clearSfuViewerStallTimer(video);
+      sampleRenderedVideoMetrics(video, Date.now());
+      if (sfuConnection && typeof sfuConnection.notifyViewerMediaPresented === 'function') {
+        sfuConnection.notifyViewerMediaPresented();
+      }
+    });
+    video.addEventListener('loadeddata', function () {
+      clearSfuViewerStallTimer(video);
+      sampleRenderedVideoMetrics(video, Date.now());
+    });
+  }
+
+  function playSfuViewerVideo(video) {
+    // A previous autoplay rejection intentionally leaves the element muted
+    // until the next user gesture.  Otherwise a later reconnect would keep
+    // succeeding silently and make the audio loss appear permanent.
+    if (video.getAttribute('data-partylan-autoplay-muted') !== 'true') {
+      video.muted = false;
+    }
+    var playback;
+    try { playback = video.play(); } catch (error) { playback = Promise.reject(error); }
+    if (!playback || typeof playback.catch !== 'function') return;
+    playback.catch(function (error) {
+      if (!error || error.name !== 'NotAllowedError') {
+        console.warn('[SFU] 接收画面自动播放失败');
+        return;
+      }
+      video.muted = true;
+      video.setAttribute('data-partylan-autoplay-muted', 'true');
+      var mutedPlayback;
+      try { mutedPlayback = video.play(); } catch (mutedError) { mutedPlayback = null; }
+      if (mutedPlayback && typeof mutedPlayback.catch === 'function') {
+        mutedPlayback.catch(function () {
+          console.warn('[SFU] 接收画面静音播放失败');
+        });
+      }
+    });
+  }
+
+  function revealSfuViewerWhenReady(viewer, stream) {
+    clearSfuViewerRevealTimer(viewer.video);
+    var revealed = false;
+    function reveal(framePresented) {
+      if (revealed || viewer.video.srcObject !== stream) return;
+      if (!framePresented && viewer.video.readyState < 2) return;
+      revealed = true;
+      clearSfuViewerRevealTimer(viewer.video);
+      viewer.video._gcSfuRevealRecoveryCount = 0;
+      viewer.shell.style.display = 'flex';
+      if (
+        framePresented && sfuConnection && typeof sfuConnection.notifyViewerMediaPresented === 'function'
+      ) {
+        sfuConnection.notifyViewerMediaPresented();
+      }
+      notifySfuViewerState(true, viewer.video);
+    }
+    viewer.video.addEventListener('loadeddata', function () { reveal(false); }, { once: true });
+    if (typeof viewer.video.requestVideoFrameCallback === 'function') {
+      viewer.video.requestVideoFrameCallback(function () { reveal(true); });
+    }
+    if (viewer.video.readyState >= 2) reveal(true);
+    viewer.video._gcSfuRevealTimer = setTimeout(function () {
+      viewer.video._gcSfuRevealTimer = 0;
+      if (revealed || viewer.video.srcObject !== stream) return;
+      var recoveryCount = Number(viewer.video._gcSfuRevealRecoveryCount || 0);
+      if (recoveryCount < 1 && resetSfuViewerDecoder(viewer, stream, 'first-frame-timeout')) {
+        viewer.video._gcSfuRevealRecoveryCount = recoveryCount + 1;
+        revealSfuViewerWhenReady(viewer, stream);
+        playSfuViewerVideo(viewer.video);
+        return;
+      }
+      if (sfuConnection && typeof sfuConnection.notifyViewerMediaStall === 'function') {
+        sfuConnection.notifyViewerMediaStall('first-frame-timeout');
+      }
+    }, 3500);
+  }
+
   function showSfuViewer(stream) {
+    var videoTracks = stream && typeof stream.getVideoTracks === 'function'
+      ? stream.getVideoTracks()
+      : [];
+    var videoTrack = videoTracks.find(function (track) {
+      return track && track.readyState !== 'ended';
+    });
+    if (!videoTrack) return false;
     var viewer = ensureSfuViewer();
-    viewer.video.srcObject = stream;
-    viewer.video.play().catch(function () {});
-    viewer.shell.style.display = 'flex';
+    var sameStream = viewer.video.srcObject === stream;
+    var currentTrack = null;
+    try {
+      currentTrack = viewer.video.srcObject && viewer.video.srcObject.getVideoTracks
+        ? viewer.video.srcObject.getVideoTracks()[0]
+        : null;
+    } catch (error) {}
+    var trackChanged = !!(currentTrack && currentTrack.id && videoTrack.id &&
+      (currentTrack.id !== videoTrack.id || currentTrack !== videoTrack));
+    var now = Date.now();
+    var decoderStalled = sameStream && !trackChanged &&
+      now - Number(viewer.video._gcSfuBoundAt || 0) >= 2500 &&
+      (viewer.video.ended || viewer.video.readyState < 2 ||
+       (viewer.video.paused && viewer.video.networkState === 3));
+    if (!sameStream || trackChanged || (currentTrack && currentTrack.readyState === 'ended') || decoderStalled) {
+      // Detach first so Chromium does not keep the old decoder attached when a
+      // reconnect reuses a MediaStream object.
+      if (sameStream) viewer.video.srcObject = null;
+      viewer.video.srcObject = stream;
+      viewer.video._gcSfuBoundAt = now;
+      viewer.video._gcSfuDecoderResetAt = 0;
+      viewer.video._gcSfuRevealRecoveryCount = 0;
+      viewer.shell.style.display = 'none';
+      notifySfuViewerState(false, viewer.video);
+      revealSfuViewerWhenReady(viewer, stream);
+    }
+    sampleRenderedVideoMetrics(viewer.video, Date.now());
+    playSfuViewerVideo(viewer.video);
+    return true;
   }
 
   function hideSfuViewer() {
     var shell = document.getElementById('gc-sfu-viewer-shell');
     var video = document.getElementById('gc-sfu-viewer-video');
     if (video) {
+      clearSfuViewerStallTimer(video);
+      clearSfuViewerRevealTimer(video);
       try { video.pause(); } catch (e) {}
       video.srcObject = null;
+      try { delete video._gcRenderedVideoMetrics; } catch (e2) { video._gcRenderedVideoMetrics = null; }
+      video._gcSfuBoundAt = 0;
+      video._gcSfuDecoderResetAt = 0;
+      video._gcSfuRevealRecoveryCount = 0;
     }
     if (shell) shell.style.display = 'none';
+    notifySfuViewerState(false, video);
   }
 
   function monitorSfuMode() {
@@ -1930,7 +2622,7 @@
         lastRoomState = null;
         clearRoomMediaMode();
         closeRoomSocket();
-        sfuStatusText = '???';
+        sfuStatusText = '未启用';
         return;
       }
 
@@ -1953,8 +2645,9 @@
   var activeDisplayStream = null;
   var activePCs = [];
 
-  function buildAudioConstraints(baseAudio, mode) {
-    if (mode === 'off') return false;
+  function buildAudioConstraints(baseAudio, options) {
+    options = normalizeCaptureAudioOptions(options);
+    if (!options.windowAudioEnabled && !options.systemAudioEnabled) return false;
 
     var audio = {};
     if (baseAudio && typeof baseAudio === 'object') {
@@ -1965,12 +2658,14 @@
     audio.autoGainControl = false;
     audio.noiseSuppression = false;
     audio.googAutoGainControl = false;
+    // Match the formal endpoint. The local preview element is muted by the
+    // React room, while the original captured track remains available to peers.
     audio.suppressLocalAudioPlayback = false;
     return audio;
   }
 
   function frameRateFloorForTarget(fps) {
-    return fps >= 45 ? 30 : 24;
+    return 30;
   }
 
   function buildDisplayCaptureFrameRateHints(fps) {
@@ -1990,8 +2685,10 @@
     };
   }
 
-  function buildDisplayCapturePrefs(mode) {
-    var preferences = GameCastWebShareAudioPolicy.buildCapturePreferences(mode);
+  function buildDisplayCapturePrefs(options) {
+    var preferences = GameCastWebShareAudioPolicy.buildCapturePreferences(
+      normalizeCaptureAudioOptions(options)
+    );
     if (!preferences.requestAudio) return {};
     var result = {
       systemAudio: preferences.systemAudio,
@@ -2031,14 +2728,17 @@
 
   function buildDisplayMediaRequest(constraints) {
     var c = extCfg();
+    var captureAudioOptions = captureAudioOptionsFromConstraints(constraints);
+    pendingCaptureAudioOptions = captureAudioOptions;
+    var requestedAudioMode = captureAudioModeName(captureAudioOptions);
     var vc = {};
     if (constraints && constraints.video && typeof constraints.video === 'object') {
       for (var k in constraints.video) vc[k] = constraints.video[k];
     }
     var rc = resConstraints();
     if (rc.width) {
-      vc.width = rc.width;
-      vc.height = rc.height;
+      vc.width = Object.assign({}, rc.width, {max: rc.width.ideal});
+      vc.height = Object.assign({}, rc.height, {max: rc.height.ideal});
     }
     vc.frameRate = buildDisplayCaptureFrameRateHints(c.fps || 30);
 
@@ -2047,21 +2747,25 @@
       for (var k2 in constraints) nc[k2] = constraints[k2];
     }
     nc.video = vc;
-    nc.audio = buildAudioConstraints(constraints ? constraints.audio : null, c.audio);
+    nc.audio = buildAudioConstraints(constraints ? constraints.audio : null, captureAudioOptions);
 
-    var displayPrefs = buildDisplayCapturePrefs(c.audio);
+    var displayPrefs = buildDisplayCapturePrefs(captureAudioOptions);
     for (var prefKey in displayPrefs) nc[prefKey] = displayPrefs[prefKey];
 
     return {
       constraints: nc,
-      settings: c
+      settings: Object.assign({}, c, {
+        audio: requestedAudioMode,
+        captureAudioOptions: captureAudioOptions
+      })
     };
   }
 
-  function buildCompatibilityDisplayMediaRequest(audioMode) {
+  function buildCompatibilityDisplayMediaRequest(audioOptions) {
+    var options = normalizeCaptureAudioOptions(audioOptions);
     return {
       video: true,
-      audio: audioMode !== 'off'
+      audio: options.windowAudioEnabled || options.systemAudioEnabled
     };
   }
 
@@ -2078,11 +2782,17 @@
     var requester = request || nativeGetDisplayMedia;
     if (!requester) return Promise.reject(new Error('screen capture is not available'));
     var invoke = function (constraints) {
-      return Promise.resolve().then(function () { return requester(constraints); });
+      try {
+        return Promise.resolve(requester(constraints));
+      } catch (error) {
+        return Promise.reject(error);
+      }
     };
     return invoke(preferredConstraints).catch(function (preferredError) {
       if (!isRecoverableDisplayMediaError(preferredError)) throw preferredError;
-      var mode = settings && settings.audio ? settings.audio : extCfg().audio;
+      var mode = settings && settings.captureAudioOptions
+        ? settings.captureAudioOptions
+        : (settings && settings.audio ? settings.audio : extCfg().audio);
       console.warn('[GameCast] 首选共享约束失败，尝试兼容捕获:', displayMediaErrorName(preferredError) || 'Error');
       return invoke(buildCompatibilityDisplayMediaRequest(mode)).catch(function (fallbackError) {
         try {
@@ -2097,10 +2807,23 @@
     if (!stream) return stream;
     if (stream._gcCaptureActivated) return stream;
 
-    var requestedAudioMode = settings && settings.audio ? settings.audio : extCfg().audio;
-    var audioResult = GameCastWebShareAudioPolicy.sanitizeCapturedStream(stream, requestedAudioMode);
+    var requestedAudioOptions = settings && settings.captureAudioOptions
+      ? settings.captureAudioOptions
+      : (settings && settings.audio ? settings.audio : extCfg().audio);
+    var audioResult = GameCastWebShareAudioPolicy.sanitizeCapturedStream(stream, requestedAudioOptions);
     stream = audioResult.stream;
     activeCaptureAudioMode = audioResult.effectiveMode;
+    pendingCaptureAudioOptions = normalizeCaptureAudioOptions(requestedAudioOptions);
+    if (audioResult.shouldNotify) {
+      var audioNotice = audioResult.noticeReason === 'source-mismatch'
+        ? '所选共享来源与音频开关不匹配，已改为仅共享画面。'
+        : '浏览器没有提供所选来源的音频，已改为仅共享画面。';
+      try {
+        window.dispatchEvent(new CustomEvent('partylan:share-notice', {
+          detail: {message: audioNotice, reason: audioResult.noticeReason}
+        }));
+      } catch (e) {}
+    }
 
     if (currentSfuMode()) {
       try {
@@ -2127,6 +2850,7 @@
     if (vt) {
       try { vt.contentHint = getContentHint(settings && settings.qm ? settings.qm : extCfg().qm); } catch (e) {}
       activeVideoTrack = vt;
+      updateCaptureInfo(vt, captureRequestForSettings(settings || extCfg()), 'captured', 'initial');
       if (!vt._gcUnifiedStopWrapped && typeof vt.stop === 'function') {
         var nativeStop = vt.stop.bind(vt);
         vt.stop = function () {
@@ -2139,6 +2863,12 @@
       vt.addEventListener('ended', function () {
         if (activeDisplayStream === stream) stopWebShare(false);
       }, { once: true });
+      try { vt.contentHint = getContentHint(settings && settings.qm ? settings.qm : extCfg().qm); } catch (e2) {}
+      applyCaptureConstraintsWithFallback(vt, settings || extCfg()).then(function () {
+        markPeerStatsChange('_gcResolutionChanged');
+      }).catch(function (error) {
+        console.warn('[GameCast] 采集约束应用失败:', error && error.name, error && error.message);
+      });
     }
 
     if (currentSfuMode()) {
@@ -2175,6 +2905,7 @@
       releaseWebShare(false);
       throw error;
     });
+    request.promise._gcCaptureSettings = built.settings;
 
     request.timeoutId = setTimeout(function () {
       if (!request.consumed) clearPrimedDisplayMediaRequest(request, true);
@@ -2202,15 +2933,21 @@
     navigator.mediaDevices.getDisplayMedia = function (constraints) {
       var nativeUiShare = window.__PARTYLAN_NATIVE_UI_SHARE__ === true;
       if (nativeUiShare) {
+        if (lastRoomState && !webCanStartShare(lastRoomState)) {
+          return Promise.reject(new Error('share_locked'));
+        }
         var nativeBuilt = buildDisplayMediaRequest(constraints);
         return requestDisplayMediaWithCompatibilityFallback(nativeBuilt.constraints, nativeBuilt.settings).then(function (stream) {
-          return claimWebShare().then(function () {
+          return claimWebShare(nativeBuilt.settings.captureAudioOptions).then(function () {
             try {
               return activateCapturedDisplayStream(stream, nativeBuilt.settings);
             } catch (activationError) {
               stopDisplayStreamTracks(stream);
               return Promise.reject(activationError);
             }
+          }, function (error) {
+            stopDisplayStreamTracks(stream);
+            throw error;
           });
         }).catch(function (error) {
           releaseWebShare(false);
@@ -2224,7 +2961,7 @@
       var primedPromise = consumePrimedDisplayMediaRequest();
       return leasePromise.then(function () {
         if (primedPromise) {
-          var primedSettings = extCfg();
+          var primedSettings = primedPromise._gcCaptureSettings || extCfg();
           return primedPromise.then(function (stream) {
             return activateCapturedDisplayStream(stream, primedSettings);
           });
@@ -2318,6 +3055,9 @@
         }
         setTimeout(applyAll, 500);
       });
+      pc.addEventListener('track', function () {
+        setTimeout(function () { ensureReceiverBufferTarget(pc); }, 0);
+      });
       var origAdd = pc.addTrack.bind(pc);
       pc.addTrack = function () {
         var r = origAdd.apply(pc, arguments);
@@ -2333,8 +3073,16 @@
 
   function applyBitrate(pc) {
     if (browserBWEBaselineEnabled()) return Promise.resolve(false);
+    if (
+      pc === getSfuPeerConnection() && getSfuRole() === 'host' &&
+      typeof GC_SFU !== 'undefined' && GC_SFU &&
+      typeof GC_SFU.sampleHostUplink === 'function'
+    ) {
+      return GC_SFU.sampleHostUplink(true);
+    }
     var c = extCfg();
     var targetBitrate = computeTargetBitrate();
+    var qualityMode = QUALITY[c.qm] || QUALITY.balanced;
     var profile = computePeerAdaptiveProfile(pc) || {
       level: 0,
       maxWidth: (RESOLUTIONS[c.res] || {}).w || 1280,
@@ -2343,6 +3091,12 @@
       maxBitrate: targetBitrate,
       scaleResolutionDownBy: 1
     };
+    var adaptiveState = pc._gcAdaptiveState || {};
+    var softProtectionKbps = Math.max(0, Number(adaptiveState.softProtectionKbps) || 0);
+    var softProtectionBitrate = softProtectionKbps > 0
+      ? Math.max(profile.degradeFloorBitrate || 100000, Math.round(softProtectionKbps * 1000))
+      : 0;
+    var softOnly = softProtectionBitrate > 0;
     var updates = [];
     pc.getSenders().forEach(function (sender) {
       if (sender.track && sender.track.kind === 'video') {
@@ -2351,12 +3105,16 @@
           if (!p.encodings || !p.encodings.length) p.encodings = [{}];
           if (p.encodings.length > 1) {
             p.encodings.forEach(function (encoding, index) {
+              if (softOnly) {
+                encoding.maxBitrate = softProtectionBitrate;
+                return;
+              }
               var rid = encoding && encoding.rid ? encoding.rid : '';
-              if (rid === 'q' || index === 0) {
+              if (rid === 'q' || (!rid && p.encodings.length > 2 && index === 0)) {
                 encoding.maxBitrate = Math.max(250000, Math.round(profile.maxBitrate * 0.24));
                 encoding.maxFramerate = Math.min(profile.maxFramerate, 24);
                 encoding.scaleResolutionDownBy = Math.max(2, profile.scaleResolutionDownBy);
-              } else if (rid === 'h' || index === 1) {
+              } else if (rid === 'h' || (!rid && index < p.encodings.length - 1)) {
                 encoding.maxBitrate = Math.max(500000, Math.round(profile.maxBitrate * 0.6));
                 encoding.maxFramerate = profile.maxFramerate;
                 encoding.scaleResolutionDownBy = Math.max(1.5, profile.scaleResolutionDownBy);
@@ -2368,12 +3126,16 @@
             });
           } else {
             var encoding = p.encodings[0];
-            encoding.maxBitrate = profile.maxBitrate;
-            encoding.maxFramerate = profile.maxFramerate;
-            encoding.scaleResolutionDownBy = profile.scaleResolutionDownBy;
+            if (softOnly) {
+              encoding.maxBitrate = softProtectionBitrate;
+            } else {
+              encoding.maxBitrate = profile.maxBitrate;
+              encoding.maxFramerate = profile.maxFramerate;
+              encoding.scaleResolutionDownBy = profile.scaleResolutionDownBy;
+            }
           }
           p.encodings[0].priority = 'high';
-          p.degradationPreference = 'maintain-framerate';
+          p.degradationPreference = qualityMode.pref;
           try {
             if (sender.track && 'contentHint' in sender.track) {
               sender.track.contentHint = getContentHint(c.qm);
@@ -2410,25 +3172,225 @@
     return false;
   }
 
+  function peerHasFailedTransport(pc) {
+    if (!pc) return false;
+    var connectionState = String(pc.connectionState || '').toLowerCase();
+    var iceState = String(pc.iceConnectionState || '').toLowerCase();
+    return connectionState === 'failed' || iceState === 'failed';
+  }
+
   function applyAll() { activePCs.forEach(function (pc) { if (pc.connectionState !== 'closed') applyBitrate(pc); }); }
+
+  function captureRequestForSettings(settings) {
+    settings = settings || extCfg();
+    var resolution = RESOLUTIONS[normalizeResolutionKey(settings.res || settings.resolution || 'auto')] || {};
+    return {
+      width: Number(resolution.w) || 0,
+      height: Number(resolution.h) || 0,
+      frameRate: normalizeFramerateValue(settings.fps || settings.framerate || 30)
+    };
+  }
+
+  function captureConstraintForProfile(profile) {
+    return {
+      width: { ideal: profile.width, max: profile.width },
+      height: { ideal: profile.height, max: profile.height },
+      frameRate: { ideal: profile.frameRate, max: profile.frameRate }
+    };
+  }
+
+  function captureSettingsSnapshot(track, requested, status) {
+    if (typeof GameCastWebRTCStats !== 'undefined' &&
+        typeof GameCastWebRTCStats.buildCaptureSettingsSnapshot === 'function') {
+      return GameCastWebRTCStats.buildCaptureSettingsSnapshot(track, requested, status);
+    }
+    var actual = {};
+    try { actual = track && typeof track.getSettings === 'function' ? track.getSettings() || {} : {}; } catch (e) {}
+    return {
+      requestedWidth: Number(requested && requested.width) || 0,
+      requestedHeight: Number(requested && requested.height) || 0,
+      requestedFrameRate: Number(requested && requested.frameRate) || 0,
+      actualWidth: Number(actual.width) || 0,
+      actualHeight: Number(actual.height) || 0,
+      actualFrameRate: Number(actual.frameRate) || 0,
+      captureDisplaySurface: String(actual.displaySurface || '').toLowerCase(),
+      captureConstraintStatus: status || 'settings-unavailable'
+    };
+  }
+
+  function captureMatchesRequest(snapshot, requested) {
+    if (!snapshot) return false;
+    if (typeof GameCastWebRTCStats !== 'undefined' &&
+        typeof GameCastWebRTCStats.captureMatchesRequest === 'function' &&
+        requested) {
+      return GameCastWebRTCStats.captureMatchesRequest(Object.assign({}, snapshot, {
+        requestedWidth: requested.width,
+        requestedHeight: requested.height,
+        requestedFrameRate: requested.frameRate
+      }));
+    }
+    return snapshot.actualWidth >= Number(requested && requested.width || 0) * 0.95 &&
+      snapshot.actualHeight >= Number(requested && requested.height || 0) * 0.95 &&
+      snapshot.actualFrameRate >= Number(requested && requested.frameRate || 0) * 0.9;
+  }
+
+  function updateCaptureInfo(track, requested, status, attempt) {
+    var snapshot = captureSettingsSnapshot(track, requested, status);
+    if (attempt) snapshot.captureConstraintAttempt = attempt;
+    activeCaptureInfo = snapshot;
+    window.__PARTYLAN_CAPTURE_INFO__ = snapshot;
+    return snapshot;
+  }
+
+  function captureFallbackProfiles(settings) {
+    var requested = captureRequestForSettings(settings);
+    if (!requested.width || !requested.height) return [];
+    if (typeof GameCastWebRTCStats !== 'undefined' &&
+        typeof GameCastWebRTCStats.buildCaptureFallbackProfiles === 'function') {
+      return GameCastWebRTCStats.buildCaptureFallbackProfiles(requested);
+    }
+    return CAPTURE_FALLBACK_PROFILES.filter(function (profile) {
+      return profile.width <= requested.width && profile.height <= requested.height &&
+        profile.frameRate <= requested.frameRate;
+    });
+  }
+
+  function applyCaptureConstraintsWithFallback(track, settings) {
+    if (!track || typeof track.applyConstraints !== 'function') {
+      updateCaptureInfo(track, captureRequestForSettings(settings), 'apply-unavailable', 'none');
+      return Promise.resolve(false);
+    }
+    var requested = captureRequestForSettings(settings);
+    var profiles = captureFallbackProfiles(settings);
+    if (!profiles.length) {
+      var initial = updateCaptureInfo(track, requested, 'verified', 'none');
+      return Promise.resolve(captureMatchesRequest(initial, requested));
+    }
+    var index = 0;
+    function attempt() {
+      var profile = profiles[index];
+      var constraints = captureConstraintForProfile(profile);
+      updateCaptureInfo(track, requested, 'probing', profile.name);
+      var applied;
+      try {
+        applied = track.applyConstraints(constraints);
+      } catch (error) {
+        applied = Promise.reject(error);
+      }
+      return Promise.resolve(applied).then(function () {
+        var snapshot = captureSettingsSnapshot(track, requested, 'verified');
+        snapshot.captureConstraintAttempt = profile.name;
+        activeCaptureInfo = snapshot;
+        window.__PARTYLAN_CAPTURE_INFO__ = snapshot;
+        var profileMatched = captureMatchesRequest(snapshot, profile);
+        if (profileMatched || index >= profiles.length - 1) {
+          snapshot.captureConstraintStatus = profileMatched
+            ? (index === 0 ? 'matched' : 'fallback-applied')
+            : 'browser-limited';
+          return profileMatched;
+        }
+        index += 1;
+        return attempt();
+      }).catch(function (error) {
+        if (index >= profiles.length - 1) {
+          var failed = updateCaptureInfo(track, requested, 'constraint-rejected', profile.name);
+          failed.captureConstraintError = displayMediaErrorName(error);
+          return false;
+        }
+        index += 1;
+        return attempt();
+      });
+    }
+    return attempt();
+  }
+
   function applyLiveConstraints() {
     if (!activeVideoTrack || activeVideoTrack.readyState !== 'live') return '无活跃视频';
     var c = extCfg();
-    var con = { frameRate: buildLiveFrameRateConstraints(c.fps) };
-    var rc = resConstraints();
-    if (rc.width) { con.width = rc.width; con.height = rc.height; }
-    try {
-      try { activeVideoTrack.contentHint = getContentHint(c.qm); } catch (e3) {}
-      activeVideoTrack.applyConstraints(con).then(function () {
-        markPeerStatsChange('_gcResolutionChanged');
-        console.log('[GameCast] 约束已应用:', JSON.stringify(con));
-      }).catch(function (e) {
-        console.warn('[GameCast] 约束应用失败:', e.name, e.message);
-      });
-    } catch (e) {
-      console.warn('[GameCast] 约束异常:', e);
-    }
+    try { activeVideoTrack.contentHint = getContentHint(c.qm); } catch (e3) {}
+    applyCaptureConstraintsWithFallback(activeVideoTrack, c).then(function () {
+      markPeerStatsChange('_gcResolutionChanged');
+    }).catch(function (error) {
+      console.warn('[GameCast] 约束应用失败:', error && error.name, error && error.message);
+    });
     return null;
+  }
+
+  function createLocalReceiverBufferState() {
+    if (typeof GameCastWebRTCAdaptive !== 'undefined' &&
+        typeof GameCastWebRTCAdaptive.createReceiverBufferState === 'function') {
+      return GameCastWebRTCAdaptive.createReceiverBufferState();
+    }
+    return {
+      targetMs: 80,
+      actualMs: 0,
+      actualMeasured: false,
+      stressCount: 0,
+      healthyCount: 0,
+      flowDeficit: false,
+      reason: 'baseline'
+    };
+  }
+
+  function ensureReceiverBufferTarget(pc) {
+    if (!pc || pc._gcScreegoRole === 'host' || typeof pc.getReceivers !== 'function') return null;
+    var state = pc._gcReceiverBufferState || createLocalReceiverBufferState();
+    var targetMs = Math.max(80, Math.min(300, Number(state.targetMs) || 80));
+    var applied = false;
+    var method = '';
+    try {
+      (pc.getReceivers() || []).forEach(function (receiver) {
+        if (!receiver || !receiver.track || receiver.track.kind !== 'video') return;
+        try {
+          if ('jitterBufferTarget' in receiver) {
+            receiver.jitterBufferTarget = targetMs;
+            applied = true;
+            method = 'jitterBufferTarget';
+          } else if ('playoutDelayHint' in receiver) {
+            receiver.playoutDelayHint = targetMs / 1000;
+            applied = true;
+            method = 'playoutDelayHint';
+          }
+        } catch (error) {}
+      });
+    } catch (error) {}
+    state.targetMs = targetMs;
+    state.controlApplied = applied;
+    state.controlMethod = method;
+    pc._gcReceiverBufferState = state;
+    return state;
+  }
+
+  function updateReceiverBufferState(pc, diagnosticSample) {
+    if (!pc || pc._gcScreegoRole === 'host') return null;
+    var state = pc._gcReceiverBufferState || createLocalReceiverBufferState();
+    if (diagnosticSample && diagnosticSample.valid &&
+        typeof GameCastWebRTCAdaptive !== 'undefined' &&
+        typeof GameCastWebRTCAdaptive.evaluateReceiverBufferSample === 'function') {
+      var elapsedMs = Math.max(0, Number(diagnosticSample.elapsedMs || 0));
+      var bufferSample = {
+        targetFps: Math.max(30, Math.min(60, Number(extCfg().fps) || 60)),
+        decodedFps: elapsedMs > 0
+          ? Math.max(0, Number(diagnosticSample.framesDecodedDelta || 0) * 1000 / elapsedMs)
+          : null,
+        arrivalFps: diagnosticSample.arrivalFps,
+        lossPercent: diagnosticSample.lossPercent,
+        jitterMs: diagnosticSample.jitterMs,
+        framesDroppedDelta: diagnosticSample.framesDroppedDelta
+      };
+      if (diagnosticSample.jitterBufferActualMs !== undefined &&
+          Number.isFinite(Number(diagnosticSample.jitterBufferActualMs))) {
+        bufferSample.actualMs = Number(diagnosticSample.jitterBufferActualMs);
+      }
+      state = GameCastWebRTCAdaptive.evaluateReceiverBufferSample(state, bufferSample).state;
+    } else if (diagnosticSample && diagnosticSample.jitterBufferActualMs !== undefined &&
+        Number.isFinite(Number(diagnosticSample.jitterBufferActualMs))) {
+      state.actualMs = Math.max(0, Math.min(60000, Number(diagnosticSample.jitterBufferActualMs)));
+      state.actualMeasured = true;
+    }
+    pc._gcReceiverBufferState = state;
+    ensureReceiverBufferTarget(pc);
+    return pc._gcReceiverBufferState;
   }
 
   /* ── 连接诊断 ── */
@@ -2437,7 +3399,7 @@
       window.dispatchEvent(new CustomEvent('partylan:connection-stats', {
         detail: {
           text: text || '等待连接数据...',
-          summary: summary || '等待连接'
+          summary: summary || '--×-- · --fps · --ms · --kbps'
         }
       }));
     } catch (e) {}
@@ -2447,11 +3409,29 @@
     setInterval(function () {
       if (!/[?&]room=/.test(location.search)) return;
       var descriptors = getStatsPeerDescriptors();
-      if (!descriptors.length) publishConnectionStats('等待媒体连接建立...', '等待连接');
+      if (!descriptors.length) publishConnectionStats('等待媒体连接建立...', '--×-- · --fps · --ms · --kbps');
       descriptors.forEach(function (descriptor) {
         updateStats(descriptor);
       });
     }, 2000);
+  }
+
+  function sameStatsReport(left, right) {
+    if (left === right) return true;
+    if (!left || !right || left.id === undefined || right.id === undefined) return false;
+    return String(left.id) === String(right.id);
+  }
+
+  function peerConnectionSdp(pc) {
+    if (!pc) return '';
+    var descriptions = [];
+    try {
+      [pc.currentLocalDescription, pc.currentRemoteDescription, pc.localDescription, pc.remoteDescription]
+        .forEach(function (description) {
+          if (description && description.sdp) descriptions.push(String(description.sdp));
+        });
+    } catch (error) {}
+    return descriptions.join('\n');
   }
 
   function reportStats(data) {
@@ -2499,6 +3479,9 @@
       var bytesRecvTotal = 0;
       var diagnosticSample = null;
       var qualityState = pc._gcQualityState;
+      var primaryVideoReport = null;
+      var videoReports = [];
+      var codecSdp = peerConnectionSdp(pc);
 
       if (typeof GameCastWebRTCStats !== 'undefined') {
         diagnosticSample = GameCastWebRTCStats.buildWebRTCSample(stats, pc._gcStatsSnapshot, {
@@ -2527,11 +3510,39 @@
         }
         pc._gcSourceChanged = false;
         pc._gcResolutionChanged = false;
+        if (typeof GameCastWebRTCStats.selectPrimaryVideoRtp === 'function') {
+          var primaryType = mode === 'native-viewer' || mode === 'sfu-viewer'
+            ? 'inbound-rtp'
+            : 'outbound-rtp';
+          var preferredReportId = primaryType === 'inbound-rtp'
+            ? (pc._gcPrimaryInboundVideoReportId || '')
+            : '';
+          primaryVideoReport = GameCastWebRTCStats.selectPrimaryVideoRtp(stats, primaryType) ||
+            GameCastWebRTCStats.selectPrimaryVideoRtp(
+              stats,
+              primaryType === 'inbound-rtp' ? 'outbound-rtp' : 'inbound-rtp'
+            );
+          if (primaryType === 'inbound-rtp' && preferredReportId) {
+            var preferredReport = GameCastWebRTCStats.selectPrimaryVideoRtp(
+              stats,
+              primaryType,
+              preferredReportId
+            );
+            if (preferredReport) primaryVideoReport = preferredReport;
+          }
+          if (primaryType === 'inbound-rtp' && primaryVideoReport) {
+            pc._gcPrimaryInboundVideoReportId = String(primaryVideoReport.id || '');
+          }
+        }
         if (typeof GameCastWebRTCQuality !== 'undefined') {
           if (!qualityState) qualityState = GameCastWebRTCQuality.createQualityState(Date.now());
           qualityState = GameCastWebRTCQuality.evaluateQualitySample(qualityState, diagnosticSample).state;
           pc._gcQualityState = qualityState;
-          if (qualityState.action) requestPeerIceRecovery(pc, mode, qualityState.action);
+          if (qualityState.action === 'recover_bitrate') {
+            applyBitrate(pc);
+          } else if (qualityState.action && peerHasFailedTransport(pc)) {
+            requestPeerIceRecovery(pc, mode, qualityState.action);
+          }
         }
       }
 
@@ -2544,29 +3555,65 @@
             connType = (localC.candidateType === 'relay' || remoteC.candidateType === 'relay') ? 'TURN 中继' : 'P2P 直连';
           }
         }
-        if (report.type === 'inbound-rtp' && report.kind === 'video') {
+        if (report.type === 'inbound-rtp' && (report.kind === 'video' || report.mediaType === 'video')) {
+          videoReports.push(report);
           var pl = report.packetsLost || 0;
           var pr = report.packetsReceived || 1;
           loss = (pl / pr * 100).toFixed(1) + '%';
-          if (report.frameWidth) resolution = report.frameWidth + '×' + report.frameHeight;
-          if (report.framesPerSecond) fps = report.framesPerSecond + 'fps';
+          if (!primaryVideoReport || sameStatsReport(primaryVideoReport, report)) {
+            if (report.frameWidth) resolution = report.frameWidth + '×' + report.frameHeight;
+            if (report.framesPerSecond) fps = report.framesPerSecond + 'fps';
+          }
           if (report.jitter) jitter = (report.jitter * 1000).toFixed(1) + 'ms';
           bytesRecvTotal += report.bytesReceived || 0;
-          if (report.codecId) {
-            var c = stats.get(report.codecId);
-            if (c) codec = c.mimeType.replace('video/', '') + (c.clockRate ? ' ' + (c.clockRate / 1000) + 'kHz' : '');
-          }
         }
-        if (report.type === 'outbound-rtp' && report.kind === 'video') {
-          if (report.frameWidth) resolution = report.frameWidth + '×' + report.frameHeight;
-          if (report.framesPerSecond) fps = report.framesPerSecond + 'fps';
-          bytesSentTotal += report.bytesSent || 0;
-          if (report.codecId) {
-            var c2 = stats.get(report.codecId);
-            if (c2) codec = c2.mimeType.replace('video/', '');
+        if (report.type === 'outbound-rtp' && (report.kind === 'video' || report.mediaType === 'video')) {
+          videoReports.push(report);
+          if (!primaryVideoReport || sameStatsReport(primaryVideoReport, report)) {
+            if (report.frameWidth) resolution = report.frameWidth + '×' + report.frameHeight;
+            if (report.framesPerSecond) fps = report.framesPerSecond + 'fps';
           }
+          bytesSentTotal += report.bytesSent || 0;
         }
       });
+      if (typeof GameCastWebRTCStats !== 'undefined' &&
+          typeof GameCastWebRTCStats.describeCodec === 'function') {
+        var codecCandidates = [];
+        if (primaryVideoReport) codecCandidates.push(primaryVideoReport);
+        videoReports.forEach(function (report) {
+          if (!codecCandidates.some(function (candidate) {
+            return sameStatsReport(candidate, report);
+          })) codecCandidates.push(report);
+        });
+        for (var codecIndex = 0; codecIndex < codecCandidates.length; codecIndex += 1) {
+          var codecName = GameCastWebRTCStats.describeCodec(
+            stats,
+            codecCandidates[codecIndex],
+            codecSdp
+          );
+          if (codecName) {
+            codec = codecName;
+            break;
+          }
+        }
+      }
+      var viewerVideo = null;
+      var viewerTrackMetrics = null;
+      if (mode === 'native-viewer' || mode === 'sfu-viewer') {
+        if (mode === 'sfu-viewer') viewerTrackMetrics = getSfuViewerMediaMetrics();
+        viewerVideo = getPresentedViewerVideo(mode);
+        sampleRenderedVideoMetrics(viewerVideo, Date.now());
+      }
+      var presentationMetrics = resolveVideoPresentationMetrics(
+        mode,
+        primaryVideoReport,
+        diagnosticSample,
+        viewerVideo,
+        viewerTrackMetrics
+      );
+      presentationMetrics = retainPresentationMetrics(pc, presentationMetrics, Date.now());
+      if (presentationMetrics.resolution !== '-') resolution = presentationMetrics.resolution;
+      if (presentationMetrics.fps !== '-') fps = presentationMetrics.fps;
       if (diagnosticSample) {
         if (diagnosticSample.path === 'turn') {
           connType = 'TURN 中继/' + String(diagnosticSample.transport || 'unknown').toUpperCase();
@@ -2588,6 +3635,19 @@
       pc._prevRecvBytes = bytesRecvTotal;
       pc._prevTime = now;
 
+      var receiverBuffer = null;
+      if (mode === 'native-viewer') {
+        receiverBuffer = updateReceiverBufferState(pc, diagnosticSample);
+        if (diagnosticSample && receiverBuffer) {
+          diagnosticSample.bufferTargetMs = receiverBuffer.targetMs || 80;
+          diagnosticSample.bufferActualMs = receiverBuffer.actualMeasured === true
+            ? Math.max(0, Number(receiverBuffer.actualMs || 0))
+            : 0;
+          diagnosticSample.bufferReason = receiverBuffer.reason || 'baseline';
+          diagnosticSample.flowDeficit = receiverBuffer.flowDeficit === true;
+        }
+      }
+
       if (
         diagnosticSample &&
         typeof GameCastWebRTCStats !== 'undefined' &&
@@ -2597,10 +3657,17 @@
         var qualityReport = GameCastWebRTCStats.buildViewerQualityReport(diagnosticSample, {
           room: currentRoomId(),
           participantId: getWebParticipantId(),
-          screegoSessionId: pc._gcScreegoSessionId || '',
-          mode: mode
+          screegoSessionId: pc._gcScreegoSessionId ||
+            (mode === 'sfu-viewer' && typeof GC_SFU !== 'undefined' && GC_SFU &&
+             typeof GC_SFU.getSessionId === 'function' ? GC_SFU.getSessionId() : ''),
+          layer: mode === 'sfu-viewer' && typeof GC_SFU !== 'undefined' && GC_SFU &&
+            typeof GC_SFU.getViewerLayer === 'function' ? GC_SFU.getViewerLayer() : '',
+          mode: mode,
+          protocolVersion: 2,
+          reportSeq: (pc._gcQualityReportSeq || 0) + 1
         });
-        if (qualityReport && mode === 'native-viewer') {
+        if (qualityReport && (mode === 'native-viewer' || mode === 'sfu-viewer')) {
+          pc._gcQualityReportSeq = qualityReport.reportSeq;
           pc._gcLastQualityReportAt = now;
           controlRequest(QUALITY_REPORT_URL, {
             method: 'POST',
@@ -2618,6 +3685,11 @@
       var targetKbpsValue = Math.round(computeTargetBitrate() / 1000);
       var adaptiveState = pc._gcAdaptiveState;
       var adaptiveProfile = computePeerAdaptiveProfile(pc);
+      var viewerStability = mode === 'sfu-viewer' && typeof GC_SFU !== 'undefined' &&
+        GC_SFU && typeof GC_SFU.getViewerStabilityState === 'function'
+        ? GC_SFU.getViewerStabilityState()
+        : null;
+      var effectiveReceiverBuffer = receiverBuffer || viewerStability;
       var adaptiveDecision = pc._gcAdaptivePendingDecision || '';
       var adaptiveTargetKbpsValue = Math.round(
         (adaptiveProfile && adaptiveProfile.maxBitrate ? adaptiveProfile.maxBitrate : computeTargetBitrate()) / 1000
@@ -2640,19 +3712,62 @@
       else if (serverLoadRatio > 0.6) serverNote = '服务器带宽压力中等';
 
       var statsText;
+      var hostLayerState = mode === 'sfu-host' && typeof GC_SFU !== 'undefined' && GC_SFU &&
+        typeof GC_SFU.getHostLayerState === 'function'
+        ? GC_SFU.getHostLayerState()
+        : null;
+      var hostUplinkState = mode === 'sfu-host' && typeof GC_SFU !== 'undefined' && GC_SFU &&
+        typeof GC_SFU.getHostUplinkState === 'function'
+        ? GC_SFU.getHostUplinkState()
+        : null;
+      var outboundLayerText = diagnosticSample && Array.isArray(diagnosticSample.outboundLayers)
+        ? diagnosticSample.outboundLayers.map(function (layer) {
+          var label = layer.rid || 'single';
+          var size = layer.width && layer.height ? layer.width + '×' + layer.height : '-';
+          var layerFps = layer.fps ? layer.fps + 'fps' : '-';
+          return label + ':' + size + '/' + layerFps + '/' + (layer.active ? '启用' : '停用');
+        }).join('  ')
+        : '';
+      var mediaStatusText = mode === 'sfu-viewer' || mode === 'sfu-host'
+        ? '🛰 SFU: ' + getSfuStatusLabel() + '\n'
+        : '🔗 媒体连接: 已建立\n';
       if (mode === 'native-viewer' || mode === 'sfu-viewer') {
+        var receiverBufferText = effectiveReceiverBuffer
+          ? '⏱ 缓冲: 目标 ' + Math.round(Number(effectiveReceiverBuffer.targetMs || effectiveReceiverBuffer.bufferTargetMs || 0)) +
+            'ms  实际 ' + (
+              effectiveReceiverBuffer.actualMeasured === false
+                ? '-'
+                : Math.round(Number(effectiveReceiverBuffer.actualMs || effectiveReceiverBuffer.bufferActualMs || 0)) + 'ms'
+            ) + '\n'
+          : '';
         statsText =
-          '🛰 SFU: ' + getSfuStatusLabel() + '\n' +
+          mediaStatusText +
           '📡 链路: ' + buildTransportLabel(connType, mode) + '  |  延迟: ' + rtt + '  ' + quality + '\n' +
           '📐 接收画面: ' + resolution + '  ' + fps + '  ' + codec + '\n' +
           '📊 实时接收: 下行 ' + formatKbps(downKbpsValue) + '\n' +
+          receiverBufferText +
           '🧪 丢包: ' + loss + '  抖动: ' + jitter + '  Peer: ' + pc.connectionState + '\n' +
           '📝 说明: 当前为接收侧视角，仅显示你实际收到的链路与画面情况';
       } else {
+        var captureText = '';
+        if (activeCaptureInfo) {
+          captureText =
+            '📐 采集请求: ' + activeCaptureInfo.requestedWidth + '×' + activeCaptureInfo.requestedHeight +
+            ' ' + activeCaptureInfo.requestedFrameRate + 'fps  |  实际轨道: ' +
+            (activeCaptureInfo.actualWidth || '-') + '×' + (activeCaptureInfo.actualHeight || '-') +
+            ' ' + (activeCaptureInfo.actualFrameRate || '-') + 'fps  |  ' +
+            activeCaptureInfo.captureConstraintStatus + '\n';
+        }
         statsText =
-          '🛰 SFU: ' + getSfuStatusLabel() + '\n' +
+          mediaStatusText +
           '📡 链路: ' + buildTransportLabel(connType, mode) + '  |  延迟: ' + rtt + '  ' + quality + '\n' +
+          captureText +
           '📐 发送画面: ' + resolution + '  ' + fps + '  ' + codec + '\n' +
+          (outboundLayerText ? '🧩 编码层: ' + outboundLayerText +
+            (hostLayerState ? '  f校验:' + (hostLayerState.f && hostLayerState.verified ? '通过' : '未通过') : '') + '\n' : '') +
+          (hostUplinkState && hostUplinkState.updatedAt ?
+            '🌊 上行预算: ' + hostUplinkState.band + '  可用 ' + formatKbps(hostUplinkState.availableKbps) +
+            '  分配 ' + formatKbps(hostUplinkState.budgetKbps) + '  编码层 ' + hostUplinkState.activeLayerCount + '\n' : '') +
           '📊 实时(浏览器): 上行 ' + formatKbps(upKbpsValue) + '  下行 ' + formatKbps(downKbpsValue) + '  目标 ' + formatKbps(adaptiveTargetKbpsValue) + '\n' +
           '🎛 自适应: ' + getAdaptiveStatusLabel(pc) + '\n' +
           '🧪 丢包: ' + loss + '  抖动: ' + jitter + '  Peer: ' + pc.connectionState + '\n' +
@@ -2661,9 +3776,15 @@
           '📝 说明: 当前为发送侧视角；服务器负载与容量为按当前码率推算';
       }
       pc._gcLastStatsText = statsText;
+      var compactDelay = rtt;
+      if (receiverBuffer && receiverBuffer.actualMeasured === true) {
+        compactDelay = Math.round(
+          Math.max(0, Number(rttNum || 0) / 2) + Math.max(0, Number(receiverBuffer.actualMs || 0))
+        ) + 'ms';
+      }
       publishConnectionStats(
         statsText,
-        pc._lastConnType + ' · ' + pc._lastRtt + ' · ' + getSfuStatusLabel()
+        resolution + ' · ' + fps + ' · ' + compactDelay + ' · ' + formatKbps(downKbpsValue)
       );
 
       pc._gcStatsReportCounter = (pc._gcStatsReportCounter || 0) + 1;
@@ -2694,8 +3815,47 @@
           serverLoadKbps: Math.round(estimatedRelayLoadKbps) + 'kbps',
           serverNote: serverNote,
           estimatedRelayLoadKbps: Math.round(estimatedRelayLoadKbps),
-          protectionMaxBitrate: pc._gcProtectionMaxBitrate || 0
+          protectionMaxBitrate: pc._gcProtectionMaxBitrate || 0,
+          bufferTargetMs: effectiveReceiverBuffer
+            ? effectiveReceiverBuffer.targetMs || effectiveReceiverBuffer.bufferTargetMs || 0
+            : 0,
+          bufferActualMs: effectiveReceiverBuffer
+            ? effectiveReceiverBuffer.actualMs || effectiveReceiverBuffer.bufferActualMs || 0
+            : 0,
+          bufferReason: effectiveReceiverBuffer
+            ? effectiveReceiverBuffer.reason || effectiveReceiverBuffer.bufferReason || 'baseline'
+            : 'baseline',
+          flowDeficit: effectiveReceiverBuffer ? effectiveReceiverBuffer.flowDeficit === true : false
         };
+        if (hostLayerState) {
+          reportPayload.hostHalfLayerActive = hostLayerState.h === true;
+          reportPayload.hostFullLayerActive = hostLayerState.f === true;
+          reportPayload.hostLayerVerified = hostLayerState.verified === true;
+        }
+        if (hostUplinkState && hostUplinkState.updatedAt) {
+          Object.assign(reportPayload, {
+            hostUplinkBand: hostUplinkState.band || 'startup',
+            hostUplinkAvailableKbps: hostUplinkState.availableKbps || 0,
+            hostUplinkBudgetKbps: hostUplinkState.budgetKbps || 0,
+            hostUplinkActiveLayerCount: hostUplinkState.activeLayerCount || 1,
+            hostUplinkEncodedFps: hostUplinkState.encodedFps || 0,
+            hostUplinkCapturedFps: hostUplinkState.capturedFps || 0,
+            hostUplinkQualityReason: hostUplinkState.qualityLimitationReason || ''
+          });
+        }
+        if (activeCaptureInfo && mode !== 'native-viewer' && mode !== 'sfu-viewer') {
+          Object.assign(reportPayload, {
+            requestedWidth: activeCaptureInfo.requestedWidth || 0,
+            requestedHeight: activeCaptureInfo.requestedHeight || 0,
+            requestedFrameRate: activeCaptureInfo.requestedFrameRate || 0,
+            actualWidth: activeCaptureInfo.actualWidth || 0,
+            actualHeight: activeCaptureInfo.actualHeight || 0,
+            actualFrameRate: activeCaptureInfo.actualFrameRate || 0,
+            captureDisplaySurface: activeCaptureInfo.captureDisplaySurface || '',
+            captureConstraintStatus: activeCaptureInfo.captureConstraintStatus || 'unknown',
+            captureConstraintAttempt: activeCaptureInfo.captureConstraintAttempt || ''
+          });
+        }
         if (diagnosticSample) {
           [
             'path', 'transport', 'localCandidateType', 'remoteCandidateType',
@@ -2704,6 +3864,10 @@
             'downKbps', 'availableOutgoingBitrate', 'targetBitrate',
             'packetsReceivedDelta', 'packetsLostDelta', 'packetsSentDelta',
             'framesDecodedDelta', 'framesDroppedDelta',
+            'framesReceivedDelta', 'arrivalFps',
+            'jitterBufferDelayMs', 'jitterBufferDelayDeltaMs',
+            'jitterBufferEmittedCount', 'jitterBufferEmittedCountDelta',
+            'jitterBufferActualMs',
             'framesCaptured', 'framesCapturedDelta', 'capturedFps',
             'framesEncoded', 'framesEncodedDelta', 'encodedFps',
             'framesSent', 'framesSentDelta', 'sentFps',
@@ -2720,6 +3884,8 @@
           ].forEach(function (key) {
             if (diagnosticSample[key] !== undefined) reportPayload[key] = diagnosticSample[key];
           });
+          reportPayload.outboundLayers = diagnosticSample.outboundLayers || [];
+          reportPayload.inboundLayers = diagnosticSample.inboundLayers || [];
         }
         if (qualityState) {
           reportPayload.qualityStatus = qualityState.status;
@@ -2738,7 +3904,23 @@
             adaptiveNominalBitrate: adaptiveProfile.nominalBitrate,
             adaptiveDegradeFloorBitrate: adaptiveProfile.degradeFloorBitrate,
             adaptiveStatus: adaptiveState.status,
-            screegoSessionId: pc._gcScreegoSessionId || '',
+            adaptiveSafeCapacityKbps: adaptiveState.safeCapacityKbps || 0,
+            adaptiveRecoveryCapacityKbps: adaptiveState.recoveryCapacityKbps || 0,
+            adaptiveRecoveryHealthySamples: adaptiveState.recoveryHealthySamples || 0,
+            adaptiveRecoveryCapacityAt: adaptiveState.recoveryCapacityAt || 0,
+            adaptiveRecoveryGateReason: adaptiveState.recoveryGateReason || 'not-started',
+            adaptiveCurrentFloorKbps: adaptiveState.currentDegradeFloorKbps || 0,
+            adaptiveRecoveryTargetFloorKbps: adaptiveState.recoveryTargetFloorKbps || 0,
+            adaptiveContentState: adaptiveState.contentState || 'idle',
+            adaptiveTargetBitrateKbps: adaptiveProfile.maxBitrate / 1000,
+            adaptiveSoftProtectionKbps: adaptiveState.softProtectionKbps || 0,
+            adaptiveSoftProtectionUntil: adaptiveState.softProtectionUntil || 0,
+            adaptiveLastTransitionAt: adaptiveState.lastTransitionAt || 0,
+            adaptiveTargetLevel: adaptiveState.level,
+            adaptiveTransitionReason: adaptiveState.transitionReason || '',
+            screegoSessionId: pc._gcScreegoSessionId ||
+              (mode === 'sfu-viewer' && typeof GC_SFU !== 'undefined' && GC_SFU &&
+               typeof GC_SFU.getSessionId === 'function' ? GC_SFU.getSessionId() : ''),
             receiverState: adaptiveState.receiverStatus || 'unavailable',
             receiverReason: adaptiveState.receiverReason || 'receiver-unavailable',
             receiverBound: receiverSample.receiverBound === true,
@@ -2747,14 +3929,32 @@
             receiverIncomingKbps: receiverSample.receiverIncomingKbps || 0,
             receiverLossPercent: receiverSample.receiverLossPercent || 0,
             receiverJitterMs: receiverSample.receiverJitterMs || 0,
+            receiverBufferTargetMs: receiverSample.receiverBufferTargetMs || 0,
+            receiverBufferActualMs: receiverSample.receiverBufferActualMs || 0,
+            receiverBufferReason: receiverSample.receiverBufferReason || 'baseline',
+            receiverFlowDeficit: receiverSample.receiverFlowDeficit === true,
             senderCapturedFps: receiverSample.senderCapturedFps || 0,
             senderEncodedFps: receiverSample.senderEncodedFps || 0,
             senderSentFps: receiverSample.senderSentFps || 0,
+            senderKbitsPerFrame: receiverSample.senderKbitsPerFrame || 0,
+            senderPacketSendDelayMs: receiverSample.senderPacketSendDelayMs || 0,
+            senderRetransmitPercent: receiverSample.senderRetransmitPercent || 0,
+            bandwidthLimitedMsDelta: receiverSample.bandwidthLimitedMsDelta || 0,
+            senderQpPerFrame: receiverSample.senderQpPerFrame || 0,
+            senderEncodeMsPerFrame: receiverSample.senderEncodeMsPerFrame || 0,
             adaptiveStableMs: adaptiveState.stableSince === null
               ? 0
               : Math.max(0, Date.now() - adaptiveState.stableSince),
             adaptiveProbeUntil: adaptiveState.probeUntil || 0,
             adaptiveProbeImprovedCount: adaptiveState.probeImprovedCount || 0
+          });
+        }
+        if (effectiveReceiverBuffer) {
+          Object.assign(reportPayload, {
+            bufferTargetMs: effectiveReceiverBuffer.targetMs || effectiveReceiverBuffer.bufferTargetMs || 0,
+            bufferActualMs: effectiveReceiverBuffer.actualMs || effectiveReceiverBuffer.bufferActualMs || 0,
+            bufferReason: effectiveReceiverBuffer.reason || effectiveReceiverBuffer.bufferReason || 'baseline',
+            flowDeficit: effectiveReceiverBuffer.flowDeficit === true
           });
         }
         if (
@@ -2779,7 +3979,7 @@
         pc
       );
       pc._gcLastStatsText = fallbackText;
-      publishConnectionStats(fallbackText, describePeerConnectionState(pc) || '连接诊断');
+      publishConnectionStats(fallbackText, '--×-- · --fps · --ms · --kbps');
     }).finally(function () {
       if (pc._gcStatsFetchPromise === statsPromise) pc._gcStatsFetchPromise = null;
     });

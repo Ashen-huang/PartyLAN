@@ -16,6 +16,8 @@ import bcrypt
 import register
 from gamecast_control import ControlPlane, verify_voice_token
 
+ORIGINAL_FETCH_SFU_ROOM_STATES = register.fetch_sfu_room_states
+
 
 DIAGNOSTIC_NUMBER_FIELDS = (
     "framesCaptured",
@@ -94,6 +96,13 @@ class RegisterControlAPITest(unittest.TestCase):
         except urllib.error.HTTPError as error:
             return error.code, json.loads(error.read())
 
+    def test_disabled_sfu_does_not_query_the_retired_service(self):
+        with mock.patch.object(register, "GAMECAST_UNIFIED_SFU_ENABLED", False), \
+             mock.patch.object(register, "GAMECAST_UNIFIED_SFU_CANARY_ROOMS", set()), \
+             mock.patch.object(register.urllib.request, "urlopen") as urlopen:
+            self.assertEqual(ORIGINAL_FETCH_SFU_ROOM_STATES(), [])
+            urlopen.assert_not_called()
+
     def test_presence_origin_and_share_lock_routes(self):
         status, joined = self.request(
             "POST",
@@ -145,6 +154,8 @@ class RegisterControlAPITest(unittest.TestCase):
         )
         self.assertEqual(status, 409)
         self.assertEqual(conflict["code"], "share_locked")
+        self.assertEqual(conflict["error"], "已有用户正在共享，请在对方停止共享后重试")
+        self.assertEqual(conflict["message"], conflict["error"])
 
         status, released = self.request(
             "POST",
@@ -399,6 +410,10 @@ class RegisterControlAPITest(unittest.TestCase):
             "incomingBitrateKbps": 1200,
             "jitterMs": 120,
             "framesDroppedDelta": 2,
+            "bufferTargetMs": 220,
+            "bufferActualMs": 347,
+            "bufferReason": "network-buffering",
+            "flowDeficit": True,
         }
         status, report = self.request("POST", "/api/quality/report", payload)
         self.assertEqual(status, 200)
@@ -434,11 +449,34 @@ class RegisterControlAPITest(unittest.TestCase):
         self.assertTrue(
             all(sample["packetsLostDelta"] == 8 for sample in snapshot["samples"])
         )
+        self.assertTrue(
+            all(sample["bufferTargetMs"] == 220 for sample in snapshot["samples"])
+        )
+        self.assertTrue(
+            all(sample["bufferActualMs"] == 347 for sample in snapshot["samples"])
+        )
+        self.assertTrue(all(sample["flowDeficit"] for sample in snapshot["samples"]))
         self.assertNotIn("candidateAddress", snapshot["samples"][0])
 
         invalid_payload = dict(payload)
         invalid_payload["screegoSessionId"] = "bad session id"
         status, invalid = self.request("POST", "/api/quality/report", invalid_payload)
+        self.assertEqual(status, 400)
+        self.assertEqual(invalid["code"], "quality_sample_invalid")
+
+        invalid_buffer = dict(payload)
+        invalid_buffer["bufferTargetMs"] = 301
+        status, invalid = self.request("POST", "/api/quality/report", invalid_buffer)
+        self.assertEqual(status, 200)
+        self.assertTrue(invalid["ok"])
+        self.assertEqual(
+            register.quality_samples["quality-room"][("web-viewer", "session-a")]["bufferTargetMs"],
+            300,
+        )
+
+        invalid_layer = dict(payload)
+        invalid_layer["layer"] = "q"
+        status, invalid = self.request("POST", "/api/quality/report", invalid_layer)
         self.assertEqual(status, 400)
         self.assertEqual(invalid["code"], "quality_sample_invalid")
 
@@ -449,6 +487,62 @@ class RegisterControlAPITest(unittest.TestCase):
         )
         self.assertEqual(status, 200)
         self.assertEqual(expired["count"], 0)
+
+    def test_quality_snapshot_rejects_repeated_or_out_of_order_report_sequences(self):
+        for participant in (
+            {
+                "room": "sequence-room",
+                "participantId": "web-owner",
+                "clientType": "web",
+                "origin": "web",
+                "role": "owner",
+                "name": "Browser Owner",
+            },
+            {
+                "room": "sequence-room",
+                "participantId": "web-viewer",
+                "clientType": "web",
+                "origin": "web",
+                "role": "member",
+                "name": "Browser Viewer",
+            },
+        ):
+            status, _ = self.request("POST", "/api/presence/join", participant)
+            self.assertEqual(status, 200)
+
+        payload = {
+            "room": "sequence-room",
+            "participantId": "web-viewer",
+            "screegoSessionId": "session-a",
+            "generation": "g1",
+            "pairId": "relay-udp",
+            "packetsReceivedDelta": 120,
+            "packetsLostDelta": 0,
+            "decodedFps": 45,
+            "incomingBitrateKbps": 2000,
+            "jitterMs": 8,
+            "framesDroppedDelta": 0,
+            "protocolVersion": 2,
+            "reportSeq": 2,
+        }
+        status, accepted = self.request("POST", "/api/quality/report", payload)
+        self.assertEqual(status, 200)
+        self.assertTrue(accepted["accepted"])
+
+        register.quality_clock = lambda: 1001.0
+        stale_payload = dict(payload, reportSeq=1, decodedFps=1)
+        status, ignored = self.request("POST", "/api/quality/report", stale_payload)
+        self.assertEqual(status, 200)
+        self.assertFalse(ignored["accepted"])
+
+        status, snapshot = self.request(
+            "GET", "/api/quality/snapshot?room=sequence-room&participantId=web-owner",
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(snapshot["count"], 1)
+        self.assertEqual(snapshot["samples"][0]["reportSeq"], 2)
+        self.assertEqual(snapshot["samples"][0]["decodedFps"], 45)
+        self.assertEqual(snapshot["samples"][0]["ageSeconds"], 1)
 
     def test_legacy_room_state_cannot_clear_active_lease(self):
         self.request(
@@ -514,6 +608,15 @@ class RegisterControlAPITest(unittest.TestCase):
             "adaptiveScale": 1.5,
             "adaptiveMaxBitrate": 3000000,
             "telemetryResetReason": "outbound-identity-changed,optional-counter-reset",
+            "requestedWidth": 1920,
+            "requestedHeight": 1080,
+            "requestedFrameRate": 60,
+            "actualWidth": 1920,
+            "actualHeight": 1080,
+            "actualFrameRate": 45,
+            "captureDisplaySurface": "window",
+            "captureConstraintStatus": "fallback-applied",
+            "captureConstraintAttempt": "1080p45",
             "candidateAddress": "10.0.0.2",
             "credential": "secret",
             "sdp": "v=0",
@@ -531,6 +634,9 @@ class RegisterControlAPITest(unittest.TestCase):
         self.assertEqual(payload["adaptiveDecision"], "downshift:0->1")
         self.assertEqual(payload["adaptiveLevel"], 1)
         self.assertEqual(payload["adaptiveScale"], 1.5)
+        self.assertEqual(payload["requestedFrameRate"], 60)
+        self.assertEqual(payload["actualFrameRate"], 45)
+        self.assertEqual(payload["captureConstraintStatus"], "fallback-applied")
         self.assertEqual(
             payload["telemetryResetReason"],
             "outbound-identity-changed,optional-counter-reset",
@@ -588,6 +694,19 @@ class RegisterControlAPITest(unittest.TestCase):
         self.assertNotIn("unknownTelemetry", record)
         self.assertNotIn("diagnosticPacketsSentDelta", record)
 
+    def test_webrtc_stats_post_requires_an_authenticated_session(self):
+        original_resolver = register.resolve_authenticated_user
+        register.resolve_authenticated_user = lambda _headers: None
+        try:
+            status, response = self.request(
+                "POST", "/api/stats", {"event": "webrtc_sample", "room": "stats-room"}
+            )
+        finally:
+            register.resolve_authenticated_user = original_resolver
+
+        self.assertEqual(status, 401)
+        self.assertFalse(response["ok"])
+
     def test_register_succeeds_without_the_htpasswd_command_and_preserves_existing_users(self):
         with mock.patch.dict(os.environ, {"PATH": ""}):
             status, response = self.request(
@@ -634,7 +753,10 @@ class RegisterControlAPITest(unittest.TestCase):
         replace.assert_called_once()
         with open(register.HTPASSWD_FILE, "rb") as users_file:
             self.assertEqual(users_file.read(), self.legacy_record)
-        self.assertEqual(os.listdir(self.temp_dir.name), ["users.htpasswd"])
+        self.assertEqual(
+            sorted(os.listdir(self.temp_dir.name)),
+            ["users.htpasswd", "users.htpasswd.lock"],
+        )
 
     def test_deployment_mounts_the_credentials_directory_for_atomic_updates(self):
         compose_path = Path(__file__).parent / "screego" / "deploy" / "docker-compose.yml"
@@ -652,6 +774,16 @@ class RegisterControlAPITest(unittest.TestCase):
         deploy_path = source_path.parent / "screego" / "deploy" / "register.py"
 
         self.assertEqual(source_path.read_bytes(), deploy_path.read_bytes())
+
+    def test_deployment_user_management_is_byte_identical_to_source(self):
+        server_path = Path(register.__file__).resolve().parent
+        deploy_path = server_path / "screego" / "deploy"
+
+        for name in ("credential_store.py", "manage_user.py"):
+            self.assertEqual(
+                (server_path / name).read_bytes(),
+                (deploy_path / name).read_bytes(),
+            )
 
     def test_nginx_proxies_quality_control_api(self):
         nginx_path = Path(__file__).parent / "screego" / "deploy" / "nginx-screego.conf"

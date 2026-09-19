@@ -22,6 +22,94 @@
       : undefined;
   }
 
+  function positiveNumber(value) {
+    return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0;
+  }
+
+  function captureSettings(track) {
+    if (!track || typeof track.getSettings !== 'function') return {};
+    try {
+      var settings = track.getSettings();
+      return settings && typeof settings === 'object' ? settings : {};
+    } catch (error) {
+      return {};
+    }
+  }
+
+  function captureMatchesRequest(snapshot) {
+    if (!snapshot) return false;
+    if (!(snapshot.actualWidth > 0) || !(snapshot.actualHeight > 0)) return false;
+    var sizeMatches = snapshot.actualWidth >= snapshot.requestedWidth * 0.95 &&
+      snapshot.actualHeight >= snapshot.requestedHeight * 0.95;
+    var fpsMatches = !(snapshot.requestedFrameRate > 0) ||
+      (snapshot.actualFrameRate > 0 && snapshot.actualFrameRate >= snapshot.requestedFrameRate * 0.9);
+    return sizeMatches && fpsMatches;
+  }
+
+  function buildCaptureSettingsSnapshot(track, requested, status) {
+    requested = requested && typeof requested === 'object' ? requested : {};
+    var settings = captureSettings(track);
+    var snapshot = {
+      requestedWidth: positiveNumber(Number(requested.width)),
+      requestedHeight: positiveNumber(Number(requested.height)),
+      requestedFrameRate: positiveNumber(Number(requested.frameRate)),
+      actualWidth: positiveNumber(Number(settings.width)),
+      actualHeight: positiveNumber(Number(settings.height)),
+      actualFrameRate: positiveNumber(Number(settings.frameRate)),
+      captureDisplaySurface: typeof settings.displaySurface === 'string'
+        ? settings.displaySurface.toLowerCase()
+        : '',
+      captureConstraintStatus: String(status || '')
+    };
+    if (!snapshot.captureConstraintStatus) {
+      if (!snapshot.actualWidth || !snapshot.actualHeight) {
+        snapshot.captureConstraintStatus = 'settings-unavailable';
+      } else {
+        snapshot.captureConstraintStatus = captureMatchesRequest(snapshot)
+          ? 'matched'
+          : 'browser-limited';
+      }
+    }
+    return snapshot;
+  }
+
+  function buildCaptureFallbackProfiles(requested) {
+    requested = requested && typeof requested === 'object' ? requested : {};
+    var width = positiveNumber(Number(requested.width)) || 1280;
+    var height = positiveNumber(Number(requested.height)) || 720;
+    var fps = Math.max(1, Math.min(60, positiveNumber(Number(requested.frameRate)) || 30));
+    var profiles = [];
+    function add(name, profileWidth, profileHeight, profileFps) {
+      if (profileWidth > width || profileHeight > height || profileFps > fps) return;
+      if (profiles.some(function (profile) {
+        return profile.width === profileWidth && profile.height === profileHeight &&
+          profile.frameRate === profileFps;
+      })) return;
+      profiles.push({name: name, width: profileWidth, height: profileHeight, frameRate: profileFps});
+    }
+    var fpsTiers = [60, 45, 30].filter(function (candidate) { return candidate <= fps; });
+    if (!fpsTiers.length) fpsTiers.push(fps);
+    function addResolutionTiers(label, profileWidth, profileHeight) {
+      fpsTiers.forEach(function (profileFps) {
+        add(label + 'p' + Math.round(profileFps), profileWidth, profileHeight, profileFps);
+      });
+    }
+    if (width >= 1920 && height >= 1080) {
+      addResolutionTiers('1080', 1920, 1080);
+      addResolutionTiers('720', 1280, 720);
+      addResolutionTiers('540', 960, 540);
+    } else if (width >= 1280 && height >= 720) {
+      addResolutionTiers('720', 1280, 720);
+      addResolutionTiers('540', 960, 540);
+    } else if (width >= 960 && height >= 540) {
+      addResolutionTiers('540', 960, 540);
+    } else {
+      add(Math.round(height) + 'p' + Math.round(fps), width, height, fps);
+    }
+    if (!profiles.length) add(Math.round(height) + 'p' + Math.round(fps), width, height, fps);
+    return profiles;
+  }
+
   function createTelemetryReasonLatch() {
     return {nextVersion: 0, reasons: Object.create(null)};
   }
@@ -92,6 +180,198 @@
       item.type === type &&
       (item.kind === 'video' || item.mediaType === 'video') &&
       item.active !== false;
+  }
+
+  function videoRtpReports(stats, type) {
+    return allVideoRtpReports(stats, type).filter(function (item) {
+      return item.active !== false;
+    });
+  }
+
+  function allVideoRtpReports(stats, type) {
+    var reports = [];
+    if (!stats || typeof stats.forEach !== 'function') return reports;
+    stats.forEach(function (item) {
+      if (item && item.type === type && item.isRemote !== true &&
+          (item.kind === 'video' || item.mediaType === 'video')) reports.push(item);
+    });
+    return reports;
+  }
+
+  function statsEntries(stats) {
+    var entries = [];
+    if (!stats || typeof stats.forEach !== 'function') return entries;
+    try {
+      stats.forEach(function (item) {
+        if (item && typeof item === 'object') entries.push(item);
+      });
+    } catch (error) {}
+    return entries;
+  }
+
+  function statsGet(stats, id) {
+    if (!stats || id === undefined || id === null || id === '') return null;
+    try {
+      if (typeof stats.get === 'function') {
+        var direct = stats.get(id);
+        if (direct) return direct;
+      }
+    } catch (error) {}
+    var wanted = String(id);
+    var found = null;
+    if (typeof stats.forEach === 'function') {
+      try {
+        stats.forEach(function (item) {
+          if (!found && item && String(item.id || '') === wanted) found = item;
+        });
+      } catch (error2) {}
+    }
+    return found;
+  }
+
+  function codecNameFromValue(value) {
+    var text = String(value || '').trim();
+    if (!text) return '';
+    var lower = text.toLowerCase();
+    if (lower.indexOf('audio/') === 0) return '';
+    var slash = text.lastIndexOf('/');
+    if (slash >= 0) text = text.slice(slash + 1);
+    text = text.split(/[\s;/]/)[0].trim();
+    lower = text.toLowerCase();
+    if (lower === 'rtx' || lower === 'red' || lower === 'ulpfec' ||
+        lower === 'flexfec-03' || lower === 'telephone-event') return '';
+    if (lower === 'h264' || lower === 'h.264' || lower === 'avc1' || lower.indexOf('h264') === 0) return 'H264';
+    if (lower === 'vp8' || lower.indexOf('vp8') === 0) return 'VP8';
+    if (lower === 'vp9' || lower.indexOf('vp9') === 0) return 'VP9';
+    if (lower === 'av1' || lower.indexOf('av1') === 0) return 'AV1';
+    return '';
+  }
+
+  function codecNameFromReport(report) {
+    if (!report || typeof report !== 'object') return '';
+    return codecNameFromValue(report.mimeType || report.mime || report.codec || '');
+  }
+
+  function describeCodec(stats, report, sdp) {
+    report = report && typeof report === 'object' ? report : {};
+    var codecId = report.codecId;
+    var payloadType = report.payloadType;
+    var direct = statsGet(stats, codecId);
+    var directName = codecNameFromReport(direct);
+    if (directName) return directName;
+
+    var entries = statsEntries(stats);
+    var bestName = '';
+    var bestScore = -1;
+    entries.forEach(function (item) {
+      if (!item || item.type !== 'codec') return;
+      var name = codecNameFromReport(item);
+      if (!name) return;
+      var score = 1;
+      if (codecId !== undefined && codecId !== null &&
+          String(item.id || '') === String(codecId)) score += 100;
+      if (payloadType !== undefined && payloadType !== null &&
+          Number(item.payloadType) === Number(payloadType)) score += 50;
+      if (score > bestScore) {
+        bestScore = score;
+        bestName = name;
+      }
+    });
+    if (bestName) return bestName;
+
+    var reportName = codecNameFromReport(report);
+    if (reportName) return reportName;
+
+    var text = String(sdp || '');
+    var matcher = /a=rtpmap:(\d+)\s+([^\s\/]+)/ig;
+    var firstVideoCodec = '';
+    var match;
+    while ((match = matcher.exec(text))) {
+      var sdpName = codecNameFromValue(match[2]);
+      if (!sdpName) continue;
+      if (payloadType !== undefined && payloadType !== null &&
+          String(match[1]) === String(payloadType)) return sdpName;
+      if (!firstVideoCodec) firstVideoCodec = sdpName;
+    }
+    return payloadType === undefined || payloadType === null ? firstVideoCodec : '';
+  }
+
+  function counterOrMinusOne(report, key) {
+    var value = finiteCounter(report && report[key]);
+    return value === undefined ? -1 : value;
+  }
+
+  function comparePrimaryVideoRtp(left, right, type) {
+    // Inbound reports survive a simulcast/decoder switch for a while. Their
+    // old resolution and cumulative byte counters can look healthier than the
+    // report that is actually decoding. Prefer live decoder/packet activity
+    // before falling back to resolution and RID ordering.
+    if (type === 'inbound-rtp') {
+      var leftFps = positiveNumber(Number(left.framesPerSecond));
+      var rightFps = positiveNumber(Number(right.framesPerSecond));
+      if (leftFps !== rightFps) return leftFps - rightFps;
+      var leftLastPacket = counterOrMinusOne(left, 'lastPacketReceivedTimestamp');
+      var rightLastPacket = counterOrMinusOne(right, 'lastPacketReceivedTimestamp');
+      if ((leftLastPacket > 0) !== (rightLastPacket > 0)) {
+        return leftLastPacket > 0 ? 1 : -1;
+      }
+      if (leftLastPacket !== rightLastPacket) return leftLastPacket - rightLastPacket;
+      var leftDecoded = counterOrMinusOne(left, 'framesDecoded');
+      var rightDecoded = counterOrMinusOne(right, 'framesDecoded');
+      if ((leftDecoded > 0) !== (rightDecoded > 0)) return leftDecoded > 0 ? 1 : -1;
+      var leftReceived = counterOrMinusOne(left, 'framesReceived');
+      var rightReceived = counterOrMinusOne(right, 'framesReceived');
+      if ((leftReceived > 0) !== (rightReceived > 0)) return leftReceived > 0 ? 1 : -1;
+      var leftEmitted = counterOrMinusOne(left, 'jitterBufferEmittedCount');
+      var rightEmitted = counterOrMinusOne(right, 'jitterBufferEmittedCount');
+      if ((leftEmitted > 0) !== (rightEmitted > 0)) return leftEmitted > 0 ? 1 : -1;
+      if (leftEmitted !== rightEmitted) return leftEmitted - rightEmitted;
+      if (leftDecoded !== rightDecoded) return leftDecoded - rightDecoded;
+      if (leftReceived !== rightReceived) return leftReceived - rightReceived;
+    }
+    var leftPixels = positiveNumber(Number(left.frameWidth || left.width)) *
+      positiveNumber(Number(left.frameHeight || left.height));
+    var rightPixels = positiveNumber(Number(right.frameWidth || right.width)) *
+      positiveNumber(Number(right.frameHeight || right.height));
+    if (leftPixels !== rightPixels) return leftPixels - rightPixels;
+    var layerRank = {q: 1, h: 2, f: 3};
+    var leftRank = layerRank[String(left.rid || '').toLowerCase()] || 0;
+    var rightRank = layerRank[String(right.rid || '').toLowerCase()] || 0;
+    if (leftRank !== rightRank) return leftRank - rightRank;
+    var leftFps = positiveNumber(Number(left.framesPerSecond));
+    var rightFps = positiveNumber(Number(right.framesPerSecond));
+    if (leftFps !== rightFps) return leftFps - rightFps;
+    return String(right.id || '').localeCompare(String(left.id || ''));
+  }
+
+  function selectPrimaryVideoRtp(stats, type, preferredId) {
+    var reports = videoRtpReports(stats, type);
+    if (!reports.length) return null;
+    return reports.reduce(function (selected, report) {
+      if (!selected) return report;
+      var comparison = comparePrimaryVideoRtp(report, selected, type);
+      if (comparison !== 0) return comparison > 0 ? report : selected;
+      if (preferredId && String(report.id || '') === String(preferredId)) return report;
+      return selected;
+    }, null);
+  }
+
+  function describeVideoRtpLayers(stats, type) {
+    return allVideoRtpReports(stats, type).map(function (report) {
+      return {
+        id: String(report.id || ''),
+        rid: String(report.rid || ''),
+        active: report.active !== false,
+        width: positiveNumber(Number(report.frameWidth)),
+        height: positiveNumber(Number(report.frameHeight)),
+        fps: positiveNumber(Number(report.framesPerSecond)),
+        bytes: finiteCounter(type === 'outbound-rtp' ? report.bytesSent : report.bytesReceived) || 0,
+        frames: finiteCounter(type === 'outbound-rtp' ? report.framesEncoded : report.framesDecoded) || 0,
+        qualityLimitationReason: String(report.qualityLimitationReason || '')
+      };
+    }).sort(function (left, right) {
+      return comparePrimaryVideoRtp(left, right, type) > 0 ? -1 : 1;
+    });
   }
 
   function sortedIds(items) {
@@ -190,7 +470,10 @@
       },
       inbound: {
         pliCount: collectMetric(inbound, 'pliCount'),
-        nackCount: collectMetric(inbound, 'nackCount')
+        nackCount: collectMetric(inbound, 'nackCount'),
+        framesReceived: collectMetric(inbound, 'framesReceived'),
+        jitterBufferDelayMs: collectMetric(inbound, 'jitterBufferDelay', 1000),
+        jitterBufferEmittedCount: collectMetric(inbound, 'jitterBufferEmittedCount')
       },
       mediaSource: {
         framesCaptured: mediaSource.framesCaptured
@@ -239,6 +522,8 @@
     setMetricTotal(sample, currentOutbound.nackCount, 'outboundNackCount');
     setMetricTotal(sample, currentInbound.pliCount, 'inboundPliCount');
     setMetricTotal(sample, currentInbound.nackCount, 'inboundNackCount');
+    setMetricTotal(sample, currentInbound.jitterBufferDelayMs, 'jitterBufferDelayMs');
+    setMetricTotal(sample, currentInbound.jitterBufferEmittedCount, 'jitterBufferEmittedCount');
     setMetricTotal(sample, currentOutbound.retransmittedPacketsSent, 'retransmittedPacketsSent');
     setMetricTotal(sample, currentOutbound.retransmittedBytesSent, 'retransmittedBytesSent');
     setMetricTotal(sample, currentOutbound.totalPacketSendDelayMs, 'totalPacketSendDelayMs');
@@ -341,6 +626,40 @@
       canUseInbound,
       reasons
     );
+    applyMetricDelta(
+      sample,
+      currentInbound.framesReceived,
+      previousInbound.framesReceived,
+      'framesReceivedDelta',
+      'arrivalFps',
+      elapsedMs,
+      canUseInbound,
+      reasons
+    );
+    var jitterBufferDelay = applyMetricDelta(
+      sample,
+      currentInbound.jitterBufferDelayMs,
+      previousInbound.jitterBufferDelayMs,
+      'jitterBufferDelayDeltaMs',
+      '',
+      elapsedMs,
+      canUseInbound,
+      reasons
+    );
+    var jitterBufferEmitted = applyMetricDelta(
+      sample,
+      currentInbound.jitterBufferEmittedCount,
+      previousInbound.jitterBufferEmittedCount,
+      'jitterBufferEmittedCountDelta',
+      '',
+      elapsedMs,
+      canUseInbound,
+      reasons
+    );
+    if (jitterBufferDelay.available && jitterBufferEmitted.available &&
+        jitterBufferEmitted.value > 0) {
+      sample.jitterBufferActualMs = jitterBufferDelay.value / jitterBufferEmitted.value;
+    }
     applyMetricDelta(
       sample,
       currentOutbound.retransmittedPacketsSent,
@@ -463,8 +782,10 @@
       jitterMs: 0,
       qualityLimitationReason: 'none'
     };
+    var primaryInbound = selectPrimaryVideoRtp(stats, 'inbound-rtp');
     stats.forEach(function (item) {
-      if (item.type === 'inbound-rtp' && (item.kind === 'video' || item.mediaType === 'video')) {
+      if (item.type === 'inbound-rtp' && (item.kind === 'video' || item.mediaType === 'video') &&
+          primaryInbound && item.id === primaryInbound.id) {
         result.packetsReceived += number(item.packetsReceived);
         result.packetsLost += number(item.packetsLost);
         result.bytesReceived += number(item.bytesReceived);
@@ -514,9 +835,11 @@
       valid: false,
       invalidReason: 'baseline'
     });
+    sample.outboundLayers = describeVideoRtpLayers(stats, 'outbound-rtp');
+    sample.inboundLayers = describeVideoRtpLayers(stats, 'inbound-rtp');
 
-    if (context.visible === false) sample.invalidReason = 'page-hidden';
-    else if (context.sourceChanged) sample.invalidReason = 'source-changed';
+    sample.visibilityState = context.visible === false ? 'hidden' : 'visible';
+    if (context.sourceChanged) sample.invalidReason = 'source-changed';
     else if (context.resolutionChanged) sample.invalidReason = 'resolution-changed';
     else if (!pairDescription.pairId) sample.invalidReason = 'no-selected-pair';
     else if (!previous) sample.invalidReason = 'baseline';
@@ -602,6 +925,23 @@
       jitterMs: Math.max(0, number(sample.jitterMs))
     };
     if (screegoSessionId) report.screegoSessionId = screegoSessionId;
+    if (sample.bufferTargetMs !== undefined) {
+      report.bufferTargetMs = Math.max(0, Math.min(300, number(sample.bufferTargetMs)));
+    }
+    if (sample.bufferActualMs !== undefined) {
+      report.bufferActualMs = Math.max(0, Math.min(60000, number(sample.bufferActualMs)));
+    }
+    if (sample.bufferReason !== undefined) {
+      report.bufferReason = String(sample.bufferReason || 'baseline').slice(0, 64);
+    }
+    if (sample.flowDeficit !== undefined) report.flowDeficit = sample.flowDeficit === true;
+    if (context.protocolVersion === 2 && Number(context.reportSeq) > 0) {
+      report.protocolVersion = 2;
+      report.reportSeq = Math.floor(Number(context.reportSeq));
+      report.sampleDurationMs = Math.max(0, Math.min(4000, Math.round(number(sample.elapsedMs))));
+    }
+    var layer = String(context.layer || '').trim().toLowerCase();
+    if (layer === 'h' || layer === 'f') report.layer = layer;
     return report;
   }
 
@@ -611,6 +951,12 @@
     buildViewerQualityReport: buildViewerQualityReport,
     createTelemetryReasonLatch: createTelemetryReasonLatch,
     recordTelemetryResetReasons: recordTelemetryResetReasons,
-    sendTelemetryReport: sendTelemetryReport
+    sendTelemetryReport: sendTelemetryReport,
+    buildCaptureSettingsSnapshot: buildCaptureSettingsSnapshot,
+    buildCaptureFallbackProfiles: buildCaptureFallbackProfiles,
+    captureMatchesRequest: captureMatchesRequest,
+    selectPrimaryVideoRtp: selectPrimaryVideoRtp,
+    describeVideoRtpLayers: describeVideoRtpLayers,
+    describeCodec: describeCodec
   };
 });

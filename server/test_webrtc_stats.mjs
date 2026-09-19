@@ -7,11 +7,87 @@ const require = createRequire(import.meta.url);
 const {
   buildViewerQualityReport,
   buildWebRTCSample,
+  buildCaptureFallbackProfiles,
+  buildCaptureSettingsSnapshot,
+  captureMatchesRequest,
   createTelemetryReasonLatch,
   describeSelectedPair,
+  describeCodec,
+  describeVideoRtpLayers,
   recordTelemetryResetReasons,
+  selectPrimaryVideoRtp,
   sendTelemetryReport,
 } = require('./webrtc_stats.js');
+
+test('codec descriptions resolve codec reports without relying on object identity', () => {
+  const stats = new Map([
+    ['codec-1', {id: 'codec-1', type: 'codec', mimeType: 'video/H264', clockRate: 90000}],
+  ]);
+  const report = {id: 'in-1', type: 'inbound-rtp', kind: 'video', codecId: 'codec-1'};
+  assert.equal(describeCodec(stats, report), 'H264');
+});
+
+test('codec descriptions support forEach-only reports and payload type matching', () => {
+  const entries = [
+    {id: 'codec-vp9', type: 'codec', mimeType: 'video/VP9', payloadType: 98},
+    {id: 'codec-opus', type: 'codec', mimeType: 'audio/opus', payloadType: 111},
+  ];
+  const stats = {forEach(callback) { entries.forEach((entry) => callback(entry)); }};
+  const report = {id: 'out-1', type: 'outbound-rtp', kind: 'video', payloadType: 98};
+  assert.equal(describeCodec(stats, report), 'VP9');
+});
+
+test('codec descriptions fall back to the negotiated SDP payload map', () => {
+  const stats = {forEach() {}};
+  const report = {id: 'in-2', type: 'inbound-rtp', kind: 'video', payloadType: 127};
+  const sdp = 'm=video 9 UDP/TLS/RTP/SAVPF 127\r\na=rtpmap:127 H264/90000\r\n';
+  assert.equal(describeCodec(stats, report, sdp), 'H264');
+});
+
+test('capture settings keep requested and actual values separate', () => {
+  const track = {
+    getSettings: () => ({width: 1280, height: 720, frameRate: 30, displaySurface: 'window'}),
+  };
+  const snapshot = buildCaptureSettingsSnapshot(
+    track,
+    {width: 1920, height: 1080, frameRate: 60},
+  );
+  assert.deepEqual(snapshot, {
+    requestedWidth: 1920,
+    requestedHeight: 1080,
+    requestedFrameRate: 60,
+    actualWidth: 1280,
+    actualHeight: 720,
+    actualFrameRate: 30,
+    captureDisplaySurface: 'window',
+    captureConstraintStatus: 'browser-limited',
+  });
+  assert.equal(captureMatchesRequest(snapshot), false);
+});
+
+test('1080p60 capture fallback is ordered and never exceeds the selected cap', () => {
+  assert.deepEqual(
+    buildCaptureFallbackProfiles({width: 1920, height: 1080, frameRate: 60}),
+    [
+      {name: '1080p60', width: 1920, height: 1080, frameRate: 60},
+      {name: '1080p45', width: 1920, height: 1080, frameRate: 45},
+      {name: '1080p30', width: 1920, height: 1080, frameRate: 30},
+      {name: '720p60', width: 1280, height: 720, frameRate: 60},
+      {name: '720p45', width: 1280, height: 720, frameRate: 45},
+      {name: '720p30', width: 1280, height: 720, frameRate: 30},
+      {name: '540p60', width: 960, height: 540, frameRate: 60},
+      {name: '540p45', width: 960, height: 540, frameRate: 45},
+      {name: '540p30', width: 960, height: 540, frameRate: 30},
+    ],
+  );
+  assert.deepEqual(
+    buildCaptureFallbackProfiles({width: 1280, height: 720, frameRate: 30}),
+    [
+      {name: '720p30', width: 1280, height: 720, frameRate: 30},
+      {name: '540p30', width: 960, height: 540, frameRate: 30},
+    ],
+  );
+});
 
 const report = (entries) => new Map(entries.map((item) => [item.id, item]));
 const connectedReport = (entries) => report([
@@ -28,6 +104,75 @@ const connectedReport = (entries) => report([
   {id: 'remote', type: 'remote-candidate', candidateType: 'host', protocol: 'udp', address: '10.0.0.3'},
   ...entries,
 ]);
+
+test('primary simulcast report always selects the full active layer regardless of report order', () => {
+  const full = {
+    id: 'out-f', type: 'outbound-rtp', kind: 'video', rid: 'f', active: true,
+    frameWidth: 1920, frameHeight: 1080, framesPerSecond: 60, bytesSent: 200000,
+  };
+  const half = {
+    id: 'out-h', type: 'outbound-rtp', kind: 'video', rid: 'h', active: true,
+    frameWidth: 1280, frameHeight: 720, framesPerSecond: 30, bytesSent: 100000,
+  };
+  for (const entries of [[half, full], [full, half]]) {
+    assert.equal(selectPrimaryVideoRtp(report(entries), 'outbound-rtp').id, 'out-f');
+  }
+});
+
+test('primary inbound report prefers the decoder that is currently receiving frames', () => {
+  const stale = {
+    id: 'in-stale', type: 'inbound-rtp', kind: 'video', active: true,
+    frameWidth: 1920, frameHeight: 1080, framesPerSecond: 0,
+    framesDecoded: 900, framesReceived: 900, jitterBufferEmittedCount: 900,
+    lastPacketReceivedTimestamp: 1000, packetsReceived: 2000, bytesReceived: 4000000,
+  };
+  const live = {
+    id: 'in-live', type: 'inbound-rtp', kind: 'video', active: true,
+    frameWidth: 1280, frameHeight: 720, framesPerSecond: 30,
+    framesDecoded: 30, framesReceived: 30, jitterBufferEmittedCount: 30,
+    lastPacketReceivedTimestamp: 3000, packetsReceived: 80, bytesReceived: 120000,
+  };
+  for (const entries of [[stale, live], [live, stale]]) {
+    assert.equal(selectPrimaryVideoRtp(report(entries), 'inbound-rtp').id, 'in-live');
+  }
+});
+
+test('core receive deltas ignore a stale inbound report after a decoder switch', () => {
+  const makeStats = (second) => connectedReport([
+    {
+      id: 'in-stale', type: 'inbound-rtp', kind: 'video', active: true,
+      frameWidth: 1920, frameHeight: 1080, framesPerSecond: 0,
+      packetsReceived: 2000, packetsLost: 0, bytesReceived: 4000000,
+      framesDecoded: 900, framesDropped: 0, lastPacketReceivedTimestamp: 1000,
+    },
+    {
+      id: 'in-live', type: 'inbound-rtp', kind: 'video', active: true,
+      frameWidth: 1280, frameHeight: 720, framesPerSecond: 30,
+      packetsReceived: second ? 160 : 100, packetsLost: 0,
+      bytesReceived: second ? 220000 : 100000,
+      framesDecoded: second ? 120 : 60, framesDropped: 0,
+      lastPacketReceivedTimestamp: second ? 3000 : 1000,
+    },
+  ]);
+  const first = buildWebRTCSample(makeStats(false), null, {now: 1000, visible: true});
+  const next = buildWebRTCSample(makeStats(true), first.snapshot, {now: 3000, visible: true});
+  assert.equal(next.framesDecodedDelta, 60);
+  assert.equal(next.packetsReceivedDelta, 60);
+  assert.equal(next.downKbps, 480);
+});
+
+test('diagnostic layer details retain inactive encodings for sender troubleshooting', () => {
+  const layers = describeVideoRtpLayers(report([
+    {id: 'out-h', type: 'outbound-rtp', kind: 'video', rid: 'h', active: true,
+      frameWidth: 1280, frameHeight: 720, framesPerSecond: 30, bytesSent: 100},
+    {id: 'out-f', type: 'outbound-rtp', kind: 'video', rid: 'f', active: false,
+      frameWidth: 1920, frameHeight: 1080, framesPerSecond: 60, bytesSent: 0},
+  ]), 'outbound-rtp');
+  assert.deepEqual(layers.map(({rid, active, width, height}) => ({rid, active, width, height})), [
+    {rid: 'f', active: false, width: 1920, height: 1080},
+    {rid: 'h', active: true, width: 1280, height: 720},
+  ]);
+});
 
 const deferred = () => {
   let resolve;
@@ -109,14 +254,42 @@ test('samples use counter deltas and reject pair changes or counter resets', () 
   assert.equal(changed.invalidReason, 'pair-changed');
 });
 
-test('background and source changes invalidate a sample without manufacturing loss', () => {
+test('source changes invalidate a sample without manufacturing loss', () => {
   const stats = report([
     {id: 'pair', type: 'candidate-pair', nominated: true, state: 'succeeded', localCandidateId: 'l', remoteCandidateId: 'r'},
     {id: 'l', type: 'local-candidate', candidateType: 'host', protocol: 'udp', address: '10.0.0.2'},
     {id: 'r', type: 'remote-candidate', candidateType: 'host', protocol: 'udp', address: '10.0.0.3'},
   ]);
-  assert.equal(buildWebRTCSample(stats, null, {now: 1000, visible: false}).invalidReason, 'page-hidden');
   assert.equal(buildWebRTCSample(stats, null, {now: 1000, visible: true, sourceChanged: true}).invalidReason, 'source-changed');
+});
+
+test('background viewers keep a valid RTP quality window and report it', () => {
+  const makeStats = (received, decoded, bytes) => connectedReport([
+    {
+      id: 'in', type: 'inbound-rtp', kind: 'video',
+      packetsReceived: received, packetsLost: 1, bytesReceived: bytes,
+      framesReceived: decoded, framesDecoded: decoded, framesDropped: 0,
+      jitterBufferDelay: decoded / 10, jitterBufferEmittedCount: decoded,
+      jitter: 0.01,
+    },
+  ]);
+  const first = buildWebRTCSample(makeStats(100, 60, 100000), null, {
+    now: 1000,
+    visible: false,
+  });
+  const next = buildWebRTCSample(makeStats(160, 120, 220000), first.snapshot, {
+    now: 3000,
+    visible: false,
+  });
+
+  assert.equal(next.valid, true);
+  assert.equal(next.invalidReason, '');
+  assert.equal(next.visibilityState, 'hidden');
+  const quality = buildViewerQualityReport(next, {
+    room: 'room-1', participantId: 'viewer-1', screegoSessionId: 'session-1', mode: 'native-viewer',
+  });
+  assert.ok(quality, JSON.stringify(next));
+  assert.equal(quality.decodedFps, 30);
 });
 
 test('valid inbound samples produce bounded native viewer quality reports', () => {
@@ -131,6 +304,10 @@ test('valid inbound samples produce bounded native viewer quality reports', () =
     framesDroppedDelta: 3,
     downKbps: 800,
     jitterMs: 120,
+    bufferTargetMs: 220,
+    bufferActualMs: 180,
+    bufferReason: 'network-buffering',
+    flowDeficit: true,
   }, {
     room: 'room-1',
     participantId: 'web-1',
@@ -149,6 +326,10 @@ test('valid inbound samples produce bounded native viewer quality reports', () =
     decodedFps: 24,
     incomingBitrateKbps: 800,
     jitterMs: 120,
+    bufferTargetMs: 220,
+    bufferActualMs: 180,
+    bufferReason: 'network-buffering',
+    flowDeficit: true,
   });
   assert.equal(buildViewerQualityReport({...quality, valid: false}, {
     room: 'room-1', participantId: 'web-1', mode: 'native-viewer'
@@ -156,6 +337,25 @@ test('valid inbound samples produce bounded native viewer quality reports', () =
   assert.equal(buildViewerQualityReport({valid: true}, {
     room: 'room-1', participantId: 'web-1', mode: 'native-host'
   }), null);
+  const layered = buildViewerQualityReport({
+    valid: true,
+    pairId: 'pair-1',
+    generation: 2,
+    elapsedMs: 2000,
+    packetsReceivedDelta: 190,
+    packetsLostDelta: 10,
+    framesDecodedDelta: 48,
+    framesDroppedDelta: 3,
+    downKbps: 800,
+    jitterMs: 120,
+  }, {
+    room: 'room-1',
+    participantId: 'web-1',
+    screegoSessionId: 'session-1',
+    mode: 'sfu-viewer',
+    layer: 'h',
+  });
+  assert.equal(layered.layer, 'h');
 });
 
 test('diagnostic telemetry records cumulative, per-object delta and derived values', () => {
@@ -307,6 +507,36 @@ test('unsupported optional telemetry is omitted while supported zero remains zer
   assert.equal(partiallyUnsupported.outboundPliCount, undefined);
   assert.equal(partiallyUnsupported.outboundNackCount, undefined);
   assert.equal(partiallyUnsupported.framesEncoded, 30);
+});
+
+test('jitter buffer telemetry derives arrival rate and bounded per-frame delay', () => {
+  const makeStats = (second, reset) => connectedReport([
+    {
+      id: 'out', type: 'outbound-rtp', kind: 'video', packetsSent: second ? 160 : 100,
+      bytesSent: second ? 160000 : 100000, framesEncoded: second ? 90 : 60,
+    },
+    {
+      id: 'in', type: 'inbound-rtp', kind: 'video',
+      packetsReceived: second ? 160 : 100, packetsLost: 0,
+      bytesReceived: second ? 160000 : 100000,
+      framesDecoded: second ? 90 : 60, framesDropped: 0,
+      framesReceived: reset ? 20 : (second ? 120 : 60),
+      jitterBufferDelay: reset ? 0.5 : (second ? 5.4 : 1.8),
+      jitterBufferEmittedCount: reset ? 10 : (second ? 90 : 60),
+    },
+  ]);
+  const first = buildWebRTCSample(makeStats(false, false), null, {now: 1000, visible: true});
+  const next = buildWebRTCSample(makeStats(true, false), first.snapshot, {now: 3000, visible: true});
+  assert.equal(next.framesReceivedDelta, 60);
+  assert.equal(next.arrivalFps, 30);
+  assert.equal(next.jitterBufferDelayDeltaMs, 3600);
+  assert.equal(next.jitterBufferEmittedCountDelta, 30);
+  assert.equal(next.jitterBufferActualMs, 120);
+
+  const reset = buildWebRTCSample(makeStats(true, true), first.snapshot, {now: 3000, visible: true});
+  assert.equal(reset.framesReceivedDelta, undefined);
+  assert.equal(reset.jitterBufferActualMs, undefined);
+  assert.match(reset.telemetryResetReason, /optional-counter-reset/);
 });
 
 test('diagnostic deltas remain available when only the legacy quality window is invalid', () => {

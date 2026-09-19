@@ -76,6 +76,27 @@ class ControlPlaneTest(unittest.TestCase):
         participants = self.control.list_presence("room-1")
         self.assertEqual([item["participantId"] for item in participants], ["web-member"])
 
+    def test_creator_leave_keeps_room_discoverable_while_another_member_is_active(self):
+        self.control.join_presence(
+            {
+                "room": "room-1",
+                "participantId": "web-member",
+                "clientType": "web",
+                "role": "member",
+                "name": "Browser",
+            },
+            "webuser",
+        )
+        self.control.leave_presence(
+            {"room": "room-1", "participantId": "client-owner"},
+            "owner",
+        )
+        rooms = self.control.list_rooms()
+        self.assertEqual(len(rooms), 1)
+        self.assertEqual(rooms[0]["room"], "room-1")
+        self.assertTrue(rooms[0]["active"])
+        self.assertEqual(rooms[0]["participantCount"], 1)
+
     def test_concurrent_share_claim_allows_only_one_participant(self):
         self.control.join_presence(
             {
@@ -166,6 +187,39 @@ class ControlPlaneTest(unittest.TestCase):
         self.assertTrue(room["sharing"])
         self.assertTrue(room["sfu"])
         self.assertEqual(room["shareOwnerParticipantId"], "client-owner")
+
+    def test_legacy_owner_clear_keeps_room_when_presence_member_remains(self):
+        self.control.join_presence(
+            {
+                "room": "room-1",
+                "participantId": "web-member",
+                "clientType": "web",
+                "role": "member",
+                "name": "Browser",
+            },
+            "webuser",
+        )
+        self.control.set_legacy_room_state(
+            {
+                "room": "room-1",
+                "active": True,
+                "sharing": False,
+                "sfu": False,
+                "origin": "client",
+            },
+            "owner",
+            "session-1",
+        )
+
+        room = self.control.set_legacy_room_state(
+            {"room": "room-1", "active": False},
+            "owner",
+            "session-1",
+        )
+
+        self.assertTrue(room["active"])
+        self.assertEqual(room["participantCount"], 2)
+        self.assertFalse(room["sharing"])
 
     def test_room_and_presence_expose_cross_client_metadata(self):
         self.control.join_presence(

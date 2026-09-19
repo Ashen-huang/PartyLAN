@@ -430,7 +430,16 @@ class ControlPlane:
                 if room and not self._legacy_owner_matches(room, auth_user, session_fingerprint):
                     raise ControlError("room_origin_conflict", 409)
                 if room_id not in self._leases:
-                    self._rooms.pop(room_id, None)
+                    # A legacy owner leaving must not erase a room that still has
+                    # Presence members. Their heartbeats are the room's lifecycle.
+                    if room and self._presence.get(room_id):
+                        room["legacy_sharing"] = False
+                        room["legacy_sfu"] = False
+                        room["legacy_audio_mode"] = "off"
+                        room["active"] = True
+                        room["updated_at"] = now
+                    else:
+                        self._rooms.pop(room_id, None)
                 return self._build_room_locked(room_id, now)
 
             if room is None:
